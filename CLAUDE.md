@@ -3,8 +3,9 @@
 Read this, then stop reading until you know what the task is.
 
 - Any code, docs, or git work: invoke the `clean` skill first and follow it.
-- A milestone request such as `M4`: invoke the `milestone` skill. It tells
-  you what to read, in what order, and when to ask questions.
+- A milestone request such as `M4`: invoke the `milestone` skill. It moves
+  the session into a worktree, tells you what to read, in what order,
+  when to ask questions, and how to land on `main`.
 - State lives in `progress/HANDOFF.md`. Plans live in `progress/M*.md`.
   Loose ends live in `progress/BACKLOG.md`. The vision is
   `docs/design.md`, the normative spec is `docs/protocol.md`, the wire

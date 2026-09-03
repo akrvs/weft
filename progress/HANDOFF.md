@@ -89,6 +89,21 @@ grep -rnP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]' README.md docs progress crate
 grep -rn '//' crates --include='*.rs' --include='*.ts' | grep -v 'https://\|weft://'
 ```
 
+## Parallel
+
+Independent pairs may run at the same time in separate worktrees:
+
+| Milestone | Depends on | Touches |
+|---|---|---|
+| M4 DNS bridge and gateway | nothing in flight | new crate, CLI, browser address bar |
+| M5 personal store and grants | nothing in flight | new crate, home, browser store view |
+| M6 challenge response login | M5 landed | new crate, browser identity |
+| M7 payments | M5 landed | net, relay, new kinds |
+
+Shared files edited only at close: HANDOFF, BACKLOG, README, Cargo.toml,
+Cargo.lock, deny.toml, ci.yml. Resolution rules live in the `milestone`
+skill.
+
 ## Open questions
 
 Listed in `progress/BACKLOG.md`. The biggest is revocation with an

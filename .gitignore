@@ -5,3 +5,4 @@
 /crates/browser/ui/node_modules
 /crates/browser/ui/dist
 /crates/browser/gen
+/.claude/worktrees
