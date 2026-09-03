@@ -4,6 +4,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill via iroh transitive deps, no runtime exposure" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is a proc macro pulled by iroh transitive deps, compile time only" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a proc macro pulled by iroh transitive deps, compile time only" },
+]
 
 [licenses]
 version = 2
@@ -21,6 +26,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "MPL-2.0",
     "Unlicense",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

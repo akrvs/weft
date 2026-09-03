@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli"]
+members = ["crates/core", "crates/net", "crates/relay", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,10 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 rpassword = "7"
+iroh = { version = "1.1", default-features = false, features = ["tls-ring"] }
+iroh-blobs = { version = "0.103", default-features = false, features = ["fs-store"] }
+redb = "4.2"
+tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "fs", "signal", "sync", "time"] }
 getrandom = "0.3"
 
 [workspace.lints.rust]

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use weft_core::{Device, Manifest, PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
-use crate::fail::{Result, fail};
+use crate::fail::{Fail, Result, fail};
 use crate::fs;
 use crate::keystore::{self, Meta};
 use crate::store::Store;
@@ -166,6 +166,49 @@ impl Home {
         };
         manifest.check(&self.root()?)?;
         Ok(manifest)
+    }
+
+    fn relays_path(&self) -> PathBuf {
+        self.dir.join("relays")
+    }
+
+    pub fn relays(&self) -> Result<Vec<iroh::EndpointId>> {
+        let path = self.relays_path();
+        if !path.is_file() {
+            return Ok(Vec::new());
+        }
+        std::fs::read_to_string(path)?
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| l.parse::<iroh::EndpointId>().map_err(|e| Fail(e.to_string())))
+            .collect()
+    }
+
+    pub fn add_relay(&self, id: iroh::EndpointId) -> Result<()> {
+        let mut relays = self.relays()?;
+        if relays.contains(&id) {
+            return Ok(());
+        }
+        relays.push(id);
+        let text = relays.iter().fold(String::new(), |mut t, r| {
+            use std::fmt::Write;
+            let _ = writeln!(t, "{r}");
+            t
+        });
+        fs::write(&self.relays_path(), text.as_bytes())
+    }
+
+    pub fn blob_path(&self, address: &weft_core::Address) -> PathBuf {
+        self.dir.join("blobs").join(address.to_string())
+    }
+
+    pub fn keep_blob(&self, address: &weft_core::Address, data: &[u8]) -> Result<()> {
+        let path = self.blob_path(address);
+        if path.is_file() {
+            return Ok(());
+        }
+        fs::write(&path, data)
     }
 
     pub fn path(&self) -> &Path {

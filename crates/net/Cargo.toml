@@ -1,0 +1,20 @@
+[package]
+name = "weft-net"
+description = "Relay protocol, client, and relay handler over iroh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+weft-core = { path = "../core" }
+iroh.workspace = true
+iroh-blobs.workspace = true
+redb.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["full"] }
+
+[lints]
+workspace = true

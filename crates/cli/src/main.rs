@@ -4,6 +4,7 @@ mod fail;
 mod fs;
 mod home;
 mod keystore;
+mod net;
 mod store;
 
 use std::path::PathBuf;
@@ -62,7 +63,27 @@ enum Command {
     Resolve {
         author: Address,
         name: String,
+        #[arg(long)]
+        relay: bool,
     },
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
+    Push {
+        addresses: Vec<Address>,
+    },
+    Fetch {
+        address: Address,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RelayCommand {
+    Add { id: iroh::EndpointId },
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -77,11 +98,12 @@ enum DeviceCommand {
     },
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = Home::new(cli.home.unwrap_or_else(Home::default_dir));
     let store = cli.dir.map_or_else(|| home.store(), Store::new);
-    match run(&home, &store, cli.command) {
+    match run(&home, &store, cli.command).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -90,7 +112,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
+async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
     match command {
         Command::Init => init(home),
         Command::Whoami => whoami(home),
@@ -111,7 +133,19 @@ fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Point { name, target, signer } => point(home, store, name, target, &signer),
         Command::Verify { file, manifest } => verify_file(store, &file, manifest.as_deref()),
         Command::Inspect { file } => inspect(&store::read_record(&file)?),
-        Command::Resolve { author, name } => resolve(store, author, &name),
+        Command::Resolve { author, name, relay: false } => resolve(store, author, &name),
+        Command::Resolve { author, name, relay: true } => {
+            net::resolve(home, store, author, &name).await
+        }
+        Command::Relay { command: RelayCommand::Add { id } } => home.add_relay(id),
+        Command::Relay { command: RelayCommand::List } => {
+            for id in home.relays()? {
+                println!("{id}");
+            }
+            Ok(())
+        }
+        Command::Push { addresses } => net::push(home, store, &addresses).await,
+        Command::Fetch { address, out } => net::fetch(home, store, address, out.as_deref()).await,
     }
 }
 
@@ -173,10 +207,9 @@ fn sign(
 ) -> Result<()> {
     let data = std::fs::read(file)?;
     let body = if data.len() > weft_core::record::MAX_INLINE {
-        return fail(format!(
-            "file exceeds inline limit of {} bytes",
-            weft_core::record::MAX_INLINE
-        ));
+        let address = Address::of(&data);
+        home.keep_blob(&address, &data)?;
+        Body::Blob(address)
     } else {
         Body::Inline(data)
     };
