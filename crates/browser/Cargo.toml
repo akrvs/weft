@@ -1,0 +1,30 @@
+[package]
+name = "weft-browser"
+description = "The browser: one address bar for signed records and the old web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "weft-browser"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+weft-core = { path = "../core" }
+weft-home = { path = "../home" }
+weft-net = { path = "../net" }
+pulldown-cmark.workspace = true
+serde.workspace = true
+tauri.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk.workspace = true
+
+[lints]
+workspace = true

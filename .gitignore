@@ -2,3 +2,6 @@
 /vectors/tmp
 *.weft
 .env
+/crates/browser/ui/node_modules
+/crates/browser/ui/dist
+/crates/browser/gen

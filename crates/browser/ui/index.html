@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weft</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <button id="back" type="button" title="back">&#8592;</button>
+  <form id="go">
+    <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="address, author/name, or https://">
+  </form>
+  <button id="compose-toggle" type="button">compose</button>
+  <button id="identity" type="button">identity</button>
+</header>
+<section id="provenance" hidden>
+  <span id="status"></span>
+  <dl>
+    <dt>address</dt><dd id="p-address"></dd>
+    <dt>kind</dt><dd id="p-kind"></dd>
+    <dt>author</dt><dd id="p-author"></dd>
+    <dt>signer</dt><dd id="p-signer"></dd>
+    <dt>created</dt><dd id="p-created"></dd>
+    <dt>served by</dt><dd id="p-source"></dd>
+  </dl>
+</section>
+<section id="unsigned" hidden>unsigned page from the old web. nothing below this line is verified.</section>
+<main id="content"></main>
+<section id="compose" hidden>
+  <form id="publish">
+    <input id="name" type="text" spellcheck="false" autocomplete="off" placeholder="pointer name, optional">
+    <input id="device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
+    <textarea id="markdown" placeholder="# title&#10;&#10;markdown body"></textarea>
+    <input id="passphrase" type="password" placeholder="passphrase">
+    <button type="submit">sign and push</button>
+  </form>
+  <pre id="publish-result"></pre>
+</section>
+<dialog id="who">
+  <pre id="who-text"></pre>
+  <button id="who-close" type="button">close</button>
+</dialog>
+<script type="module" src="dist/main.js"></script>
+</body>
+</html>

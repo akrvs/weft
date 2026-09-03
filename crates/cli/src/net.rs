@@ -4,9 +4,7 @@ use iroh::EndpointId;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
 use weft_net::Client;
 
-use crate::fail::{Result, fail};
-use crate::home::Home;
-use crate::store::Store;
+use weft_home::{Home, Result, Store, fail, fs};
 
 fn relays(home: &Home) -> Result<Vec<EndpointId>> {
     let relays = home.relays()?;
@@ -105,12 +103,12 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
     if let Body::Blob(blob) = record.body() {
         let target = out.map_or_else(|| home.blob_path(blob), Path::to_path_buf);
         if let Some(parent) = target.parent() {
-            crate::fs::ensure_dir(parent)?;
+            fs::ensure_dir(parent)?;
         }
         let size = client.fetch_blob(relay, blob, &target).await.map_err(|e| e.to_string())?;
         println!("blob {}  {size} bytes", target.display());
     } else if let (Some(out), Body::Inline(data)) = (out, record.body()) {
-        crate::fs::write(out, data)?;
+        fs::write(out, data)?;
         println!("body {}", out.display());
     }
     client.close().await;

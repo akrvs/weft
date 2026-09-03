@@ -12,15 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 weft-core = { path = "../core" }
+weft-home = { path = "../home" }
 weft-net = { path = "../net" }
+clap.workspace = true
 iroh.workspace = true
 tokio.workspace = true
-argon2.workspace = true
-chacha20poly1305.workspace = true
-clap.workspace = true
-getrandom.workspace = true
-rpassword.workspace = true
-zeroize.workspace = true
 
 [lints]
 workspace = true

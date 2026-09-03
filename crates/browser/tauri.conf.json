@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "weft",
+  "identifier": "gr.akrvs.weft",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src weft: data:; connect-src ipc: http://ipc.localhost; form-action 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}

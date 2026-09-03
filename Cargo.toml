@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/net", "crates/relay", "crates/cli"]
+members = ["crates/core", "crates/home", "crates/net", "crates/relay", "crates/cli", "crates/browser"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,6 +20,11 @@ rpassword = "7"
 iroh = { version = "1.1", default-features = false, features = ["tls-ring"] }
 iroh-blobs = { version = "0.103", default-features = false, features = ["fs-store"] }
 redb = "4.2"
+tauri = { version = "2.11", default-features = false, features = ["wry", "unstable"] }
+tauri-build = { version = "2.6", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
+gtk = { version = "0.18", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "fs", "signal", "sync", "time"] }
 getrandom = "0.3"
 

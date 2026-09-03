@@ -13,22 +13,22 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M2-yellow)
+![status](https://img.shields.io/badge/status-M3-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-19%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
 ┌─[ TARGET ]──────────────────────────────────────────────────────┐
 │ codename   : weft                                               │
 │ category   : Application layer for a new internet               │
-│ stack      : Rust · Ed25519 · blake3 · canonical CBOR · iroh    │
-│ interfaces : weft-core · weft-net · weft CLI · weft-relay       │
+│ stack      : Rust · Ed25519 · blake3 · CBOR · iroh · Tauri 2    │
+│ interfaces : core · home · net · CLI · relay · browser          │
 │ flags      : user [sign here, fetch there, no shared server]    │
-│              root [revoke a device, watch its records die]      │
-│ status     : M2 — spec frozen · 4 crates · relay over QUIC      │
+│              root [one address bar for both webs]               │
+│ status     : M3 — spec frozen · 6 crates · browser first cut    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -47,11 +47,12 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Two milestones in: the record format, the identity model, one verification
-choke point, and a relay that moves records and blobs between machines over
-iroh QUIC. The relay is a cache with a contract. It stores what allowlisted
-authors push and serves it to anyone. It signs nothing and readers trust
-nothing they have not verified themselves.
+Three milestones in: the record format, the identity model, one
+verification choke point, a relay that moves records and blobs between
+machines over iroh QUIC, and a browser that opens signed records and the
+old web in the same window. The relay is a cache with a contract. The
+browser trusts nothing it has not verified itself and says so on every
+page.
 
 ## [ Recon ] — the machine
 
@@ -122,17 +123,32 @@ weft fetch <address> --out page.html        # record verified, blob hash checked
 Offline, with a copied `records/` directory, the same commands work
 without `--relay`.
 
-## [ Root Flag ] — revoke a device, watch its records die
+## [ Root Flag ] — one address bar for both webs
+
+```bash
+cd crates/browser/ui && npm ci && npm run build && cd -
+cargo run -p weft-browser -- <root>/home     # or an address, or https://…
+```
+
+The address bar takes a raw address, `author/name`, or an HTTPS URL and
+says which one it resolved. Signed pages are Markdown rendered natively:
+no scripts, no remote loads, images only by blob address. The provenance
+panel shows address, kind, author, signer, time, and who served it. An
+HTTPS page opens in a second web view under a banner that reads unsigned,
+and nothing below that line is trusted. Compose signs a page with a
+device key and pushes it to your relays.
+
+Revocation still wins everywhere:
 
 ```bash
 weft device revoke laptop
 weft manifest                               # seq 2, revoked list grows
+weft push
 ```
 
-Push the two new records. Every reader that asks the relay now gets the
-newer manifest, `verify` on the page answers `signer revoked`, and the
-relay itself refuses anything else that key signs. Revocation is
-retroactive in version 1 and enforced by the reader, not the host.
+Every reader that asks the relay gets the newer manifest, the browser and
+`verify` answer `signer revoked`, and the relay refuses anything else that
+key signs.
 
 ## [ Persistence ] — posture
 
@@ -146,15 +162,21 @@ retroactive in version 1 and enforced by the reader, not the host.
   message is canonical CBOR with unknown fields rejected.
 - The relay verifies before it stores, pulls blobs only for records it
   has already accepted, and never signs.
+- The browser chrome runs under a CSP with no inline script, no remote
+  origins, and images only from the local blob scheme. Raw HTML in a page
+  is dropped, links are limited to `weft:` and `https:`, and the HTTPS
+  web view is incognito and cannot navigate off `https:`.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
 
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · verify
+crates/home/         weft-home: encrypted keystore · record store · relay list
 crates/net/          weft-net: wire · client · relay handler · redb index
 crates/relay/        weft-relay: init · allow · serve
-crates/cli/          weft: keystore · store · home · net · commands
+crates/cli/          weft: commands over home and net
+crates/browser/      weft-browser: Tauri 2 app · Markdown renderer · TypeScript chrome
 docs/protocol.md     normative record spec
 docs/relay.md        wire protocol
 docs/design.md       the why
@@ -179,6 +201,6 @@ cargo deny check
 
 ## [ Next Ops ]
 
-M3: the browser. Tauri shell, tiered address bar, native record renderer,
-provenance panel, embedded web view for HTTPS with the unsigned label. See
-[`progress/`](progress/).
+M4: DNS bridge and HTTPS gateway. A TXT record binds a domain to a key,
+verified over DNS over HTTPS, and a gateway serves records to browsers that
+do not speak Weft. See [`progress/`](progress/).

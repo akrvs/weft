@@ -1,11 +1,6 @@
 #![forbid(unsafe_code)]
 
-mod fail;
-mod fs;
-mod home;
-mod keystore;
 mod net;
-mod store;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,9 +8,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use weft_core::{Address, Body, Draft, Manifest, Pointer, Record, verify};
 
-use crate::fail::{Result, fail};
-use crate::home::{Home, ROOT};
-use crate::store::Store;
+use weft_home::{Home, ROOT, Result, Store, fail, home, read_record};
 
 #[derive(Parser, Debug)]
 #[command(name = "weft", version, about = "Signed, content-addressed records you hold the keys to")]
@@ -132,7 +125,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Sign { file, kind, signer, refs } => sign(home, store, &file, kind, &signer, refs),
         Command::Point { name, target, signer } => point(home, store, name, target, &signer),
         Command::Verify { file, manifest } => verify_file(store, &file, manifest.as_deref()),
-        Command::Inspect { file } => inspect(&store::read_record(&file)?),
+        Command::Inspect { file } => inspect(&read_record(&file)?),
         Command::Resolve { author, name, relay: false } => resolve(store, author, &name),
         Command::Resolve { author, name, relay: true } => {
             net::resolve(home, store, author, &name).await
@@ -247,9 +240,9 @@ fn verify_file(
     file: &std::path::Path,
     manifest_path: Option<&std::path::Path>,
 ) -> Result<()> {
-    let record = store::read_record(file)?;
+    let record = read_record(file)?;
     let manifest = match manifest_path {
-        Some(p) => Some(Manifest::from_record(&store::read_record(p)?)?),
+        Some(p) => Some(Manifest::from_record(&read_record(p)?)?),
         None if record.self_signed() => None,
         None => Store::manifest(&store.all()?, record.author()),
     };
