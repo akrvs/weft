@@ -1,0 +1,134 @@
+{
+  "canonical": [
+    {
+      "hex": "00",
+      "why": "zero"
+    },
+    {
+      "hex": "17",
+      "why": "23 in one byte"
+    },
+    {
+      "hex": "1818",
+      "why": "24 needs two bytes"
+    },
+    {
+      "hex": "190100",
+      "why": "256"
+    },
+    {
+      "hex": "1a00010000",
+      "why": "65536"
+    },
+    {
+      "hex": "1b0000000100000000",
+      "why": "2^32"
+    },
+    {
+      "hex": "40",
+      "why": "empty bytes"
+    },
+    {
+      "hex": "60",
+      "why": "empty text"
+    },
+    {
+      "hex": "80",
+      "why": "empty array"
+    },
+    {
+      "hex": "a0",
+      "why": "empty map"
+    },
+    {
+      "hex": "a26161016162820203",
+      "why": "sorted keys, nested array"
+    },
+    {
+      "hex": "a361610161620262616103",
+      "why": "shorter keys sort first"
+    }
+  ],
+  "rejected": [
+    {
+      "hex": "1800",
+      "why": "non-minimal one byte"
+    },
+    {
+      "hex": "190001",
+      "why": "non-minimal two byte"
+    },
+    {
+      "hex": "1a00000001",
+      "why": "non-minimal four byte"
+    },
+    {
+      "hex": "1b0000000000000001",
+      "why": "non-minimal eight byte"
+    },
+    {
+      "hex": "5f4101ff",
+      "why": "indefinite length bytes"
+    },
+    {
+      "hex": "9fff",
+      "why": "indefinite length array"
+    },
+    {
+      "hex": "bfff",
+      "why": "indefinite length map"
+    },
+    {
+      "hex": "a2616201616102",
+      "why": "keys out of order"
+    },
+    {
+      "hex": "a2616101616102",
+      "why": "duplicate key"
+    },
+    {
+      "hex": "a262616103616101",
+      "why": "longer key before shorter"
+    },
+    {
+      "hex": "a10101",
+      "why": "integer key"
+    },
+    {
+      "hex": "20",
+      "why": "negative integer"
+    },
+    {
+      "hex": "f6",
+      "why": "null"
+    },
+    {
+      "hex": "f4",
+      "why": "false"
+    },
+    {
+      "hex": "fb3ff0000000000000",
+      "why": "float"
+    },
+    {
+      "hex": "c11a514b67b0",
+      "why": "tag"
+    },
+    {
+      "hex": "0000",
+      "why": "trailing bytes"
+    },
+    {
+      "hex": "61ff",
+      "why": "invalid utf-8"
+    },
+    {
+      "hex": "4201",
+      "why": "truncated bytes"
+    },
+    {
+      "hex": "8181818181818181818100",
+      "why": "nesting deeper than 8"
+    }
+  ]
+}

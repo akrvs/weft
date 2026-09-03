@@ -1,0 +1,4 @@
+/target
+/vectors/tmp
+*.weft
+.env

@@ -1,0 +1,24 @@
+{
+  "keys": [
+    {
+      "address": "agfiry65oqe7dfp5klns2pf2lvzmuzyjx4ozieq36n2iqanub5xvzrlui3gq",
+      "public": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "seed": "0101010101010101010101010101010101010101010101010101010101010101"
+    },
+    {
+      "address": "agats5yovb6rox2wunkgnq2mp3gmxdmksg2o4n5clx3a6w4pzgzzjf4wcgra",
+      "public": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "seed": "0202020202020202020202020202020202020202020202020202020202020202"
+    },
+    {
+      "address": "ahwuskggfdi4frxk5ebtreczsvqsswjhhjogh6jwg3aumffmq435d74cw2ka",
+      "public": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "seed": "0303030303030303030303030303030303030303030303030303030303030303"
+    },
+    {
+      "address": "ahfjhlaxaumha4owpob4p7yo72aqr2hmiuyfoxlxe2dzgm633k7hzg7r5jla",
+      "public": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+      "seed": "0404040404040404040404040404040404040404040404040404040404040404"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "invalid": [
+    {
+      "text": "agfiry65oqe7dfp5klns2pf2lvzmuzyjx4ozieq36n2iqanub5xvzrlui3ga",
+      "why": "checksum mismatch"
+    },
+    {
+      "text": "AGFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVZRLUI3GQ",
+      "why": "uppercase"
+    },
+    {
+      "text": "gfiry65oqe7dfp5klns2pf2lvzmuzyjx4ozieq36n2iqanub5xvzrlui3gq",
+      "why": "wrong length"
+    },
+    {
+      "text": "",
+      "why": "empty"
+    },
+    {
+      "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "unknown version or bad checksum"
+    }
+  ],
+  "valid": [
+    {
+      "kind": "key",
+      "payload": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "text": "agfiry65oqe7dfp5klns2pf2lvzmuzyjx4ozieq36n2iqanub5xvzrlui3gq"
+    },
+    {
+      "kind": "hash",
+      "payload": "907edfae0396f9bcc1bfc08d8a49617efd708d6714c7f3a1a860dbf704474bb7",
+      "text": "akih5x5oaolptpgbx7ai3csjmf7p24enm4kmp45bvbqnx5yei5f3okykdmkq"
+    }
+  ]
+}
