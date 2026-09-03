@@ -7,6 +7,8 @@ yanked = "deny"
 
 [licenses]
 version = 2
+private = { ignore = true }
+unused-allowed-license = "allow"
 allow = [
     "Apache-2.0",
     "MIT",
@@ -25,6 +27,7 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
