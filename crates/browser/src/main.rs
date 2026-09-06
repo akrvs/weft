@@ -6,12 +6,13 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Body, Draft, Manifest, Pointer, Revoke, verify};
+use weft_core::{Address, Body, Challenge, Draft, Manifest, Pointer, Proof, Revoke, login, verify};
 use weft_home::{Home, Store};
 use weft_resolve::{Links, Page, Resolver, Target};
 use zeroize::Zeroizing;
 
 const CHROME_HEIGHT: i32 = 88;
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct App {
     resolver: Resolver,
@@ -196,6 +197,75 @@ async fn publish(
     Ok(report)
 }
 
+#[derive(Serialize)]
+struct LoginPrompt {
+    service: String,
+    expires: u64,
+    nonce: String,
+}
+
+fn service_url(service: &str) -> Result<reqwest::Url> {
+    let url: reqwest::Url = format!("{service}/login").parse().map_err(|e| err(&e))?;
+    let loopback = url.host_str().is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "[::1]"));
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if loopback => Ok(url),
+        _ => Err("service must be https or loopback http".to_owned()),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn login_prompt(challenge: String) -> Result<LoginPrompt> {
+    let c = Challenge::from_text(&challenge).map_err(|e| err(&e))?;
+    service_url(&c.service)?;
+    let now = weft_home::now().map_err(|e| err(&e))?;
+    if now >= c.expires {
+        return Err("challenge expired".to_owned());
+    }
+    Ok(LoginPrompt { service: c.service, expires: c.expires, nonce: login::to_text(&c.nonce) })
+}
+
+#[tauri::command]
+async fn login(
+    app: State<'_, App>,
+    challenge: String,
+    device: String,
+    passphrase: String,
+) -> Result<String> {
+    let passphrase = Zeroizing::new(passphrase.into_bytes());
+    let c = Challenge::from_text(&challenge).map_err(|e| err(&e))?;
+    let url = service_url(&c.service)?;
+    let home = app.resolver.home();
+    let root = home.root().map_err(|e| err(&e))?;
+    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
+    let created = weft_home::now().map_err(|e| err(&e))?;
+    let record = c.draft(&root, &key.public(), created).sign(&key).map_err(|e| err(&e))?;
+    let records = app.resolver.store().all().map_err(|e| err(&e))?;
+    let manifest = Store::manifest_record(&records, &root);
+    verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())
+        .map_err(|e| err(&e))?;
+    let proof = Proof { login: record, manifest: manifest.cloned() };
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(LOGIN_TIMEOUT)
+        .build()
+        .map_err(|e| err(&e))?;
+    let response = client
+        .post(url)
+        .header("content-type", "text/plain")
+        .body(proof.to_text())
+        .send()
+        .await
+        .map_err(|e| err(&e))?;
+    let status = response.status();
+    if status.is_success() {
+        Ok(format!("logged in at {} as {}", c.service, root.address()))
+    } else {
+        Err(format!("{} answered {status}", c.service))
+    }
+}
+
 fn frame(chrome: &Webview) -> Result<()> {
     chrome
         .with_webview(|platform| {
@@ -298,7 +368,9 @@ fn main() {
             open_web,
             close_web,
             store_view,
-            revoke_grant
+            revoke_grant,
+            login_prompt,
+            login
         ])
         .setup(|app| {
             let window = tauri::window::WindowBuilder::new(app, "main")

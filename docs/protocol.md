@@ -147,14 +147,18 @@ holding a newer manifest must re-verify what it holds.
 | Pointer prev | 16 |
 | Name, label | 64 bytes |
 | Kinds per grant | 16 |
+| Service name | 253 bytes |
+| Proof | 65536 bytes |
 | CBOR depth | 8 |
 | CBOR items per container | 4096 |
 
 ## 9. Reserved kinds
 
-`manifest`, `pointer`, `grant`, `revoke`, and `receipt` are defined here.
-`page` and `file` are conventional for M1 and carry no extra rules. Later
-versions define `label` and `petname`.
+`manifest`, `pointer`, `grant`, `revoke`, and `receipt` are defined here
+and are reserved: they can never be granted. `login` is defined here, may
+be granted, and is never stored or relayed. `page` and `file` are
+conventional for M1 and carry no extra rules. Later versions define
+`label` and `petname`.
 
 ## 10. Grants
 
@@ -206,3 +210,40 @@ Root or device signed. A receipt only pays for records by its own author.
 What a relay charges and when it sweeps is the relay's contract, in
 `relay.md`. The voucher rail is an experiment: vouchers are bearer
 instruments with no privacy and a bank is a plain key the relay trusts.
+
+## 12. Login
+
+A service proves who a visitor is by having a device sign a challenge.
+There is no account and no password. Identity is the root key.
+
+A challenge is a canonical map:
+
+| Key | Type | Rule |
+|---|---|---|
+| `service` | text | the verifier's origin, 1 to 253 bytes of visible ASCII with no uppercase |
+| `nonce` | bytes(32) | fresh per challenge, single use |
+| `expires` | uint | seconds since the epoch |
+
+The response is a record with `kind = "login"`, `body` the challenge bytes
+verbatim, and `refs` empty. `expires` must be greater than the record's
+`created`. The record is signed by the root or by a device the manifest
+authorizes and is never stored or relayed.
+
+A proof carries the response and the manifest it needs, as a canonical map
+`login` bytes(record) and optional `manifest` bytes(record), at most 65536
+bytes. Challenges and proofs travel as lowercase base64url without padding
+where text is needed: in `weft:login?c=<challenge>` links, on the command
+line, and in form fields.
+
+The verifier, given its own origin and the current time:
+
+1. Decodes the proof and rejects unknown fields.
+2. If a manifest is present, requires `kind = "manifest"`, `author` equal
+   to the login's author, and a verifying root signature.
+3. Verifies the login record by section 7 against the manifest with the
+   highest `seq` among the one in the proof and any it holds or fetches.
+4. Requires `service` equal to its own origin and `now < expires`.
+5. Requires the nonce to be one it issued and not yet used.
+
+The login's `author` is the identity. A revoked device stops logging in as
+soon as the verifier sees the newer manifest.

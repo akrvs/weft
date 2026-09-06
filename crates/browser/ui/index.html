@@ -58,6 +58,21 @@
   <pre id="store-result"></pre>
   <button id="store-close" type="button">close</button>
 </dialog>
+<dialog id="login">
+  <h2>log in</h2>
+  <dl>
+    <dt>service</dt><dd id="login-service"></dd>
+    <dt>expires</dt><dd id="login-expires"></dd>
+    <dt>challenge</dt><dd id="login-nonce"></dd>
+  </dl>
+  <form id="login-form">
+    <input id="login-device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
+    <input id="login-passphrase" type="password" placeholder="passphrase">
+    <button type="submit">sign and log in</button>
+    <button id="login-cancel" type="button">cancel</button>
+  </form>
+  <pre id="login-result"></pre>
+</dialog>
 <script type="module" src="dist/main.js"></script>
 </body>
 </html>

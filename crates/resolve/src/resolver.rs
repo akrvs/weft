@@ -90,6 +90,33 @@ impl Resolver {
         Ok(None)
     }
 
+    pub async fn freshest_manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
+        let mut best = self.local_manifest(author)?;
+        let relays = self.home.relays()?;
+        if relays.is_empty() {
+            return Ok(best);
+        }
+        let client = self.client().await?;
+        for relay in relays {
+            let Ok(Ok(head)) =
+                timeout(RELAY_TIMEOUT, client.head(relay, *author, weft_core::pointer::MANIFEST))
+                    .await
+            else {
+                continue;
+            };
+            let Some(record) = head.manifest else { continue };
+            if record.author() != author || verify(&record, None).is_err() {
+                continue;
+            }
+            let manifest = Manifest::from_record(&record)?;
+            if best.as_ref().is_none_or(|b| manifest.seq > b.seq) {
+                self.store.put(&record)?;
+                best = Some(manifest);
+            }
+        }
+        Ok(best)
+    }
+
     pub async fn record(&self, address: Address) -> Result<(Record, String)> {
         if let Some(record) = self.store.all()?.into_iter().find(|r| r.address() == address) {
             return Ok((record, "local store".to_owned()));

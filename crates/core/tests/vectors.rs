@@ -116,3 +116,54 @@ fn check_records(v: &Value, manifest: &Manifest) {
         }
     }
 }
+
+#[test]
+fn login() {
+    use weft_core::{Challenge, Device, Proof};
+    let v = load("login");
+    check_records(&v, &manifest());
+    let c = &v["challenge"];
+    let challenge = Challenge::from_text(c["text"].as_str().unwrap()).unwrap();
+    assert_eq!(challenge.service, c["service"].as_str().unwrap());
+    assert_eq!(to_hex(&challenge.nonce), c["nonce"].as_str().unwrap());
+    assert_eq!(challenge.expires, c["expires"].as_u64().unwrap());
+    assert_eq!(challenge.to_text(), c["text"].as_str().unwrap());
+    for b in v["bad_challenges"].as_array().unwrap() {
+        assert!(Challenge::from_text(b["text"].as_str().unwrap()).is_err(), "{}", b["why"]);
+    }
+    for p in v["proofs"].as_array().unwrap() {
+        let name = p["name"].as_str().unwrap();
+        let proof = Proof::from_text(p["text"].as_str().unwrap()).unwrap();
+        assert_eq!(proof.to_text(), p["text"].as_str().unwrap(), "{name}");
+        let result = proof.verify(p["service"].as_str().unwrap(), p["now"].as_u64().unwrap(), None);
+        match p["error"].as_str() {
+            None => assert_eq!(
+                result.unwrap().author.address().to_string(),
+                p["author"].as_str().unwrap(),
+                "{name}"
+            ),
+            Some(e) => assert_eq!(result.unwrap_err().to_string(), e, "{name}"),
+        }
+    }
+    let good = v["proofs"].as_array().unwrap()[0].clone();
+    let proof = Proof::from_text(good["text"].as_str().unwrap()).unwrap();
+    let service = good["service"].as_str().unwrap();
+    let now = good["now"].as_u64().unwrap();
+    let mut newer = manifest();
+    newer.seq = 2;
+    newer.revoked.push(*proof.login.signer());
+    newer.revoked.sort_unstable();
+    newer.devices.retain(|d| &d.key != proof.login.signer());
+    assert!(proof.verify(service, now, Some(&newer)).is_err());
+    let older = Manifest {
+        seq: 0,
+        devices: vec![Device {
+            key: SecretKey::from_seed([9u8; 32]).public(),
+            label: "x".into(),
+            created: 0,
+            expires: None,
+        }],
+        ..manifest()
+    };
+    assert!(proof.verify(service, now, Some(&older)).is_ok());
+}

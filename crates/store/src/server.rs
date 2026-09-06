@@ -76,6 +76,9 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
         Request::Put { kind, body, refs } => {
             gate.put(app, &kind, body, refs).map(|address| Response::Put { address })
         }
+        Request::Login { challenge } => {
+            gate.login(app, &challenge).map(|proof| Response::Login { proof })
+        }
     };
     result.unwrap_or_else(|e| Response::Error { why: e.to_string() })
 }

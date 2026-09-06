@@ -63,9 +63,15 @@ function showPage(page: Page): void {
   }
 }
 
+const LOGIN = "weft:login?";
+
 async function go(input: string, remember = true): Promise<void> {
   const value = input.trim();
   if (!value) return;
+  if (value.startsWith(LOGIN)) {
+    await openLogin(new URLSearchParams(value.slice(LOGIN.length)).get("c") ?? "");
+    return;
+  }
   if (remember) trail.push(value);
   address.value = value;
   if (value.startsWith("https://")) {
@@ -207,6 +213,49 @@ revokeForm.addEventListener("submit", async (event) => {
     passphrase.value = "";
   }
 });
+
+type LoginPrompt = { service: string; expires: number; nonce: string };
+
+const loginDialog = el<HTMLDialogElement>("login");
+const loginForm = el<HTMLFormElement>("login-form");
+const loginResult = el("login-result");
+
+async function openLogin(challenge: string): Promise<void> {
+  loginResult.textContent = "";
+  loginForm.dataset.challenge = challenge;
+  try {
+    const prompt = await invoke<LoginPrompt>("login_prompt", { challenge });
+    el("login-service").textContent = prompt.service;
+    el("login-expires").textContent = new Date(prompt.expires * 1000).toISOString();
+    el("login-nonce").textContent = prompt.nonce;
+    loginForm.hidden = false;
+  } catch (e) {
+    el("login-service").textContent = "";
+    el("login-expires").textContent = "";
+    el("login-nonce").textContent = "";
+    loginForm.hidden = true;
+    loginResult.textContent = String(e);
+  }
+  loginDialog.showModal();
+}
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const passphrase = el<HTMLInputElement>("login-passphrase");
+  try {
+    loginResult.textContent = await invoke<string>("login", {
+      challenge: loginForm.dataset.challenge ?? "",
+      device: el<HTMLInputElement>("login-device").value,
+      passphrase: passphrase.value,
+    });
+    loginForm.hidden = true;
+  } catch (e) {
+    loginResult.textContent = String(e);
+  } finally {
+    passphrase.value = "";
+  }
+});
+el("login-cancel").addEventListener("click", () => loginDialog.close());
 
 void invoke<string | null>("initial").then((value) => {
   if (value) void go(value);

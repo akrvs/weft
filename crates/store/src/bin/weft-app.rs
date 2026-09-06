@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use weft_core::{Body, SecretKey};
+use weft_core::{Body, Challenge, SecretKey};
 use weft_home::{Home, home, keystore};
 use weft_store::{Client, Result, socket_path};
 
@@ -27,6 +27,7 @@ enum Command {
     Whoami,
     Read { kind: String },
     Write { kind: String, file: PathBuf },
+    Login { challenge: String },
 }
 
 fn default_key() -> PathBuf {
@@ -73,6 +74,11 @@ async fn run(socket: &Path, key: &Path, command: Command) -> Result<()> {
             let body = std::fs::read(&file)?;
             let mut client = Client::connect(socket, &open(key)?).await?;
             println!("{}", client.put(&kind, body, vec![]).await?);
+        }
+        Command::Login { challenge } => {
+            let challenge = Challenge::from_text(&challenge)?;
+            let mut client = Client::connect(socket, &open(key)?).await?;
+            println!("{}", client.login(&challenge).await?.to_text());
         }
     }
     Ok(())

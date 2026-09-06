@@ -1,6 +1,6 @@
 use crate::{
-    Address, Error, Grant, Manifest, Pointer, Receipt, Record, Result, Revoke, grant, manifest,
-    pointer, receipt,
+    Address, Challenge, Error, Grant, Manifest, Pointer, Receipt, Record, Result, Revoke, grant,
+    login, manifest, pointer, receipt,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +28,9 @@ pub fn verify(record: &Record, manifest: Option<&Manifest>) -> Result<Verified> 
         }
         receipt::KIND => {
             Receipt::from_record(record)?;
+        }
+        login::KIND => {
+            Challenge::from_record(record)?;
         }
         _ => {}
     }

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use weft_core::{Address, Grant, Manifest, Pointer, PublicKey, Record, Revoke, verify};
 
-use crate::fail::Result;
+use crate::fail::{Result, fail};
 use crate::fs;
 
 pub const EXT: &str = "weft";
@@ -18,6 +18,9 @@ impl Store {
     }
 
     pub fn put(&self, record: &Record) -> Result<PathBuf> {
+        if record.kind() == weft_core::login::KIND {
+            return fail("login records are never stored");
+        }
         let path = self.dir.join(format!("{}.{EXT}", record.address()));
         fs::write(&path, &record.to_bytes())?;
         Ok(path)
@@ -40,14 +43,18 @@ impl Store {
         Ok(out)
     }
 
-    pub fn manifest(records: &[Record], author: &PublicKey) -> Option<Manifest> {
+    pub fn manifest_record<'a>(records: &'a [Record], author: &PublicKey) -> Option<&'a Record> {
         records
             .iter()
             .filter(|r| r.author() == author && r.kind() == weft_core::manifest::KIND)
             .filter(|r| verify(r, None).is_ok())
-            .filter_map(|r| Manifest::from_record(r).ok().map(|m| (r.created(), m)))
-            .max_by_key(|(created, m)| (m.seq, *created))
-            .map(|(_, m)| m)
+            .filter_map(|r| Manifest::from_record(r).ok().map(|m| (r, m.seq)))
+            .max_by_key(|(r, seq)| (*seq, r.created()))
+            .map(|(r, _)| r)
+    }
+
+    pub fn manifest(records: &[Record], author: &PublicKey) -> Option<Manifest> {
+        Self::manifest_record(records, author).and_then(|r| Manifest::from_record(r).ok())
     }
 
     pub fn pointers<'a>(

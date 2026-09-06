@@ -17,6 +17,7 @@ tauri-build.workspace = true
 weft-core = { path = "../core" }
 weft-home = { path = "../home" }
 weft-resolve = { path = "../resolve" }
+reqwest.workspace = true
 serde.workspace = true
 tauri.workspace = true
 zeroize.workspace = true

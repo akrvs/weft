@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
 use weft_core::{
-    Access, Address, Body, Device, Draft, Grant, Manifest, Record, Revoke, SecretKey, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Record, Revoke, SecretKey,
+    verify,
 };
 use weft_home::{Home, Store};
 use weft_store::wire::{self, DOMAIN, Request, Response};
@@ -238,6 +239,31 @@ async fn unauthorized_device_cannot_write() {
     refused(c.put("note", b"x".to_vec(), vec![]).await, "not authorized");
 }
 
+#[tokio::test]
+async fn login_needs_a_write_grant_and_stores_nothing() {
+    let w = World::start("login", 2);
+    let challenge =
+        Challenge { service: "http://127.0.0.1:8080".into(), nonce: [9; 32], expires: u64::MAX };
+    let mut c = w.client().await;
+    refused(c.login(&challenge).await, "no active grant");
+    let read = w.grant(&["login"], Access::Read, None);
+    refused(c.login(&challenge).await, "no active grant");
+    w.revoke(read);
+    w.grant(&["login", "note"], Access::ReadWrite, None);
+    let before = w.store().all().unwrap().len();
+    let proof = c.login(&challenge).await.unwrap();
+    let login = proof.verify("http://127.0.0.1:8080", T0 + 5, None).unwrap();
+    assert_eq!(login.author, w.root.public());
+    assert_eq!(login.signer, w.device.public());
+    assert_eq!(login.challenge, challenge);
+    assert!(proof.verify("http://127.0.0.1:8081", T0 + 5, None).is_err());
+    assert_eq!(w.store().all().unwrap().len(), before);
+    refused(c.put("login", challenge.encode(), vec![]).await, "never stored");
+    assert!(c.list("login").await.unwrap().is_empty());
+    let bad = Challenge { service: "HTTP://X".into(), ..challenge };
+    refused(c.login(&bad).await, "service");
+}
+
 #[test]
 fn wire_rejects_malformed_frames() {
     use weft_core::cbor::Value;
@@ -291,6 +317,13 @@ fn wire_rejects_malformed_frames() {
                 ("refs", Value::Array(vec![Value::Uint(1)])),
             ]),
             "bad ref",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("login".into())),
+                ("challenge", Value::Bytes(vec![0; 1025])),
+            ]),
+            "challenge too large",
         ),
         (map(vec![("t", Value::Text("drop".into()))]), "unknown type"),
         (Value::Array(vec![]).encode(), "not a map"),

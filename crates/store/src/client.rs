@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use tokio::net::UnixStream;
-use weft_core::{Address, Record, SecretKey};
+use weft_core::{Address, Challenge, Proof, Record, SecretKey};
 
 use crate::wire::{self, DOMAIN, Request, Response};
 use crate::{Error, Result};
@@ -55,6 +55,13 @@ impl Client {
         match self.call(&Request::Put { kind: kind.to_owned(), body, refs }).await? {
             Response::Put { address } => Ok(address),
             _ => Err(Error::Wire("expected put")),
+        }
+    }
+
+    pub async fn login(&mut self, challenge: &Challenge) -> Result<Proof> {
+        match self.call(&Request::Login { challenge: challenge.encode() }).await? {
+            Response::Login { proof } => Ok(Proof::decode(&proof)?),
+            _ => Err(Error::Wire("expected login")),
         }
     }
 }

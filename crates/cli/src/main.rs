@@ -7,8 +7,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use weft_core::{
-    Access, Address, Body, Draft, Grant, Manifest, Pointer, Receipt, Record, Revoke, Voucher,
-    verify,
+    Access, Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, Receipt, Record,
+    Revoke, Voucher, verify,
 };
 
 use weft_home::{Home, ROOT, Result, Store, fail, home, read_record};
@@ -88,6 +88,30 @@ enum Command {
     Grant {
         #[command(subcommand)]
         command: GrantCommand,
+    },
+    Login {
+        #[command(subcommand)]
+        command: LoginCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LoginCommand {
+    Challenge {
+        #[arg(long)]
+        service: String,
+        #[arg(long, default_value_t = 300)]
+        ttl: u64,
+    },
+    Sign {
+        challenge: String,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
+    Verify {
+        proof: String,
+        #[arg(long)]
+        service: String,
     },
 }
 
@@ -196,7 +220,42 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Grant { command: GrantCommand::Revoke { grant, signer } } => {
             grant_revoke(home, store, grant, &signer)
         }
+        Command::Login { command: LoginCommand::Challenge { service, ttl } } => {
+            let mut nonce = [0u8; 32];
+            getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+            let expires = home::now()?.saturating_add(ttl);
+            let challenge = Challenge { service, nonce, expires };
+            challenge.check()?;
+            println!("{}", challenge.to_text());
+            Ok(())
+        }
+        Command::Login { command: LoginCommand::Sign { challenge, signer } } => {
+            login_sign(home, store, &challenge, &signer)
+        }
+        Command::Login { command: LoginCommand::Verify { proof, service } } => {
+            let proof = Proof::from_text(&proof)?;
+            let records = store.all()?;
+            let local = Store::manifest(&records, proof.login.author());
+            let login = proof.verify(&service, home::now()?, local.as_ref())?;
+            println!("{}", login.author.address());
+            println!("signer  {}", login.signer.address());
+            println!("expires {}", login.challenge.expires);
+            Ok(())
+        }
     }
+}
+
+fn login_sign(home: &Home, store: &Store, challenge: &str, signer: &str) -> Result<()> {
+    let challenge = Challenge::from_text(challenge)?;
+    let root = home.root()?;
+    let key = home.open(signer, &home::passphrase(false)?)?;
+    let record = challenge.draft(&root, &key.public(), home::now()?).sign(&key)?;
+    let records = store.all()?;
+    let manifest = Store::manifest_record(&records, &root);
+    verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())?;
+    let proof = Proof { login: record, manifest: manifest.cloned() };
+    println!("{}", proof.to_text());
+    Ok(())
 }
 
 fn sign_own(
@@ -486,6 +545,11 @@ fn inspect(record: &Record) -> Result<()> {
             for a in &r.records {
                 println!("pins    {a}");
             }
+        }
+        weft_core::login::KIND => {
+            let c = Challenge::from_record(record)?;
+            println!("service {}", c.service);
+            println!("expires {}", c.expires);
         }
         _ => {}
     }

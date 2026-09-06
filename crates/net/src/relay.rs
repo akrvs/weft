@@ -164,6 +164,9 @@ impl Relay {
         from: EndpointId,
         manifests: &HashMap<PublicKey, Manifest>,
     ) -> Result<u64> {
+        if record.kind() == weft_core::login::KIND {
+            return Err(Error::Refused("login records are never relayed".to_owned()));
+        }
         let manifest: Option<Manifest> = if record.self_signed() {
             None
         } else {

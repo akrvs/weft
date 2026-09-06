@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use weft_core::{
-    Address, Body, Draft, Grant, Manifest, PublicKey, Record, SecretKey, grant, verify,
+    Address, Body, Challenge, Draft, Grant, Manifest, Proof, PublicKey, Record, SecretKey, grant,
+    login, verify,
 };
 use weft_home::{Home, Store};
 
@@ -109,6 +110,16 @@ impl Gate {
         verify(&record, snap.manifest.as_ref())?;
         self.home.store().put(&record)?;
         Ok(record.address())
+    }
+
+    pub fn login(&self, app: &PublicKey, challenge: &[u8]) -> Result<Vec<u8>> {
+        let snap = self.snapshot()?;
+        self.allow(&snap, app, login::KIND, true)?;
+        let challenge = Challenge::decode(challenge)?;
+        let record = challenge.draft(&self.root, &self.key.public(), snap.now).sign(&self.key)?;
+        verify(&record, snap.manifest.as_ref())?;
+        let manifest = Store::manifest_record(&snap.records, &self.root).cloned();
+        Ok(Proof { login: record, manifest }.encode())
     }
 
     pub fn verify_auth(app: &PublicKey, nonce: &[u8; 32], sig: &[u8; 64]) -> Result<()> {

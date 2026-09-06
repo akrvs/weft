@@ -3,8 +3,8 @@
 use serde_json::{Value, json};
 use weft_core::cbor::Value as Cbor;
 use weft_core::{
-    Access, Address, Body, Device, Draft, Grant, Manifest, Pointer, Receipt, Record, Revoke,
-    SecretKey, Voucher, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Proof, Receipt,
+    Record, Revoke, SecretKey, Voucher, verify,
 };
 
 fn hex(b: &[u8]) -> String {
@@ -331,6 +331,99 @@ fn main() {
                     ("until".into(), Cbor::Uint(at + 1)),
                     ("voucher".into(), Cbor::Bytes(voucher.encode())),
                 ]), vec![by_device.address()]), None),
+            ]
+        }),
+    );
+
+    let service = "http://127.0.0.1:8080";
+    let challenge = Challenge { service: service.into(), nonce: [7u8; 32], expires: at + 300 };
+    let login = |c: &Challenge, signer: &SecretKey, created: u64| {
+        c.draft(&root.public(), &signer.public(), created).sign(signer).unwrap()
+    };
+    let raw_login = |body: Cbor, refs: Vec<Address>| {
+        Draft {
+            author: root.public(),
+            signer: root.public(),
+            kind: "login".into(),
+            created: at,
+            refs,
+            body: Body::Inline(body.encode()),
+        }
+        .sign(root)
+        .unwrap()
+    };
+    let login_map = |service: &str, nonce: &[u8], extra: Option<(&str, Cbor)>| {
+        let mut m = vec![
+            ("expires".to_owned(), Cbor::Uint(at + 300)),
+            ("nonce".to_owned(), Cbor::Bytes(nonce.to_vec())),
+            ("service".to_owned(), Cbor::Text(service.into())),
+        ];
+        if let Some((k, v)) = extra {
+            m.push((k.to_owned(), v));
+        }
+        Cbor::Map(m)
+    };
+    let by_device = login(&challenge, device, at);
+    let by_root = login(&challenge, root, at);
+    let proof = |login: &Record, manifest: Option<&Record>| Proof {
+        login: login.clone(),
+        manifest: manifest.cloned(),
+    };
+    let other_manifest = Manifest { seq: 1, prev: None, devices: vec![], revoked: vec![] }
+        .draft(&keys[3].public(), at)
+        .sign(&keys[3])
+        .unwrap();
+    let proof_entry = |name: &str, p: &Proof, service: &str, now: u64| {
+        let result = p.verify(service, now, None);
+        json!({
+            "name": name,
+            "text": p.to_text(),
+            "service": service,
+            "now": now,
+            "author": result.as_ref().ok().map(|l| l.author.address().to_string()),
+            "error": result.err().map(|e| e.to_string()),
+        })
+    };
+    write(
+        "login",
+        &json!({
+            "challenge": {
+                "text": challenge.to_text(),
+                "service": service,
+                "nonce": hex(&challenge.nonce),
+                "expires": challenge.expires,
+            },
+            "bad_challenges": [
+                { "text": "", "why": "empty" },
+                { "text": "!!!!", "why": "not base64url" },
+                { "text": weft_core::login::to_text(&login_map("HTTP://x", &[7u8; 32], None).encode()), "why": "uppercase service" },
+                { "text": weft_core::login::to_text(&login_map("", &[7u8; 32], None).encode()), "why": "empty service" },
+                { "text": weft_core::login::to_text(&login_map("http://x", &[7u8; 31], None).encode()), "why": "short nonce" },
+                { "text": weft_core::login::to_text(&login_map("http://x", &[7u8; 32], Some(("return", Cbor::Text("/".into())))).encode()), "why": "unknown field" },
+            ],
+            "records": [
+                entry("login by device with manifest", &by_device, Some(&manifest)),
+                entry("login by root without manifest", &by_root, None),
+                entry("login by device without manifest", &by_device, None),
+                entry("login by revoked key", &login(&challenge, stranger, at), Some(&manifest)),
+                entry("login expires before created", &login(&challenge, root, at + 300), None),
+                entry("login with refs", &raw_login(login_map(service, &[7u8; 32], None), vec![manifest_record.address()]), None),
+                entry("login uppercase service", &raw_login(login_map("HTTP://x", &[7u8; 32], None), vec![]), None),
+                entry("login service with space", &raw_login(login_map("http://x y", &[7u8; 32], None), vec![]), None),
+                entry("login service too long", &raw_login(login_map(&"a".repeat(254), &[7u8; 32], None), vec![]), None),
+                entry("login short nonce", &raw_login(login_map(service, &[7u8; 31], None), vec![]), None),
+                entry("login unknown field", &raw_login(login_map(service, &[7u8; 32], Some(("return", Cbor::Text("/".into())))), vec![]), None),
+            ],
+            "proofs": [
+                proof_entry("device proof with manifest", &proof(&by_device, Some(&manifest_record)), service, at + 1),
+                proof_entry("root proof without manifest", &proof(&by_root, None), service, at + 1),
+                proof_entry("root proof with manifest", &proof(&by_root, Some(&manifest_record)), service, at + 1),
+                proof_entry("device proof without manifest", &proof(&by_device, None), service, at + 1),
+                proof_entry("device proof with another author's manifest", &proof(&by_device, Some(&other_manifest)), service, at + 1),
+                proof_entry("device proof with a page as manifest", &proof(&by_device, Some(&page(root, at))), service, at + 1),
+                proof_entry("wrong service", &proof(&by_device, Some(&manifest_record)), "http://127.0.0.1:8081", at + 1),
+                proof_entry("expired", &proof(&by_device, Some(&manifest_record)), service, at + 300),
+                proof_entry("not a login record", &proof(&page(root, at), None), service, at + 1),
             ]
         }),
     );

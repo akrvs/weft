@@ -16,6 +16,7 @@ weft-home = { path = "../home" }
 weft-resolve = { path = "../resolve" }
 bytes.workspace = true
 clap.workspace = true
+getrandom.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true

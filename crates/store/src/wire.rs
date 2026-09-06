@@ -7,6 +7,7 @@ use crate::{Error, Result};
 
 pub const DOMAIN: &[u8] = b"weft/store/1";
 pub const MAX_FRAME: usize = 1 << 20;
+pub const MAX_CHALLENGE: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -14,6 +15,7 @@ pub enum Request {
     List { kind: String },
     Get { address: Address },
     Put { kind: String, body: Vec<u8>, refs: Vec<Address> },
+    Login { challenge: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub enum Response {
     List { addresses: Vec<Address> },
     Get { record: Vec<u8> },
     Put { address: Address },
+    Login { proof: Vec<u8> },
     Error { why: String },
 }
 
@@ -81,6 +84,9 @@ impl Request {
                 ("refs".to_owned(), addresses(refs)),
                 ("t".to_owned(), text("put")),
             ],
+            Self::Login { challenge } => {
+                vec![("challenge".to_owned(), bytes(challenge)), ("t".to_owned(), text("login"))]
+            }
         };
         Value::Map(m).encode()
     }
@@ -119,6 +125,16 @@ impl Request {
                 }
                 Ok(Self::Put { kind: kind(&m)?, body: body.to_vec(), refs })
             }
+            "login" => {
+                cbor::only(&m, &["challenge", "t"])?;
+                let challenge = cbor::field(&m, "challenge")?
+                    .as_bytes()
+                    .ok_or(CoreError::Field("challenge"))?;
+                if challenge.len() > MAX_CHALLENGE {
+                    return Err(Error::Core(CoreError::Limit("challenge")));
+                }
+                Ok(Self::Login { challenge: challenge.to_vec() })
+            }
             _ => Err(Error::Wire("unknown request type")),
         }
     }
@@ -139,6 +155,9 @@ impl Response {
             }
             Self::Put { address } => {
                 vec![("address".to_owned(), bytes(address.bytes())), ("t".to_owned(), text("put"))]
+            }
+            Self::Login { proof } => {
+                vec![("proof".to_owned(), bytes(proof)), ("t".to_owned(), text("login"))]
             }
             Self::Error { why } => {
                 vec![("t".to_owned(), text("error")), ("why".to_owned(), text(why))]
@@ -173,6 +192,15 @@ impl Response {
                 Ok(Self::Put {
                     address: Address::hash(cbor::bytes32(cbor::field(&m, "address")?, "address")?),
                 })
+            }
+            "login" => {
+                cbor::only(&m, &["proof", "t"])?;
+                let proof =
+                    cbor::field(&m, "proof")?.as_bytes().ok_or(CoreError::Field("proof"))?;
+                if proof.len() > weft_core::login::MAX_PROOF {
+                    return Err(Error::Core(CoreError::Limit("proof")));
+                }
+                Ok(Self::Login { proof: proof.to_vec() })
             }
             "error" => {
                 cbor::only(&m, &["t", "why"])?;

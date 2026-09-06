@@ -105,3 +105,33 @@ fn wrong_passphrase_is_rejected() {
     let (success, _) = a.run(&["init"]);
     assert!(!success);
 }
+
+#[test]
+fn login_round_trip_on_the_command_line() {
+    let a = Machine::new("login");
+    a.ok(&["init"]);
+    a.ok(&["device", "add", "phone"]);
+    a.ok(&["manifest"]);
+    let root =
+        a.ok(&["whoami"]).lines().next().unwrap().split_whitespace().next().unwrap().to_owned();
+    let challenge = a.ok(&["login", "challenge", "--service", "http://127.0.0.1:8080"]);
+    let challenge = challenge.trim();
+    let proof = a.ok(&["login", "sign", challenge, "--as", "phone"]);
+    let proof = proof.trim();
+    let out = a.ok(&["login", "verify", proof, "--service", "http://127.0.0.1:8080"]);
+    assert!(out.starts_with(&root), "{out}");
+    let (ok, text) = a.run(&["login", "verify", proof, "--service", "http://127.0.0.1:8081"]);
+    assert!(!ok && text.contains("service mismatch"), "{text}");
+    let (ok, text) = a.run(&["login", "challenge", "--service", "HTTP://x"]);
+    assert!(!ok && text.contains("service"), "{text}");
+    let (ok, text) = a.run(&["login", "sign", "!!!", "--as", "phone"]);
+    assert!(!ok, "{text}");
+    let page = a.home.join("c.txt");
+    std::fs::write(&page, "x").unwrap();
+    let (ok, text) = a.run(&["sign", page.to_str().unwrap(), "--kind", "login"]);
+    assert!(!ok && text.contains("never stored"), "{text}");
+    let b = Machine::new("login-b");
+    b.ok(&["init"]);
+    let out = b.ok(&["login", "verify", proof, "--service", "http://127.0.0.1:8080"]);
+    assert!(out.starts_with(&root), "the proof carries its manifest: {out}");
+}

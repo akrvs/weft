@@ -17,13 +17,22 @@ struct Cli {
     home: Option<PathBuf>,
     #[arg(long, env = "WEFT_GATEWAY_BIND", default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
+    #[arg(long, env = "WEFT_GATEWAY_ORIGIN")]
+    origin: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = Home::new(cli.home.unwrap_or_else(Home::default_dir));
-    let resolver = Arc::new(Resolver::new(home));
+    let origin = cli.origin.unwrap_or_else(|| format!("http://{}", cli.bind));
+    let gateway = match weft_gateway::Gateway::new(Resolver::new(home), origin.clone()) {
+        Ok(g) => Arc::new(g),
+        Err(e) => {
+            eprintln!("error: origin {origin}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let listener = match TcpListener::bind(cli.bind).await {
         Ok(l) => l,
         Err(e) => {
@@ -32,7 +41,8 @@ async fn main() -> ExitCode {
         }
     };
     println!("listening on http://{}", cli.bind);
-    match weft_gateway::serve(listener, resolver).await {
+    println!("login at {origin}/login");
+    match weft_gateway::serve(listener, gateway).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

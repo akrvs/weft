@@ -44,6 +44,7 @@ answered with `error` and the connection is closed.
 | `list` | `kind`: text | a valid kind name |
 | `get` | `address`: bytes(32) | |
 | `put` | `kind`: text; `body`: bytes; `refs`: array of bytes(32) | body at most 65536 bytes, at most 1024 refs |
+| `login` | `challenge`: bytes | a canonical challenge from `protocol.md` section 12, at most 1024 bytes |
 
 ## Responses
 
@@ -52,6 +53,7 @@ answered with `error` and the connection is closed.
 | `list` | `addresses`: array of bytes(32), sorted |
 | `get` | `record`: bytes |
 | `put` | `address`: bytes(32) |
+| `login` | `proof`: bytes |
 | `error` | `why`: text |
 
 ## Rules
@@ -69,3 +71,8 @@ answered with `error` and the connection is closed.
   manifest does not authorize cannot write.
 - Reserved kinds `manifest`, `pointer`, `grant`, and `revoke` are never
   readable or writable through a grant.
+- `login` needs a grant covering kind `login` with write access. The store
+  signs the challenge as its root with its device key, verifies the record
+  against the local manifest, and returns a proof holding the record and
+  the manifest record. Nothing is stored; a `put` of kind `login` is
+  refused.

@@ -87,6 +87,10 @@ async fn publish_fetch_and_resolve_across_two_clients() {
         pointer.draft(&root.public(), &device.public(), 2_001).sign(&device).unwrap();
     let foreign = page(&stranger, &stranger, b"nope", 2_000);
     let orphan = page(&root, &key(4), b"unknown device", 2_000);
+    let login = weft_core::Challenge { service: "http://x".into(), nonce: [1; 32], expires: 3_000 }
+        .draft(&root.public(), &root.public(), 2_000)
+        .sign(&root)
+        .unwrap();
 
     let outcome = a
         .put(
@@ -97,14 +101,16 @@ async fn publish_fetch_and_resolve_across_two_clients() {
                 pointer_record.clone(),
                 foreign,
                 orphan,
+                login,
             ],
         )
         .await
         .unwrap();
     assert_eq!(outcome.stored.len(), 3, "{outcome:?}");
-    assert_eq!(outcome.rejected.len(), 2, "{outcome:?}");
+    assert_eq!(outcome.rejected.len(), 3, "{outcome:?}");
     assert!(outcome.rejected.iter().any(|(i, why)| *i == 3 && why.contains("payment required")));
     assert!(outcome.rejected.iter().any(|(i, why)| *i == 4 && why.contains("not authorized")));
+    assert!(outcome.rejected.iter().any(|(i, why)| *i == 5 && why.contains("never relayed")));
 
     let fetched = b.get(net.addr.clone(), page_record.address()).await.unwrap().unwrap();
     assert_eq!(fetched, page_record);
