@@ -343,6 +343,7 @@ fn blob(app: &App, path: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let home = Home::new(std::env::var_os("WEFT_HOME").map_or_else(Home::default_dir, Into::into));
     let app = App { resolver: Resolver::new(home), web: Mutex::new(None) };
     let result = tauri::Builder::default()

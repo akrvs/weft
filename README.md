@@ -17,7 +17,7 @@
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-57%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-66%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -32,7 +32,8 @@
 │              bridge [same page in Firefox and in Weft]          │
 │              store [revoke a grant and watch access end]        │
 │              pay [a few cents to host a stranger's page]        │
-│ status     : M7 — spec frozen · 10 crates · paid pins · sweep   │
+│              login [no account, no password, one signature]     │
+│ status     : M7 — spec frozen · 10 crates · paid pins · login   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,14 +52,16 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Six milestones in: the record format, the identity model, one
+Seven milestones in: the record format, the identity model, one
 verification choke point, a relay that moves records and blobs between
 machines over iroh QUIC, a browser that opens signed records and the old
 web in the same window, a DNS registry that binds a domain to a key, a
 gateway that serves signed records to any browser, a store daemon that
-lets applications in only through revocable grants, and a relay that pins
-a stranger's page for a few cents and sweeps it when the pin runs out. The
-relay is a cache with a contract. The browser trusts nothing it has not verified itself and
+lets applications in only through revocable grants, a login that is a
+signature over a challenge instead of an account, and a relay that pins a
+stranger's page for a few cents and sweeps it when the pin runs out. The
+relay is a cache with a contract. The browser trusts nothing it has not
+verified itself and
 says so on every page.
 
 ## [ Recon ] — the machine
@@ -222,6 +225,23 @@ minute it sweeps pins that have passed, along with heads and manifests
 nothing holds up any more. Allowlisted authors are never swept, a voucher
 spends once, and the relay still never signs. The rail is a faucet, on
 purpose: the seam for real money is one function.
+## [ Login Flag ] — no account, no password, one signature
+
+```bash
+weft-gateway --bind 127.0.0.1:8080          # GET /login issues a challenge and waits
+weft login sign <challenge> --as laptop     # a proof: the signed challenge plus your manifest
+weft-browser 'weft:login?c=<challenge>'     # or the consent dialog signs and posts it for you
+weft grant add <app> --kind login --write --as laptop
+weft-app login <challenge>                  # an application logs you in through the daemon
+```
+
+A challenge names the service origin, a fresh nonce, and an expiry. The
+response is a record of kind `login` whose body is the challenge verbatim,
+signed by a device the manifest authorizes, carried with that manifest so
+any verifier can check it offline. The gateway matches the origin, the
+nonce, and the clock, prefers the newest manifest it can find, opens a
+session for the root address, and shows it. Nothing is stored anywhere; a
+`login` record is refused by every store and every relay.
 
 ## [ Persistence ] — posture
 
@@ -243,9 +263,13 @@ purpose: the seam for real money is one function.
 - One grammar for names. A domain binds through exactly one `_weft` TXT
   record holding a key address; two records, a hash address, or a
   malformed value fail closed.
-- The gateway answers GET and HEAD only, caps paths at 1 KiB and headers
-  at 16 KiB, sends a CSP with no script and no remote origin, types blobs
-  by magic bytes and serves everything else as an attachment.
+- The gateway answers GET and HEAD only, plus POST on `/login` and
+  `/logout`, caps paths at 1 KiB, headers at 16 KiB, and login bodies at
+  88 KiB, sends a CSP with no script and no remote origin, types blobs by
+  magic bytes and serves everything else as an attachment.
+- Logins bind the service origin and a single use nonce with a five minute
+  life, session cookies are `HttpOnly` and `SameSite=Strict`, and the
+  tables behind them are capped and swept.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
@@ -255,16 +279,16 @@ purpose: the seam for real money is one function.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
 crates/home/         weft-home: encrypted keystore · record store · relay list
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
 crates/store/        weft-store: store wire · gate · daemon · client · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
-crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers
-crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts
-crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome · store view
+crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers · login sessions
+crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
+crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome · store view · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -290,9 +314,7 @@ cargo deny check
 
 ## [ Next Ops ]
 
-M6: challenge response login. A site asks for a signature over a nonce,
-the browser signs with a device key, and there is no account and no
-password anywhere. The store handshake is the first draft of it. After
-that the roadmap is open: a real payment rail behind the voucher seam,
-blob collection on sweep, the browser behind the store daemon. See
-[`progress/`](progress/).
+The roadmap is complete. What follows is open: a real payment rail behind
+the voucher seam, blob collection on sweep, the browser behind the store
+daemon, `weft:` as a registered URL handler so a site's login link opens
+the browser, persistent gateway sessions. See [`progress/`](progress/).

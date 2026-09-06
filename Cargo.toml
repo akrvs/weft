@@ -47,6 +47,7 @@ http-body-util = { version = "0.1", default-features = false }
 bytes = { version = "1.12", default-features = false }
 percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

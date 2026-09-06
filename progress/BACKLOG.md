@@ -27,3 +27,7 @@ scheduled.
 | Sponsorship | M7 | A receipt pays only for its author's records |
 | Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
 | Relay reloads config | M2, M7 | `allow`, `banks`, and `rate` are read only at start |
+| Gateway session persistence | M6 | Sessions and pending challenges live in memory; a restart logs everyone out |
+| `weft:` URL handler registration | M6 | A challenge page in Firefox cannot launch weft-browser; the link is pasted by hand |
+| Login through the store daemon in the browser | M6 | The browser signs logins from the keystore; the daemon path is for applications only |
+| Login policy at the gateway | M6 | Any valid identity logs in; there is no allowlist or first seen record |
