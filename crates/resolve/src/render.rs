@@ -1,15 +1,26 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use weft_core::Address;
 
 pub const MAX_INPUT: usize = weft_core::record::MAX_INLINE;
 
-pub fn render(markdown: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Links {
+    pub record: &'static str,
+    pub blob: &'static str,
+}
+
+impl Links {
+    pub const WEFT: Self = Self { record: "weft:", blob: "weft:" };
+}
+
+pub fn render(markdown: &str, links: &Links) -> String {
     let text = if markdown.len() > MAX_INPUT { "" } else { markdown };
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut out = String::with_capacity(text.len().saturating_mul(2));
     let mut suppress = 0u32;
     for event in Parser::new_ext(text, options) {
         match event {
-            Event::Start(tag) => start(&mut out, &tag, &mut suppress),
+            Event::Start(tag) => start(&mut out, &tag, &mut suppress, links),
             Event::End(tag) => end(&mut out, tag, &mut suppress),
             Event::Text(t) | Event::Code(t) if suppress > 0 => {
                 let _ = t;
@@ -34,7 +45,7 @@ pub fn render(markdown: &str) -> String {
     out
 }
 
-fn start(out: &mut String, tag: &Tag<'_>, suppress: &mut u32) {
+fn start(out: &mut String, tag: &Tag<'_>, suppress: &mut u32, links: &Links) {
     match tag {
         Tag::Paragraph => out.push_str("<p>"),
         Tag::Heading { level, .. } => {
@@ -66,19 +77,29 @@ fn start(out: &mut String, tag: &Tag<'_>, suppress: &mut u32) {
         Tag::TableRow => out.push_str("<tr>"),
         Tag::TableCell => out.push_str("<td>"),
         Tag::Link { dest_url, link_type, .. } => {
-            if matches!(link_type, LinkType::Email) || !safe_link(dest_url) {
+            if matches!(link_type, LinkType::Email) {
                 *suppress = suppress.saturating_add(1);
                 return;
             }
-            out.push_str("<a href=\"");
-            escape(out, dest_url);
-            out.push_str("\" rel=\"noopener\">");
+            if let Some(address) = record_address(dest_url) {
+                out.push_str("<a href=\"");
+                out.push_str(links.record);
+                out.push_str(&address.to_string());
+                out.push_str("\">");
+            } else if safe_web(dest_url) {
+                out.push_str("<a href=\"");
+                escape(out, dest_url);
+                out.push_str("\" rel=\"noopener\">");
+            } else {
+                *suppress = suppress.saturating_add(1);
+            }
         }
         Tag::Image { dest_url, title, .. } => {
             *suppress = suppress.saturating_add(1);
-            if safe_image(dest_url) {
+            if let Some(address) = record_address(dest_url) {
                 out.push_str("<img src=\"");
-                escape(out, dest_url);
+                out.push_str(links.blob);
+                out.push_str(&address.to_string());
                 out.push_str("\" alt=\"");
                 escape(out, title);
                 out.push_str("\">");
@@ -145,20 +166,15 @@ fn heading(level: HeadingLevel) -> &'static str {
     }
 }
 
-fn address_after(url: &str, scheme: &str) -> bool {
-    url.strip_prefix(scheme).is_some_and(|rest| rest.parse::<weft_core::Address>().is_ok())
+fn record_address(url: &str) -> Option<Address> {
+    url.strip_prefix("weft:").and_then(|rest| rest.parse().ok())
 }
 
-fn safe_link(url: &str) -> bool {
-    address_after(url, "weft:")
-        || url.starts_with("https://") && !url.contains(|c: char| c.is_control())
+fn safe_web(url: &str) -> bool {
+    url.starts_with("https://") && !url.contains(|c: char| c.is_control())
 }
 
-fn safe_image(url: &str) -> bool {
-    address_after(url, "weft:")
-}
-
-fn escape(out: &mut String, text: &str) {
+pub fn escape(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -174,7 +190,11 @@ fn escape(out: &mut String, text: &str) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::render;
+    use super::Links;
+
+    fn render(markdown: &str) -> String {
+        super::render(markdown, &Links::WEFT)
+    }
 
     #[test]
     fn basic_markdown() {
@@ -203,7 +223,7 @@ mod tests {
         let addr = weft_core::Address::of(b"x").to_string();
         assert_eq!(
             render(&format!("[a](weft:{addr})")),
-            format!("<p><a href=\"weft:{addr}\" rel=\"noopener\">a</a></p>")
+            format!("<p><a href=\"weft:{addr}\">a</a></p>")
         );
         assert_eq!(
             render("[a](https://example.org/p?q=1)"),
@@ -228,6 +248,20 @@ mod tests {
         );
         assert_eq!(render("![alt](https://evil.example/x.png)"), "<p></p>");
         assert_eq!(render("![alt](data:image/png;base64,AAAA)"), "<p></p>");
+    }
+
+    #[test]
+    fn links_follow_the_map() {
+        let gateway = Links { record: "/", blob: "/blob/" };
+        let addr = weft_core::Address::of(b"x").to_string();
+        assert_eq!(
+            super::render(&format!("[a](weft:{addr}) ![i](weft:{addr})"), &gateway),
+            format!("<p><a href=\"/{addr}\">a</a> <img src=\"/blob/{addr}\" alt=\"\"></p>")
+        );
+        assert_eq!(
+            super::render("[a](https://example.org/)", &gateway),
+            "<p><a href=\"https://example.org/\" rel=\"noopener\">a</a></p>"
+        );
     }
 
     #[test]

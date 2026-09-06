@@ -59,6 +59,9 @@ enum Command {
         #[arg(long)]
         relay: bool,
     },
+    Dns {
+        domain: String,
+    },
     Relay {
         #[command(subcommand)]
         command: RelayCommand,
@@ -130,6 +133,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Resolve { author, name, relay: true } => {
             net::resolve(home, store, author, &name).await
         }
+        Command::Dns { domain } => dns(&domain).await,
         Command::Relay { command: RelayCommand::Add { id } } => home.add_relay(id),
         Command::Relay { command: RelayCommand::List } => {
             for id in home.relays()? {
@@ -287,6 +291,21 @@ fn inspect(record: &Record) -> Result<()> {
         _ => {}
     }
     println!("sig     {}", record.check_signature().map_or("invalid", |()| "valid"));
+    Ok(())
+}
+
+async fn dns(domain: &str) -> Result<()> {
+    let Ok(weft_resolve::Target::Domain { host, .. }) = domain.parse() else {
+        return fail("not a domain");
+    };
+    let doh = std::env::var(weft_resolve::resolver::DOH_ENV).ok();
+    let dns = weft_resolve::Dns::new(doh.as_deref()).map_err(|e| e.to_string())?;
+    let binding = dns.lookup(&host).await.map_err(|e| e.to_string())?;
+    println!(
+        "{}  dnssec {}",
+        binding.author.address(),
+        if binding.authentic { "verified" } else { "unverified" }
+    );
     Ok(())
 }
 

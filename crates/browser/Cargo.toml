@@ -16,11 +16,9 @@ tauri-build.workspace = true
 [dependencies]
 weft-core = { path = "../core" }
 weft-home = { path = "../home" }
-weft-net = { path = "../net" }
-pulldown-cmark.workspace = true
+weft-resolve = { path = "../resolve" }
 serde.workspace = true
 tauri.workspace = true
-tokio.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

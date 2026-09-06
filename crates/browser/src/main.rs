@@ -1,41 +1,21 @@
 #![forbid(unsafe_code)]
 
-mod render;
-
 use std::fmt::Write;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use tokio::sync::OnceCell;
-use tokio::time::timeout;
-use weft_core::{Address, Body, Draft, Manifest, Pointer, PublicKey, Record, verify};
+use weft_core::{Address, Body, Draft, Manifest, Pointer, verify};
 use weft_home::{Home, Store};
-use weft_net::Client;
+use weft_resolve::{Links, Page, Resolver, Target};
 use zeroize::Zeroizing;
 
 const CHROME_HEIGHT: i32 = 88;
-const RELAY_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct App {
-    home: Home,
-    store: Store,
-    client: OnceCell<Client>,
+    resolver: Resolver,
     web: Mutex<Option<Webview>>,
-}
-
-#[derive(Serialize)]
-struct Page {
-    address: String,
-    kind: String,
-    author: String,
-    signer: String,
-    created: u64,
-    source: String,
-    html: String,
-    blob: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -51,131 +31,10 @@ fn err(e: &impl ToString) -> String {
     e.to_string()
 }
 
-impl App {
-    async fn client(&self) -> Result<&Client> {
-        self.client.get_or_try_init(|| async { Client::bind().await.map_err(|e| err(&e)) }).await
-    }
-
-    fn local_manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
-        Ok(Store::manifest(&self.store.all().map_err(|e| err(&e))?, author))
-    }
-
-    async fn manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
-        if let Some(m) = self.local_manifest(author)? {
-            return Ok(Some(m));
-        }
-        let client = self.client().await?;
-        for relay in self.home.relays().map_err(|e| err(&e))? {
-            let head = client
-                .head(relay, *author, weft_core::pointer::MANIFEST)
-                .await
-                .map_err(|e| err(&e))?;
-            if let Some(record) = head.manifest {
-                verify(&record, None).map_err(|e| err(&e))?;
-                self.store.put(&record).map_err(|e| err(&e))?;
-                return Ok(Some(Manifest::from_record(&record).map_err(|e| err(&e))?));
-            }
-        }
-        Ok(None)
-    }
-
-    async fn record(&self, address: Address) -> Result<(Record, String)> {
-        if let Some(record) =
-            self.store.all().map_err(|e| err(&e))?.into_iter().find(|r| r.address() == address)
-        {
-            return Ok((record, "local store".to_owned()));
-        }
-        let client = self.client().await?;
-        for relay in self.home.relays().map_err(|e| err(&e))? {
-            if let Ok(Ok(Some(record))) = timeout(RELAY_TIMEOUT, client.get(relay, address)).await {
-                return Ok((record, relay.to_string()));
-            }
-        }
-        Err(format!("{address} not found locally or on any relay"))
-    }
-
-    async fn head(&self, author: PublicKey, name: &str) -> Result<Address> {
-        let manifest = self.manifest(&author).await?;
-        let client = self.client().await?;
-        let mut best: Option<(Record, Pointer)> = None;
-        for relay in self.home.relays().map_err(|e| err(&e))? {
-            let Ok(Ok(head)) = timeout(RELAY_TIMEOUT, client.head(relay, author, name)).await
-            else {
-                continue;
-            };
-            let Some(record) = head.pointer else { continue };
-            if record.author() != &author || verify(&record, manifest.as_ref()).is_err() {
-                continue;
-            }
-            let pointer = Pointer::from_record(&record).map_err(|e| err(&e))?;
-            if pointer.name != name {
-                continue;
-            }
-            if best
-                .as_ref()
-                .is_none_or(|(r, p)| Pointer::compare((&record, &pointer), (r, p)).is_gt())
-            {
-                best = Some((record, pointer));
-            }
-        }
-        let records = self.store.all().map_err(|e| err(&e))?;
-        let local = Store::pointers(&records, &author, name, manifest.as_ref());
-        if let Some((r, p)) = Store::head(&local)
-            && best.as_ref().is_none_or(|(br, bp)| Pointer::compare((r, p), (br, bp)).is_gt())
-        {
-            best = Some((r.clone(), p.clone()));
-        }
-        let (record, pointer) = best.ok_or_else(|| format!("no valid pointer named {name}"))?;
-        self.store.put(&record).map_err(|e| err(&e))?;
-        Ok(pointer.target)
-    }
-
-    async fn open(&self, address: Address) -> Result<Page> {
-        let (record, source) = self.record(address).await?;
-        let manifest =
-            if record.self_signed() { None } else { self.manifest(record.author()).await? };
-        let verified = verify(&record, manifest.as_ref()).map_err(|e| err(&e))?;
-        self.store.put(&record).map_err(|e| err(&e))?;
-        let (html, blob) = match record.body() {
-            Body::Inline(bytes) if record.kind() == "page" => {
-                (render::render(core::str::from_utf8(bytes).map_err(|e| err(&e))?), None)
-            }
-            Body::Inline(bytes) => {
-                let mut s = String::from("<pre>");
-                s.push_str(&render::render(&format!(
-                    "```\n{}\n```",
-                    String::from_utf8_lossy(bytes)
-                )));
-                s.push_str("</pre>");
-                (s, None)
-            }
-            Body::Blob(blob) => (String::new(), Some(blob.to_string())),
-        };
-        Ok(Page {
-            address: verified.address.to_string(),
-            kind: verified.kind,
-            author: verified.author.to_string(),
-            signer: verified.signer.to_string(),
-            created: record.created(),
-            source,
-            html,
-            blob,
-        })
-    }
-}
-
 #[tauri::command]
 async fn resolve(app: State<'_, App>, input: String) -> Result<Page> {
-    let input = input.trim();
-    let address = match input.split_once('/') {
-        Some((author, name)) => {
-            let author: Address = author.parse().map_err(|e| err(&e))?;
-            app.head(PublicKey::from_bytes(author.bytes()).map_err(|e| err(&e))?, name.trim())
-                .await?
-        }
-        None => input.parse().map_err(|e| err(&e))?,
-    };
-    app.open(address).await
+    let target: Target = input.parse().map_err(|e| err(&e))?;
+    app.resolver.resolve(target, &Links::WEFT).await.map_err(|e| err(&e))
 }
 
 #[tauri::command]
@@ -186,16 +45,16 @@ fn initial() -> Option<String> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn identity(app: State<'_, App>) -> Result<Identity> {
+    let home = app.resolver.home();
     Ok(Identity {
-        root: app.home.root().map_err(|e| err(&e))?.address().to_string(),
-        devices: app
-            .home
+        root: home.root().map_err(|e| err(&e))?.address().to_string(),
+        devices: home
             .devices()
             .map_err(|e| err(&e))?
             .into_iter()
             .map(|d| format!("{}  {}", d.public.address(), d.label))
             .collect(),
-        relays: app.home.relays().map_err(|e| err(&e))?.iter().map(ToString::to_string).collect(),
+        relays: home.relays().map_err(|e| err(&e))?.iter().map(ToString::to_string).collect(),
     })
 }
 
@@ -208,8 +67,10 @@ async fn publish(
     passphrase: String,
 ) -> Result<String> {
     let passphrase = Zeroizing::new(passphrase.into_bytes());
-    let root = app.home.root().map_err(|e| err(&e))?;
-    let key = app.home.open(&device, &passphrase).map_err(|e| err(&e))?;
+    let home = app.resolver.home();
+    let store = app.resolver.store();
+    let root = home.root().map_err(|e| err(&e))?;
+    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
     let created = weft_home::now().map_err(|e| err(&e))?;
     let page = Draft {
         author: root,
@@ -223,7 +84,7 @@ async fn publish(
     .map_err(|e| err(&e))?;
     let mut records = vec![page.clone()];
     if !name.trim().is_empty() {
-        let all = app.store.all().map_err(|e| err(&e))?;
+        let all = store.all().map_err(|e| err(&e))?;
         let manifest = Store::manifest(&all, &root);
         let existing = Store::pointers(&all, &root, name.trim(), manifest.as_ref());
         let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
@@ -235,16 +96,15 @@ async fn publish(
         records.push(record);
     }
     for r in &records {
-        app.store.put(r).map_err(|e| err(&e))?;
+        store.put(r).map_err(|e| err(&e))?;
     }
-    let relays = app.home.relays().map_err(|e| err(&e))?;
+    let relays = home.relays().map_err(|e| err(&e))?;
     let mut report = format!("{}\n", page.address());
     if !relays.is_empty() {
-        let client = app.client().await?;
+        let client = app.resolver.client().await.map_err(|e| err(&e))?;
         let mut push = records.clone();
-        if let Some(m) = app.local_manifest(&root)? {
-            let manifest_record = app
-                .store
+        if let Some(m) = app.resolver.local_manifest(&root).map_err(|e| err(&e))? {
+            let manifest_record = store
                 .all()
                 .map_err(|e| err(&e))?
                 .into_iter()
@@ -342,14 +202,12 @@ fn close_web(app: State<'_, App>, window: Window) -> Result<()> {
 
 fn blob(app: &App, path: &str) -> Option<Vec<u8>> {
     let address: Address = path.rsplit('/').next()?.parse().ok()?;
-    let data = std::fs::read(app.home.blob_path(&address)).ok()?;
-    (Address::of(&data) == address).then_some(data)
+    app.resolver.blob(&address)
 }
 
 fn main() {
     let home = Home::new(std::env::var_os("WEFT_HOME").map_or_else(Home::default_dir, Into::into));
-    let store = home.store();
-    let app = App { home, store, client: OnceCell::new(), web: Mutex::new(None) };
+    let app = App { resolver: Resolver::new(home), web: Mutex::new(None) };
     let result = tauri::Builder::default()
         .manage(app)
         .register_uri_scheme_protocol("weft", |ctx, request| {

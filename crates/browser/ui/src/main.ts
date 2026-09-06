@@ -7,6 +7,7 @@ type Page = {
   signer: string;
   created: number;
   source: string;
+  name: string;
   html: string;
   blob: string | null;
 };
@@ -48,6 +49,7 @@ function showPage(page: Page): void {
   el("p-signer").textContent = page.signer;
   el("p-created").textContent = new Date(page.created * 1000).toISOString();
   el("p-source").textContent = page.source;
+  el("p-name").textContent = page.name;
   setStatus(page.author === page.signer ? "signed by root key" : "signed by an authorized device", true);
   unsigned.hidden = true;
   if (page.blob) {

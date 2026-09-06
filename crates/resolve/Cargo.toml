@@ -1,22 +1,19 @@
 [package]
-name = "weft"
-description = "Command line for Weft identities and records"
+name = "weft-resolve"
+description = "Names to records: targets, the DNS registry, pointer resolution, page rendering"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "weft"
-path = "src/main.rs"
-
 [dependencies]
 weft-core = { path = "../core" }
 weft-home = { path = "../home" }
 weft-net = { path = "../net" }
-weft-resolve = { path = "../resolve" }
-clap.workspace = true
-iroh.workspace = true
+futures-util.workspace = true
+hickory-resolver.workspace = true
+pulldown-cmark.workspace = true
+serde.workspace = true
 tokio.workspace = true
 
 [lints]
