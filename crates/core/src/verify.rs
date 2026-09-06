@@ -1,4 +1,6 @@
-use crate::{Address, Error, Manifest, Pointer, Record, Result, manifest, pointer};
+use crate::{
+    Address, Error, Grant, Manifest, Pointer, Record, Result, Revoke, grant, manifest, pointer,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verified {
@@ -16,6 +18,12 @@ pub fn verify(record: &Record, manifest: Option<&Manifest>) -> Result<Verified> 
         }
         pointer::KIND => {
             Pointer::from_record(record)?;
+        }
+        grant::KIND => {
+            Grant::from_record(record)?;
+        }
+        grant::REVOKE => {
+            Revoke::from_record(record)?;
         }
         _ => {}
     }

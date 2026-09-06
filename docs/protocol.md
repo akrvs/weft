@@ -146,11 +146,33 @@ holding a newer manifest must re-verify what it holds.
 | Devices, revoked keys | 256 each |
 | Pointer prev | 16 |
 | Name, label | 64 bytes |
+| Kinds per grant | 16 |
 | CBOR depth | 8 |
 | CBOR items per container | 4096 |
 
 ## 9. Reserved kinds
 
-`manifest` and `pointer` are defined here. `page` and `file` are
-conventional for M1 and carry no extra rules. Later versions define
-`grant`, `receipt`, `label`, and `petname`.
+`manifest`, `pointer`, `grant`, and `revoke` are defined here. `page` and
+`file` are conventional for M1 and carry no extra rules. Later versions
+define `receipt`, `label`, and `petname`.
+
+## 10. Grants
+
+`kind = "grant"`. Lets an application key read or write kinds in the
+author's store. `body` is a canonical map:
+
+| Key | Type | Rule |
+|---|---|---|
+| `app` | bytes(32) | application public key |
+| `kinds` | array of text | 1 to 16 kind names, sorted, unique, none reserved |
+| `access` | uint | 1 read, 2 write, 3 both |
+| `expires` | uint, optional | greater than the record's `created` |
+
+`kind = "revoke"`. Ends a grant. `body` is a canonical map with one key,
+`grant` bytes(32), the address of the grant record, which is also listed
+in `refs`.
+
+A grant is active at time `t` when its record verifies, `expires` is
+absent or greater than `t`, and no verifying revoke by the same author
+cites it. A store enforces grants at the moment of each request. Records
+of a reserved kind are never readable or writable through a grant.

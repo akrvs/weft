@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use weft_core::{Address, Body, Draft, Manifest, Pointer, Record, verify};
+use weft_core::{Access, Address, Body, Draft, Grant, Manifest, Pointer, Record, Revoke, verify};
 
 use weft_home::{Home, ROOT, Result, Store, fail, home, read_record};
 
@@ -74,12 +74,39 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    Grant {
+        #[command(subcommand)]
+        command: GrantCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 enum RelayCommand {
     Add { id: iroh::EndpointId },
     List,
+}
+
+#[derive(Subcommand, Debug)]
+enum GrantCommand {
+    Add {
+        app: Address,
+        #[arg(long = "kind", required = true)]
+        kinds: Vec<String>,
+        #[arg(long)]
+        read: bool,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        expires: Option<u64>,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
+    List,
+    Revoke {
+        grant: Address,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -143,7 +170,80 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         }
         Command::Push { addresses } => net::push(home, store, &addresses).await,
         Command::Fetch { address, out } => net::fetch(home, store, address, out.as_deref()).await,
+        Command::Grant {
+            command: GrantCommand::Add { app, kinds, read, write, expires, signer },
+        } => grant_add(home, store, app, kinds, (read, write), expires, &signer),
+        Command::Grant { command: GrantCommand::List } => grant_list(home, store),
+        Command::Grant { command: GrantCommand::Revoke { grant, signer } } => {
+            grant_revoke(home, store, grant, &signer)
+        }
     }
+}
+
+fn sign_own(
+    home: &Home,
+    store: &Store,
+    signer: &str,
+    draft: impl FnOnce(&weft_core::PublicKey, &weft_core::PublicKey, u64) -> Draft,
+) -> Result<Record> {
+    let root = home.root()?;
+    let key = home.open(signer, &home::passphrase(false)?)?;
+    let record = draft(&root, &key.public(), home::now()?).sign(&key)?;
+    let manifest = Store::manifest(&store.all()?, &root);
+    verify(&record, manifest.as_ref())?;
+    store.put(&record)?;
+    Ok(record)
+}
+
+fn grant_add(
+    home: &Home,
+    store: &Store,
+    app: Address,
+    mut kinds: Vec<String>,
+    (read, write): (bool, bool),
+    expires: Option<u64>,
+    signer: &str,
+) -> Result<()> {
+    let access = match (read, write) {
+        (true, false) => Access::Read,
+        (false, true) => Access::Write,
+        (true, true) => Access::ReadWrite,
+        (false, false) => return fail("pass --read, --write, or both"),
+    };
+    kinds.sort_unstable();
+    kinds.dedup();
+    let grant =
+        Grant { app: weft_core::PublicKey::from_bytes(app.bytes())?, kinds, access, expires };
+    grant.check()?;
+    let record =
+        sign_own(home, store, signer, |root, signer, created| grant.draft(root, signer, created))?;
+    println!("{}", record.address());
+    Ok(())
+}
+
+fn grant_list(home: &Home, store: &Store) -> Result<()> {
+    let root = home.root()?;
+    let records = store.all()?;
+    let manifest = Store::manifest(&records, &root);
+    for (record, grant) in Store::grants(&records, &root, manifest.as_ref(), home::now()?) {
+        let expiry = grant.expires.map_or(String::new(), |e| format!("  expires {e}"));
+        println!(
+            "{}  app {}  {}  {}{expiry}",
+            record.address(),
+            grant.app.address(),
+            grant.access,
+            grant.kinds.join(",")
+        );
+    }
+    Ok(())
+}
+
+fn grant_revoke(home: &Home, store: &Store, grant: Address, signer: &str) -> Result<()> {
+    let revoke = Revoke { grant };
+    let record =
+        sign_own(home, store, signer, |root, signer, created| revoke.draft(root, signer, created))?;
+    println!("{}", record.address());
+    Ok(())
 }
 
 fn init(home: &Home) -> Result<()> {
@@ -287,6 +387,18 @@ fn inspect(record: &Record) -> Result<()> {
             println!("name    {}", p.name);
             println!("seq     {}", p.seq);
             println!("target  {}", p.target);
+        }
+        weft_core::grant::KIND => {
+            let g = Grant::from_record(record)?;
+            println!("app     {}", g.app.address());
+            println!("access  {}", g.access);
+            println!("kinds   {}", g.kinds.join(","));
+            if let Some(e) = g.expires {
+                println!("expires {e}");
+            }
+        }
+        weft_core::grant::REVOKE => {
+            println!("grant   {}", Revoke::from_record(record)?.grant);
         }
         _ => {}
     }

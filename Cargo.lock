@@ -6349,6 +6349,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "weft-store"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "getrandom 0.3.4",
+ "tokio",
+ "weft-core",
+ "weft-home",
+]
+
+[[package]]
 name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Body, Draft, Manifest, Pointer, verify};
+use weft_core::{Address, Body, Draft, Manifest, Pointer, Revoke, verify};
 use weft_home::{Home, Store};
 use weft_resolve::{Links, Page, Resolver, Target};
 use zeroize::Zeroizing;
@@ -56,6 +56,73 @@ fn identity(app: State<'_, App>) -> Result<Identity> {
             .collect(),
         relays: home.relays().map_err(|e| err(&e))?.iter().map(ToString::to_string).collect(),
     })
+}
+
+#[derive(Serialize)]
+struct GrantView {
+    address: String,
+    app: String,
+    access: String,
+    kinds: String,
+    expires: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct StoreView {
+    kinds: Vec<(String, usize)>,
+    grants: Vec<GrantView>,
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn store_view(app: State<'_, App>) -> Result<StoreView> {
+    let root = app.resolver.home().root().map_err(|e| err(&e))?;
+    let records = app.resolver.store().all().map_err(|e| err(&e))?;
+    let manifest = Store::manifest(&records, &root);
+    let mut kinds: Vec<(String, usize)> = Vec::new();
+    for r in records.iter().filter(|r| r.author() == &root && verify(r, manifest.as_ref()).is_ok())
+    {
+        match kinds.iter_mut().find(|(k, _)| k == r.kind()) {
+            Some((_, n)) => *n += 1,
+            None => kinds.push((r.kind().to_owned(), 1)),
+        }
+    }
+    kinds.sort_unstable();
+    let now = weft_home::now().map_err(|e| err(&e))?;
+    let grants = Store::grants(&records, &root, manifest.as_ref(), now)
+        .into_iter()
+        .map(|(r, g)| GrantView {
+            address: r.address().to_string(),
+            app: g.app.address().to_string(),
+            access: g.access.to_string(),
+            kinds: g.kinds.join(","),
+            expires: g.expires,
+        })
+        .collect();
+    Ok(StoreView { kinds, grants })
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn revoke_grant(
+    app: State<'_, App>,
+    grant: String,
+    device: String,
+    passphrase: String,
+) -> Result<String> {
+    let passphrase = Zeroizing::new(passphrase.into_bytes());
+    let home = app.resolver.home();
+    let store = app.resolver.store();
+    let root = home.root().map_err(|e| err(&e))?;
+    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
+    let grant: Address = grant.parse().map_err(|e| err(&e))?;
+    let created = weft_home::now().map_err(|e| err(&e))?;
+    let record =
+        Revoke { grant }.draft(&root, &key.public(), created).sign(&key).map_err(|e| err(&e))?;
+    let manifest = Store::manifest(&store.all().map_err(|e| err(&e))?, &root);
+    verify(&record, manifest.as_ref()).map_err(|e| err(&e))?;
+    store.put(&record).map_err(|e| err(&e))?;
+    Ok(record.address().to_string())
 }
 
 #[tauri::command]
@@ -224,7 +291,14 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            resolve, initial, identity, publish, open_web, close_web
+            resolve,
+            initial,
+            identity,
+            publish,
+            open_web,
+            close_web,
+            store_view,
+            revoke_grant
         ])
         .setup(|app| {
             let window = tauri::window::WindowBuilder::new(app, "main")

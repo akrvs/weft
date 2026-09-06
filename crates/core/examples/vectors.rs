@@ -1,7 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::missing_panics_doc)]
 
 use serde_json::{Value, json};
-use weft_core::{Address, Body, Device, Draft, Manifest, Pointer, Record, SecretKey, verify};
+use weft_core::cbor::Value as Cbor;
+use weft_core::{
+    Access, Address, Body, Device, Draft, Grant, Manifest, Pointer, Record, Revoke, SecretKey,
+    verify,
+};
 
 fn hex(b: &[u8]) -> String {
     data_encoding::HEXLOWER.encode(b)
@@ -185,6 +189,88 @@ fn main() {
                 entry("pointer manifest by root", &mpointer_root, None),
                 entry("pointer manifest by device", &mpointer_device, Some(&manifest)),
                 entry("tampered signature", &tampered, Some(&manifest)),
+            ]
+        }),
+    );
+
+    let app = &keys[3];
+    let grant = |kinds: &[&str], access: Access, expires: Option<u64>| Grant {
+        app: app.public(),
+        kinds: kinds.iter().map(|k| (*k).to_owned()).collect(),
+        access,
+        expires,
+    };
+    let at = 1_760_000_010;
+    let good = grant(&["note", "page"], Access::ReadWrite, Some(1_770_000_000));
+    let good_record = good.draft(&root.public(), &device.public(), at).sign(device).unwrap();
+    let raw_grant = |body: Cbor, signer: &SecretKey| {
+        Draft {
+            author: root.public(),
+            signer: signer.public(),
+            kind: "grant".into(),
+            created: at,
+            refs: vec![],
+            body: Body::Inline(body.encode()),
+        }
+        .sign(signer)
+        .unwrap()
+    };
+    let bad_access = raw_grant(
+        Cbor::Map(vec![
+            ("access".into(), Cbor::Uint(4)),
+            ("app".into(), Cbor::Bytes(app.public().bytes().to_vec())),
+            ("kinds".into(), Cbor::Array(vec![Cbor::Text("note".into())])),
+        ]),
+        root,
+    );
+    let unknown_field = raw_grant(
+        Cbor::Map(vec![
+            ("access".into(), Cbor::Uint(1)),
+            ("app".into(), Cbor::Bytes(app.public().bytes().to_vec())),
+            ("kinds".into(), Cbor::Array(vec![Cbor::Text("note".into())])),
+            ("scope".into(), Cbor::Text("all".into())),
+        ]),
+        root,
+    );
+    let too_many: Vec<String> = (0..17).map(|i| format!("k{i:02}")).collect();
+    let too_many =
+        Grant { app: app.public(), kinds: too_many, access: Access::Read, expires: None };
+    let signed = |g: &Grant, signer: &SecretKey| {
+        g.draft(&root.public(), &signer.public(), at).sign(signer).unwrap()
+    };
+    let revoke = Revoke { grant: good_record.address() };
+    let revoke_record =
+        revoke.draft(&root.public(), &device.public(), at + 1).sign(device).unwrap();
+    let revoke_no_ref = Draft {
+        author: root.public(),
+        signer: root.public(),
+        kind: "revoke".into(),
+        created: at + 1,
+        refs: vec![],
+        body: Body::Inline(revoke.encode()),
+    }
+    .sign(root)
+    .unwrap();
+    write(
+        "grants",
+        &json!({
+            "records": [
+                entry("grant read write by device", &good_record, Some(&manifest)),
+                entry("grant read by root", &signed(&grant(&["note"], Access::Read, None), root), None),
+                entry("grant by device without manifest", &good_record, None),
+                entry("grant by revoked key", &signed(&good, stranger), Some(&manifest)),
+                entry("grant expires before created", &signed(&grant(&["note"], Access::Read, Some(at)), root), None),
+                entry("grant reserved kind", &signed(&grant(&["pointer"], Access::Read, None), root), None),
+                entry("grant invalid kind", &signed(&grant(&["Note"], Access::Read, None), root), None),
+                entry("grant unsorted kinds", &signed(&grant(&["page", "note"], Access::Read, None), root), None),
+                entry("grant duplicate kinds", &signed(&grant(&["note", "note"], Access::Read, None), root), None),
+                entry("grant no kinds", &signed(&grant(&[], Access::Read, None), root), None),
+                entry("grant too many kinds", &signed(&too_many, root), None),
+                entry("grant bad access", &bad_access, None),
+                entry("grant unknown field", &unknown_field, None),
+                entry("revoke by device", &revoke_record, Some(&manifest)),
+                entry("revoke by revoked key", &revoke.draft(&root.public(), &stranger.public(), at + 1).sign(stranger).unwrap(), Some(&manifest)),
+                entry("revoke without ref", &revoke_no_ref, None),
             ]
         }),
     );

@@ -151,7 +151,7 @@ impl Record {
     }
 }
 
-fn valid_kind(kind: &str) -> bool {
+pub fn valid_kind(kind: &str) -> bool {
     !kind.is_empty()
         && kind.len() <= MAX_KIND
         && kind.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')

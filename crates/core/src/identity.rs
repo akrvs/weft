@@ -24,7 +24,11 @@ impl SecretKey {
     }
 
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
-        self.0.sign(&framed(message)).to_bytes()
+        self.sign_in(DOMAIN, message)
+    }
+
+    pub fn sign_in(&self, domain: &[u8], message: &[u8]) -> [u8; 64] {
+        self.0.sign(&framed(domain, message)).to_bytes()
     }
 }
 
@@ -55,8 +59,12 @@ impl PublicKey {
     }
 
     pub fn verify(&self, message: &[u8], sig: &[u8; 64]) -> Result<()> {
+        self.verify_in(DOMAIN, message, sig)
+    }
+
+    pub fn verify_in(&self, domain: &[u8], message: &[u8], sig: &[u8; 64]) -> Result<()> {
         let sig = Signature::from_bytes(sig);
-        self.0.verify_strict(&framed(message), &sig).map_err(|_| Error::Signature)
+        self.0.verify_strict(&framed(domain, message), &sig).map_err(|_| Error::Signature)
     }
 }
 
@@ -84,9 +92,9 @@ impl fmt::Display for PublicKey {
     }
 }
 
-fn framed(message: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(DOMAIN.len().saturating_add(1).saturating_add(message.len()));
-    out.extend_from_slice(DOMAIN);
+fn framed(domain: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(domain.len().saturating_add(1).saturating_add(message.len()));
+    out.extend_from_slice(domain);
     out.push(0);
     out.extend_from_slice(message);
     out

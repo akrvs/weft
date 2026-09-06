@@ -3,6 +3,7 @@
 pub mod address;
 pub mod cbor;
 pub mod error;
+pub mod grant;
 pub mod identity;
 pub mod manifest;
 pub mod pointer;
@@ -11,6 +12,7 @@ pub mod verify;
 
 pub use address::Address;
 pub use error::Error;
+pub use grant::{Access, Grant, Revoke};
 pub use identity::{PublicKey, SecretKey};
 pub use manifest::{Device, Manifest};
 pub use pointer::Pointer;

@@ -138,6 +138,76 @@ el("identity").addEventListener("click", async () => {
 });
 el("who-close").addEventListener("click", () => who.close());
 
+type GrantView = { address: string; app: string; access: string; kinds: string; expires: number | null };
+type StoreView = { kinds: [string, number][]; grants: GrantView[] };
+
+const storeDialog = el<HTMLDialogElement>("store");
+const revokeForm = el<HTMLFormElement>("revoke");
+const storeResult = el("store-result");
+
+function row(cells: (string | HTMLElement)[]): HTMLTableRowElement {
+  const tr = document.createElement("tr");
+  for (const cell of cells) {
+    const td = document.createElement("td");
+    td.append(cell);
+    tr.append(td);
+  }
+  return tr;
+}
+
+async function showStore(): Promise<void> {
+  const kinds = el<HTMLTableElement>("store-kinds");
+  const grants = el<HTMLTableElement>("store-grants");
+  kinds.replaceChildren();
+  grants.replaceChildren();
+  revokeForm.hidden = true;
+  try {
+    const view = await invoke<StoreView>("store_view");
+    for (const [kind, count] of view.kinds) kinds.append(row([kind, String(count)]));
+    if (view.kinds.length === 0) kinds.append(row(["no records yet"]));
+    for (const g of view.grants) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "revoke";
+      button.addEventListener("click", () => {
+        revokeForm.dataset.grant = g.address;
+        el("revoke-target").textContent = g.address;
+        revokeForm.hidden = false;
+      });
+      const expires = g.expires === null ? "" : new Date(g.expires * 1000).toISOString();
+      grants.append(row([g.app, g.access, g.kinds, expires, button]));
+    }
+    if (view.grants.length === 0) grants.append(row(["no active grants"]));
+  } catch (e) {
+    storeResult.textContent = String(e);
+  }
+}
+
+el("store-toggle").addEventListener("click", async () => {
+  storeResult.textContent = "";
+  await showStore();
+  storeDialog.showModal();
+});
+el("store-close").addEventListener("click", () => storeDialog.close());
+
+revokeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const passphrase = el<HTMLInputElement>("revoke-passphrase");
+  try {
+    const address = await invoke<string>("revoke_grant", {
+      grant: revokeForm.dataset.grant ?? "",
+      device: el<HTMLInputElement>("revoke-device").value,
+      passphrase: passphrase.value,
+    });
+    storeResult.textContent = `revoked, record ${address}`;
+    await showStore();
+  } catch (e) {
+    storeResult.textContent = String(e);
+  } finally {
+    passphrase.value = "";
+  }
+});
+
 void invoke<string | null>("initial").then((value) => {
   if (value) void go(value);
 });

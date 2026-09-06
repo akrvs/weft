@@ -1,0 +1,25 @@
+[package]
+name = "weft-store"
+description = "The personal store as a gate: grants checked on every request over a local socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "weft-store"
+path = "src/bin/weft-store.rs"
+
+[[bin]]
+name = "weft-app"
+path = "src/bin/weft-app.rs"
+
+[dependencies]
+weft-core = { path = "../core" }
+weft-home = { path = "../home" }
+clap.workspace = true
+getrandom.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

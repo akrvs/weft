@@ -24,4 +24,11 @@ button { font: inherit; padding: 6px 12px; border: 1px solid #8886; border-radiu
 #publish input { font: inherit; padding: 6px 10px; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
 #publish-result { font-size: 12px; white-space: pre-wrap; }
 dialog { border: 1px solid #8886; border-radius: 8px; background: Canvas; color: CanvasText; }
+#store { min-width: 60ch; font-family: ui-monospace, monospace; font-size: 12px; }
+#store h2 { font-size: 13px; margin: 8px 0 4px; }
+#store table { border-collapse: collapse; margin-bottom: 8px; }
+#store td { border: 1px solid #8886; padding: 4px 8px; word-break: break-all; }
+#revoke { display: grid; gap: 8px; margin: 8px 0; }
+#revoke input { font: inherit; padding: 6px 10px; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
+#store-result { white-space: pre-wrap; }
 [hidden] { display: none !important; }

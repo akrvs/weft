@@ -13,6 +13,7 @@
     <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="address, author/name, domain, or https://">
   </form>
   <button id="compose-toggle" type="button">compose</button>
+  <button id="store-toggle" type="button">store</button>
   <button id="identity" type="button">identity</button>
 </header>
 <section id="provenance" hidden>
@@ -42,6 +43,20 @@
 <dialog id="who">
   <pre id="who-text"></pre>
   <button id="who-close" type="button">close</button>
+</dialog>
+<dialog id="store">
+  <h2>your store</h2>
+  <table id="store-kinds"></table>
+  <h2>active grants</h2>
+  <table id="store-grants"></table>
+  <form id="revoke" hidden>
+    <span id="revoke-target"></span>
+    <input id="revoke-device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
+    <input id="revoke-passphrase" type="password" placeholder="passphrase">
+    <button type="submit">revoke</button>
+  </form>
+  <pre id="store-result"></pre>
+  <button id="store-close" type="button">close</button>
 </dialog>
 <script type="module" src="dist/main.js"></script>
 </body>

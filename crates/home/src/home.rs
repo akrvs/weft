@@ -221,7 +221,11 @@ pub fn now() -> Result<u64> {
 }
 
 pub fn passphrase(confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
-    if let Ok(p) = std::env::var("WEFT_PASSPHRASE") {
+    passphrase_from("WEFT_PASSPHRASE", confirm)
+}
+
+pub fn passphrase_from(var: &str, confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
+    if let Ok(p) = std::env::var(var) {
         return Ok(Zeroizing::new(p.into_bytes()));
     }
     let first = Zeroizing::new(rpassword::prompt_password("passphrase: ")?);

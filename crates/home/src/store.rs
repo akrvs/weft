@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use weft_core::{Manifest, Pointer, PublicKey, Record, verify};
+use weft_core::{Address, Grant, Manifest, Pointer, PublicKey, Record, Revoke, verify};
 
 use crate::fail::Result;
 use crate::fs;
@@ -67,6 +67,28 @@ impl Store {
 
     pub fn head<'a>(pointers: &'a [(&'a Record, Pointer)]) -> Option<(&'a Record, &'a Pointer)> {
         Pointer::head(pointers.iter().map(|(r, p)| (*r, p)))
+    }
+
+    pub fn grants<'a>(
+        records: &'a [Record],
+        author: &PublicKey,
+        manifest: Option<&Manifest>,
+        at: u64,
+    ) -> Vec<(&'a Record, Grant)> {
+        let valid = |kind: &'static str| {
+            records
+                .iter()
+                .filter(move |r| r.author() == author && r.kind() == kind)
+                .filter(move |r| verify(r, manifest).is_ok())
+        };
+        let revoked: Vec<Address> = valid(weft_core::grant::REVOKE)
+            .filter_map(|r| Revoke::from_record(r).ok().map(|v| v.grant))
+            .collect();
+        valid(weft_core::grant::KIND)
+            .filter(|r| !revoked.contains(&r.address()))
+            .filter_map(|r| Grant::from_record(r).ok().map(|g| (r, g)))
+            .filter(|(_, g)| g.active(at))
+            .collect()
     }
 }
 
