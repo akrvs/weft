@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M4-yellow)
+![status](https://img.shields.io/badge/status-M5-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-46%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -25,12 +25,13 @@
 │ codename   : weft                                               │
 │ category   : Application layer for a new internet               │
 │ stack      : Rust · Ed25519 · blake3 · CBOR · iroh · Tauri 2    │
-│ interfaces : core · home · net · resolve · CLI · relay          │
+│ interfaces : core · home · net · resolve · store · CLI · relay  │
 │              gateway · browser                                  │
 │ flags      : user [sign here, fetch there, no shared server]    │
 │              root [one address bar for both webs]               │
 │              bridge [same page in Firefox and in Weft]          │
-│ status     : M4 — spec frozen · 8 crates · DNS names · gateway  │
+│              store [revoke a grant and watch access end]        │
+│ status     : M5 — spec frozen · 9 crates · store gate · grants  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -49,11 +50,12 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Four milestones in: the record format, the identity model, one
+Five milestones in: the record format, the identity model, one
 verification choke point, a relay that moves records and blobs between
 machines over iroh QUIC, a browser that opens signed records and the old
-web in the same window, a DNS registry that binds a domain to a key, and
-a gateway that serves signed records to any browser. The relay is a cache
+web in the same window, a DNS registry that binds a domain to a key, a
+gateway that serves signed records to any browser, and a store daemon that
+lets applications in only through revocable grants. The relay is a cache
 with a contract. The browser trusts nothing it has not verified itself and
 says so on every page.
 
@@ -174,6 +176,29 @@ serves every form the address bar takes, `/<address>`, `/<author>/<name>`,
 `x-weft-*` response headers. Plain HTTP on loopback by default; TLS is the
 reverse proxy's job.
 
+## [ Store Flag ] — revoke a grant and watch access end
+
+Applications do not get a database of users. They get a key and a grant.
+
+```bash
+weft-store serve --device laptop              # the store daemon, socket at $WEFT_HOME/store.sock
+WEFT_APP_PASSPHRASE='...' weft-app key        # an application key, prints its address
+weft grant add <app> --kind note --read --write --as laptop
+weft-app write note today.md                  # the daemon signs it as you, with the laptop key
+weft-app read note                            # every note you hold, verified
+weft grant revoke <grant> --as laptop         # or the revoke button in the browser's store view
+weft-app read note                            # refused: no active grant
+```
+
+A grant is a signed record naming an application key, the kinds it may
+read or write, and an optional expiry. A revoke is a signed record citing
+it. The daemon checks the grants active at the moment of every request, so
+revoking one ends access on the next request of an open connection. Writes
+go through the daemon's device key and the local manifest, reads cover
+only your own verified records, and `manifest`, `pointer`, `grant`, and
+`revoke` can never be granted. The browser's store view lists your kinds
+and your active grants with a revoke form.
+
 ## [ Persistence ] — posture
 
 - `#![forbid(unsafe_code)]` in every crate, clippy pedantic, `unwrap`
@@ -196,6 +221,10 @@ reverse proxy's job.
 - The gateway answers GET and HEAD only, caps paths at 1 KiB and headers
   at 16 KiB, sends a CSP with no script and no remote origin, types blobs
   by magic bytes and serves everything else as an attachment.
+- The store daemon listens on a 0600 Unix socket, authenticates every
+  connection with a fresh nonce signed under its own domain string,
+  authorizes every request through one function against the grants active
+  at that instant, and never hands out a record it has not verified.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
@@ -205,12 +234,14 @@ crates/core/         weft-core: address · cbor · identity · record · manifes
 crates/home/         weft-home: encrypted keystore · record store · relay list
 crates/net/          weft-net: wire · client · relay handler · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
+crates/store/        weft-store: store wire · gate · daemon · client · weft-app sample
 crates/relay/        weft-relay: init · allow · serve
 crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers
-crates/cli/          weft: commands over home, net, and resolve
-crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome
+crates/cli/          weft: commands over home, net, and resolve · grants
+crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome · store view
 docs/protocol.md     normative record spec
-docs/relay.md        wire protocol
+docs/relay.md        relay wire protocol
+docs/store.md        store wire protocol
 docs/design.md       the why
 vectors/             fixtures every implementation must reproduce
 progress/            milestone plans and logs
@@ -233,6 +264,7 @@ cargo deny check
 
 ## [ Next Ops ]
 
-M5: personal store and grants. Records a reader keeps for themselves,
-shared by a grant that can be revoked, with the personal store as a first
-class view in the browser. See [`progress/`](progress/).
+M6: challenge response login. A site asks for a signature over a nonce,
+the browser signs with a device key, and there is no account and no
+password anywhere. The store handshake is the first draft of it. See
+[`progress/`](progress/).

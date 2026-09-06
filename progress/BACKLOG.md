@@ -18,3 +18,7 @@ scheduled.
 | Live `_weft` record | M4 | No domain carries one yet; the positive DoH path and the AD bit on a real answer are unverified |
 | Gateway host based routing and TLS | M4 | A publisher CNAME to the gateway, TLS in process |
 | Home directory creation outside `init` | M4 | `store` and `keep_blob` expect their directories to exist |
+| Browser behind the store daemon | M5 | The browser still reads the home directory; the design wants it as the daemon's one privileged client |
+| Store index | M5 | The gate re-reads and re-verifies every record per request |
+| Grants over fetched records | M5 | Only the root's own records are visible through a grant |
+| Application display names | M5 | The store knows an app only by its key address |
