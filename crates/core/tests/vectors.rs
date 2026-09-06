@@ -78,6 +78,29 @@ fn grants() {
     assert_eq!(weft_core::Revoke::from_record(&revoke).unwrap().grant, first.address());
 }
 
+#[test]
+fn receipts() {
+    let v = load("receipts");
+    check_records(&v, &manifest());
+    for r in v["vouchers"].as_array().unwrap() {
+        let name = r["name"].as_str().unwrap();
+        let bytes = hex(r["hex"].as_str().unwrap());
+        match (weft_core::Voucher::decode(&bytes), r["error"].as_str()) {
+            (Ok(voucher), None) => {
+                assert_eq!(voucher.encode(), bytes, "{name}");
+                assert_eq!(voucher.id().to_string(), r["id"].as_str().unwrap(), "{name}");
+                assert_eq!(voucher.cents, r["cents"].as_u64().unwrap(), "{name}");
+            }
+            (Err(e), Some(expected)) => assert_eq!(e.to_string(), expected, "{name}"),
+            (result, _) => panic!("{name}: {result:?}"),
+        }
+    }
+    let first = Record::from_bytes(&hex(v["records"][0]["hex"].as_str().unwrap())).unwrap();
+    let receipt = weft_core::Receipt::from_record(&first).unwrap();
+    assert_eq!(receipt.records.len(), 2);
+    assert_eq!(receipt.voucher.cents, 5);
+}
+
 fn check_records(v: &Value, manifest: &Manifest) {
     for r in v["records"].as_array().unwrap() {
         let name = r["name"].as_str().unwrap();

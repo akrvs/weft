@@ -5,7 +5,8 @@ use crate::{Address, Draft, Error, PublicKey, Record, Result};
 pub const KIND: &str = "grant";
 pub const REVOKE: &str = "revoke";
 pub const MAX_KINDS: usize = 16;
-pub const RESERVED: &[&str] = &[crate::manifest::KIND, crate::pointer::KIND, KIND, REVOKE];
+pub const RESERVED: &[&str] =
+    &[crate::manifest::KIND, crate::pointer::KIND, KIND, REVOKE, crate::receipt::KIND];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {

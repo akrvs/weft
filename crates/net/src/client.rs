@@ -126,6 +126,13 @@ impl Client {
         }
     }
 
+    pub async fn price(&self, relay: impl Into<EndpointAddr>) -> Result<(u64, Vec<PublicKey>)> {
+        match self.call(relay, &Request::Price).await? {
+            Response::Price { rate, banks } => Ok((rate, banks)),
+            _ => Err(Error::Wire("unexpected response")),
+        }
+    }
+
     pub async fn close(self) {
         let _ = self.router.shutdown().await;
     }

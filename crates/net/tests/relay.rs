@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
 use weft_core::{Address, Body, Device, Draft, Manifest, Pointer, SecretKey, verify};
-use weft_net::{Client, Relay};
+use weft_net::{Client, Pricing, Relay};
 
 async fn endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap()
@@ -43,7 +43,7 @@ impl Net {
         ));
         let ep = endpoint().await;
         let allow: HashSet<_> = allow.iter().map(|k| k.public()).collect();
-        let relay = Relay::open(ep.clone(), &dir, allow).await.unwrap();
+        let relay = Relay::open(ep.clone(), &dir, allow, Pricing::default()).await.unwrap();
         let router = relay.spawn();
         let addr = router.endpoint().addr();
         Self { router, addr, dir }
@@ -103,7 +103,7 @@ async fn publish_fetch_and_resolve_across_two_clients() {
         .unwrap();
     assert_eq!(outcome.stored.len(), 3, "{outcome:?}");
     assert_eq!(outcome.rejected.len(), 2, "{outcome:?}");
-    assert!(outcome.rejected.iter().any(|(i, why)| *i == 3 && why.contains("not allowed")));
+    assert!(outcome.rejected.iter().any(|(i, why)| *i == 3 && why.contains("payment required")));
     assert!(outcome.rejected.iter().any(|(i, why)| *i == 4 && why.contains("not authorized")));
 
     let fetched = b.get(net.addr.clone(), page_record.address()).await.unwrap().unwrap();

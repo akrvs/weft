@@ -7,6 +7,7 @@ pub mod grant;
 pub mod identity;
 pub mod manifest;
 pub mod pointer;
+pub mod receipt;
 pub mod record;
 pub mod verify;
 
@@ -16,6 +17,7 @@ pub use grant::{Access, Grant, Revoke};
 pub use identity::{PublicKey, SecretKey};
 pub use manifest::{Device, Manifest};
 pub use pointer::Pointer;
+pub use receipt::{Receipt, Voucher};
 pub use record::{Body, Draft, Record};
 pub use verify::{Verified, verify};
 

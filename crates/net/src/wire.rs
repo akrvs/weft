@@ -14,6 +14,7 @@ pub enum Request {
     Put { records: Vec<Vec<u8>> },
     Get { address: Address },
     Head { author: PublicKey, name: String },
+    Price,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum Response {
     Put { stored: Vec<Address>, rejected: Vec<(u64, String)> },
     Get { record: Option<Vec<u8>> },
     Head { pointer: Option<Vec<u8>>, manifest: Option<Vec<u8>> },
+    Price { rate: u64, banks: Vec<PublicKey> },
     Error { why: String },
 }
 
@@ -53,6 +55,7 @@ impl Request {
                 ("name".to_owned(), Value::Text(name.clone())),
                 ("t".to_owned(), Value::Text("head".to_owned())),
             ],
+            Self::Price => vec![("t".to_owned(), Value::Text("price".to_owned()))],
         };
         Value::Map(m).encode()
     }
@@ -94,6 +97,10 @@ impl Request {
                     return Err(Error::Core(CoreError::Field("name")));
                 }
                 Ok(Self::Head { author, name })
+            }
+            "price" => {
+                cbor::only(m, &["t"])?;
+                Ok(Self::Price)
             }
             _ => Err(Error::Wire("unknown request type")),
         }
@@ -140,6 +147,14 @@ impl Response {
                 );
                 m
             }
+            Self::Price { rate, banks } => vec![
+                (
+                    "banks".to_owned(),
+                    Value::Array(banks.iter().map(|b| bytes32(b.bytes())).collect()),
+                ),
+                ("rate".to_owned(), Value::Uint(*rate)),
+                ("t".to_owned(), Value::Text("price".to_owned())),
+            ],
             Self::Error { why } => {
                 vec![
                     ("t".to_owned(), Value::Text("error".to_owned())),
@@ -191,6 +206,17 @@ impl Response {
                     pointer: bytes("pointer").transpose()?,
                     manifest: bytes("manifest").transpose()?,
                 })
+            }
+            "price" => {
+                cbor::only(m, &["banks", "rate", "t"])?;
+                let banks = cbor::field(m, "banks")?
+                    .as_array()
+                    .ok_or(CoreError::Field("banks"))?
+                    .iter()
+                    .map(|v| cbor::bytes32(v, "banks").and_then(|b| PublicKey::from_bytes(&b)))
+                    .collect::<core::result::Result<Vec<_>, _>>()?;
+                let rate = cbor::field(m, "rate")?.as_uint().ok_or(CoreError::Field("rate"))?;
+                Ok(Self::Price { rate, banks })
             }
             "error" => {
                 cbor::only(m, &["t", "why"])?;
