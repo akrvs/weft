@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M3-yellow)
+![status](https://img.shields.io/badge/status-M4-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -25,10 +25,12 @@
 │ codename   : weft                                               │
 │ category   : Application layer for a new internet               │
 │ stack      : Rust · Ed25519 · blake3 · CBOR · iroh · Tauri 2    │
-│ interfaces : core · home · net · CLI · relay · browser          │
+│ interfaces : core · home · net · resolve · CLI · relay          │
+│              gateway · browser                                  │
 │ flags      : user [sign here, fetch there, no shared server]    │
 │              root [one address bar for both webs]               │
-│ status     : M3 — spec frozen · 6 crates · browser first cut    │
+│              bridge [same page in Firefox and in Weft]          │
+│ status     : M4 — spec frozen · 8 crates · DNS names · gateway  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -47,12 +49,13 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Three milestones in: the record format, the identity model, one
+Four milestones in: the record format, the identity model, one
 verification choke point, a relay that moves records and blobs between
-machines over iroh QUIC, and a browser that opens signed records and the
-old web in the same window. The relay is a cache with a contract. The
-browser trusts nothing it has not verified itself and says so on every
-page.
+machines over iroh QUIC, a browser that opens signed records and the old
+web in the same window, a DNS registry that binds a domain to a key, and
+a gateway that serves signed records to any browser. The relay is a cache
+with a contract. The browser trusts nothing it has not verified itself and
+says so on every page.
 
 ## [ Recon ] — the machine
 
@@ -150,9 +153,30 @@ Every reader that asks the relay gets the newer manifest, the browser and
 `verify` answer `signer revoked`, and the relay refuses anything else that
 key signs.
 
+## [ Bridge Flag ] — same page in Firefox and in Weft
+
+A publisher adopts Weft with one TXT record:
+
+```
+_weft.example.com.  TXT  "weft=<root address>"
+```
+
+```bash
+weft dns example.com                         # bound key, dnssec verified or unverified
+weft-browser example.com/blog                # domain tier in the address bar
+weft-gateway --bind 127.0.0.1:8080           # then open http://127.0.0.1:8080/example.com/blog
+```
+
+The lookup goes over DNS over HTTPS to Cloudflare, or to `WEFT_DOH=ip,name`,
+and the resolver's DNSSEC verdict rides along as provenance. The gateway
+serves every form the address bar takes, `/<address>`, `/<author>/<name>`,
+`/<domain>/<name>`, with the signature check in a header bar and in
+`x-weft-*` response headers. Plain HTTP on loopback by default; TLS is the
+reverse proxy's job.
+
 ## [ Persistence ] — posture
 
-- `#![forbid(unsafe_code)]` in both crates, clippy pedantic, `unwrap`
+- `#![forbid(unsafe_code)]` in every crate, clippy pedantic, `unwrap`
   and `panic` denied in library code.
 - Strict Ed25519 verification, weak public keys rejected, domain separated
   signatures.
@@ -166,6 +190,12 @@ key signs.
   origins, and images only from the local blob scheme. Raw HTML in a page
   is dropped, links are limited to `weft:` and `https:`, and the HTTPS
   web view is incognito and cannot navigate off `https:`.
+- One grammar for names. A domain binds through exactly one `_weft` TXT
+  record holding a key address; two records, a hash address, or a
+  malformed value fail closed.
+- The gateway answers GET and HEAD only, caps paths at 1 KiB and headers
+  at 16 KiB, sends a CSP with no script and no remote origin, types blobs
+  by magic bytes and serves everything else as an attachment.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
@@ -174,9 +204,11 @@ key signs.
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · verify
 crates/home/         weft-home: encrypted keystore · record store · relay list
 crates/net/          weft-net: wire · client · relay handler · redb index
+crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
 crates/relay/        weft-relay: init · allow · serve
-crates/cli/          weft: commands over home and net
-crates/browser/      weft-browser: Tauri 2 app · Markdown renderer · TypeScript chrome
+crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers
+crates/cli/          weft: commands over home, net, and resolve
+crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome
 docs/protocol.md     normative record spec
 docs/relay.md        wire protocol
 docs/design.md       the why
@@ -201,6 +233,6 @@ cargo deny check
 
 ## [ Next Ops ]
 
-M4: DNS bridge and HTTPS gateway. A TXT record binds a domain to a key,
-verified over DNS over HTTPS, and a gateway serves records to browsers that
-do not speak Weft. See [`progress/`](progress/).
+M5: personal store and grants. Records a reader keeps for themselves,
+shared by a grant that can be revoked, with the personal store as a first
+class view in the browser. See [`progress/`](progress/).

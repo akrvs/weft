@@ -13,3 +13,8 @@ scheduled.
 | Relay quotas and receipts | design | Bootstrap allowlist becomes paid pinning |
 | Offline preset for CLI network commands | M2 | Loopback path exists only in the library tests |
 | CLI exits with a panic on a closed stdout pipe | M3 | `weft whoami \| head -1` |
+| Blob pull on miss | M4 | Browser and gateway serve blobs from the local store only |
+| DNS cache and TTL | M4 | One DoH lookup per navigation, TTL discarded |
+| Live `_weft` record | M4 | No domain carries one yet; the positive DoH path and the AD bit on a real answer are unverified |
+| Gateway host based routing and TLS | M4 | A publisher CNAME to the gateway, TLS in process |
+| Home directory creation outside `init` | M4 | `store` and `keep_blob` expect their directories to exist |

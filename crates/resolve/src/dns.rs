@@ -88,11 +88,8 @@ impl Dns {
         let mut options = DnsRequestOptions::default();
         options.edns_set_dnssec_ok = true;
         let mut stream = self.pool.send(DnsRequest::new(message, options));
-        let response = stream
-            .next()
-            .await
-            .ok_or_else(|| Error::Dns("no response".into()))?
-            .map_err(|e| {
+        let response =
+            stream.next().await.ok_or_else(|| Error::Dns("no response".into()))?.map_err(|e| {
                 if e.is_no_records_found() {
                     Error::Dns(format!("no {LABEL} record at {host}"))
                 } else {
