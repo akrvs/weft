@@ -10,7 +10,6 @@ scheduled.
 | History and bookmarks in the browser | M3 | Back is an in-memory trail |
 | Non-image blob view | M3 | Download affordance for blobs that are not images |
 | Revocation with an effective time | M1 | Distinguish a lost key from a compromised one |
-| Relay quotas and receipts | design | Bootstrap allowlist becomes paid pinning |
 | Offline preset for CLI network commands | M2 | Loopback path exists only in the library tests |
 | CLI exits with a panic on a closed stdout pipe | M3 | `weft whoami \| head -1` |
 | Blob pull on miss | M4 | Browser and gateway serve blobs from the local store only |
@@ -22,3 +21,9 @@ scheduled.
 | Store index | M5 | The gate re-reads and re-verifies every record per request |
 | Grants over fetched records | M5 | Only the root's own records are visible through a grant |
 | Application display names | M5 | The store knows an app only by its key address |
+| Blob garbage collection on sweep | M7 | `sweep` reports orphaned blob hashes; iroh-blobs 0.103 keeps `delete` crate private |
+| Dead receipts after a refused paid push | M7 | The CLI stores the receipt before the relay answers |
+| Real payment rail | M7 | Lightning preimage or ecash token behind the voucher seam in `Relay::settle` |
+| Sponsorship | M7 | A receipt pays only for its author's records |
+| Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
+| Relay reloads config | M2, M7 | `allow`, `banks`, and `rate` are read only at start |

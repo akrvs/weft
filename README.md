@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M5-yellow)
+![status](https://img.shields.io/badge/status-M7-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-46%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-57%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -26,12 +26,13 @@
 │ category   : Application layer for a new internet               │
 │ stack      : Rust · Ed25519 · blake3 · CBOR · iroh · Tauri 2    │
 │ interfaces : core · home · net · resolve · store · CLI · relay  │
-│              gateway · browser                                  │
+│              gateway · browser · bank                           │
 │ flags      : user [sign here, fetch there, no shared server]    │
 │              root [one address bar for both webs]               │
 │              bridge [same page in Firefox and in Weft]          │
 │              store [revoke a grant and watch access end]        │
-│ status     : M5 — spec frozen · 9 crates · store gate · grants  │
+│              pay [a few cents to host a stranger's page]        │
+│ status     : M7 — spec frozen · 10 crates · paid pins · sweep   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,13 +51,14 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Five milestones in: the record format, the identity model, one
+Six milestones in: the record format, the identity model, one
 verification choke point, a relay that moves records and blobs between
 machines over iroh QUIC, a browser that opens signed records and the old
 web in the same window, a DNS registry that binds a domain to a key, a
-gateway that serves signed records to any browser, and a store daemon that
-lets applications in only through revocable grants. The relay is a cache
-with a contract. The browser trusts nothing it has not verified itself and
+gateway that serves signed records to any browser, a store daemon that
+lets applications in only through revocable grants, and a relay that pins
+a stranger's page for a few cents and sweeps it when the pin runs out. The
+relay is a cache with a contract. The browser trusts nothing it has not verified itself and
 says so on every page.
 
 ## [ Recon ] — the machine
@@ -199,6 +201,28 @@ only your own verified records, and `manifest`, `pointer`, `grant`, and
 `revoke` can never be granted. The browser's store view lists your kinds
 and your active grants with a revoke form.
 
+## [ Pay Flag ] — a few cents to host a stranger's page
+
+A relay stores what its allowlist pushes for free. Everyone else pays.
+
+```bash
+weft-relay rate 1 && weft-relay bank add <bank>   # cents per KiB per day, and who mints them
+weft-bank init && weft-bank mint --to <relay id> --cents 4 --out v.bin
+weft price                                        # every relay's rate and banks
+weft push <page> <pointer>                        # rejected: payment required
+weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch, both records pin
+weft receipts                                     # what you paid, to whom, until when
+```
+
+A voucher is a bank signed note naming the relay it can be redeemed at, a
+few cents, and a nonce. A receipt is a record you sign naming the relay,
+the records you want kept, a date, and the voucher. The relay checks the
+bank, the spend, the date, and the price, then stores and pins. Every
+minute it sweeps pins that have passed, along with heads and manifests
+nothing holds up any more. Allowlisted authors are never swept, a voucher
+spends once, and the relay still never signs. The rail is a faucet, on
+purpose: the seam for real money is one function.
+
 ## [ Persistence ] — posture
 
 - `#![forbid(unsafe_code)]` in every crate, clippy pedantic, `unwrap`
@@ -210,7 +234,8 @@ and your active grants with a revoke form.
 - Wire frames are capped at 1 MiB, batches at 64 records, and every
   message is canonical CBOR with unknown fields rejected.
 - The relay verifies before it stores, pulls blobs only for records it
-  has already accepted, and never signs.
+  has already accepted, and never signs. Payment is settled in one
+  function: relay key, trusted bank, unspent voucher, date window, price.
 - The browser chrome runs under a CSP with no inline script, no remote
   origins, and images only from the local blob scheme. Raw HTML in a page
   is dropped, links are limited to `weft:` and `https:`, and the HTTPS
@@ -230,14 +255,15 @@ and your active grants with a revoke form.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · verify
 crates/home/         weft-home: encrypted keystore · record store · relay list
-crates/net/          weft-net: wire · client · relay handler · redb index
+crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
 crates/store/        weft-store: store wire · gate · daemon · client · weft-app sample
-crates/relay/        weft-relay: init · allow · serve
+crates/relay/        weft-relay: init · allow · rate · bank · price · serve
+crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers
-crates/cli/          weft: commands over home, net, and resolve · grants
+crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts
 crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome · store view
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
@@ -266,5 +292,7 @@ cargo deny check
 
 M6: challenge response login. A site asks for a signature over a nonce,
 the browser signs with a device key, and there is no account and no
-password anywhere. The store handshake is the first draft of it. See
+password anywhere. The store handshake is the first draft of it. After
+that the roadmap is open: a real payment rail behind the voucher seam,
+blob collection on sweep, the browser behind the store daemon. See
 [`progress/`](progress/).

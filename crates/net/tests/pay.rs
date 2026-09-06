@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::cast_possible_truncation)]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
@@ -40,9 +41,11 @@ struct Net {
 
 impl Net {
     async fn start(allow: &[&SecretKey], rate: u64, banks: &[&SecretKey]) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "weft-pay-test-{}-{}",
+            "weft-pay-test-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         let ep = endpoint().await;
