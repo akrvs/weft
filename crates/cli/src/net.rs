@@ -18,16 +18,61 @@ async fn client() -> Result<Client> {
     Client::bind().await.map_err(|e| e.to_string().into())
 }
 
-pub async fn push(home: &Home, store: &Store, addresses: &[Address]) -> Result<()> {
+#[derive(Debug)]
+pub struct Paid {
+    pub relay: EndpointId,
+    pub receipt: Record,
+}
+
+pub async fn price(home: &Home) -> Result<()> {
     let relays = relays(home)?;
-    let mut records = store.all()?;
+    let client = client().await?;
+    for relay in relays {
+        let (rate, banks) = client.price(relay).await.map_err(|e| e.to_string())?;
+        println!("{relay}  {rate} cents per KiB per day");
+        for bank in banks {
+            println!("  bank {}", bank.address());
+        }
+    }
+    client.close().await;
+    Ok(())
+}
+
+pub async fn push(
+    home: &Home,
+    store: &Store,
+    addresses: &[Address],
+    paid: Option<Paid>,
+) -> Result<()> {
+    let relays = match &paid {
+        Some(p) => vec![p.relay],
+        None => relays(home)?,
+    };
+    let all = store.all()?;
+    let mut records = all.clone();
     if !addresses.is_empty() {
         records.retain(|r| addresses.contains(&r.address()));
     }
     if records.is_empty() {
         return fail("nothing to push");
     }
-    records.sort_by_key(|r| (r.kind() != weft_core::manifest::KIND, r.created()));
+    if let Some(p) = &paid {
+        let root = home.root()?;
+        let manifest = all
+            .iter()
+            .filter(|r| r.kind() == weft_core::manifest::KIND && *r.author() == root)
+            .filter_map(|r| Manifest::from_record(r).ok().map(|m| (m.seq, r)))
+            .max_by_key(|(seq, _)| *seq);
+        if let Some((_, m)) = manifest
+            && !records.contains(m)
+        {
+            records.push(m.clone());
+        }
+        records.push(p.receipt.clone());
+    }
+    records.sort_by_key(|r| {
+        (r.kind() != weft_core::manifest::KIND, r.kind() == weft_core::receipt::KIND, r.created())
+    });
     let client = client().await?;
     for record in &records {
         if let Body::Blob(address) = record.body() {

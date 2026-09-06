@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use weft_core::{Access, Address, Body, Draft, Grant, Manifest, Pointer, Record, Revoke, verify};
+use weft_core::{
+    Access, Address, Body, Draft, Grant, Manifest, Pointer, Receipt, Record, Revoke, Voucher,
+    verify,
+};
 
 use weft_home::{Home, ROOT, Result, Store, fail, home, read_record};
 
@@ -68,7 +71,15 @@ enum Command {
     },
     Push {
         addresses: Vec<Address>,
+        #[arg(long)]
+        pay: Option<PathBuf>,
+        #[arg(long, default_value = "30")]
+        days: u64,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
     },
+    Price,
+    Receipts,
     Fetch {
         address: Address,
         #[arg(long)]
@@ -168,7 +179,15 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             }
             Ok(())
         }
-        Command::Push { addresses } => net::push(home, store, &addresses).await,
+        Command::Push { addresses, pay: None, .. } => {
+            net::push(home, store, &addresses, None).await
+        }
+        Command::Push { addresses, pay: Some(voucher), days, signer } => {
+            let paid = pay(home, store, &addresses, &voucher, days, &signer)?;
+            net::push(home, store, &addresses, Some(paid)).await
+        }
+        Command::Price => net::price(home).await,
+        Command::Receipts => receipts(home, store),
         Command::Fetch { address, out } => net::fetch(home, store, address, out.as_deref()).await,
         Command::Grant {
             command: GrantCommand::Add { app, kinds, read, write, expires, signer },
@@ -193,6 +212,63 @@ fn sign_own(
     verify(&record, manifest.as_ref())?;
     store.put(&record)?;
     Ok(record)
+}
+
+fn relay_id(key: &weft_core::PublicKey) -> Result<iroh::EndpointId> {
+    iroh::EndpointId::from_bytes(key.bytes()).map_err(|e| e.to_string().into())
+}
+
+fn pay(
+    home: &Home,
+    store: &Store,
+    addresses: &[Address],
+    voucher: &std::path::Path,
+    days: u64,
+    signer: &str,
+) -> Result<net::Paid> {
+    if addresses.is_empty() {
+        return fail("name the records the voucher pays for");
+    }
+    if days == 0 || days > weft_net::relay::MAX_DAYS {
+        return fail(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
+    }
+    let voucher = Voucher::decode(&std::fs::read(voucher)?)?;
+    let relay = relay_id(&voucher.to)?;
+    let mut records = addresses.to_vec();
+    records.sort_unstable();
+    records.dedup();
+    let until = home::now()?.saturating_add(days.saturating_mul(86_400));
+    let receipt = Receipt { relay: voucher.to, records, until, voucher };
+    receipt.check()?;
+    let record = sign_own(home, store, signer, |root, signer, created| {
+        receipt.draft(root, signer, created)
+    })?;
+    println!("receipt {}  {} cents until {until}", record.address(), receipt.voucher.cents);
+    Ok(net::Paid { relay, receipt: record })
+}
+
+fn receipts(home: &Home, store: &Store) -> Result<()> {
+    let root = home.root()?;
+    let records = store.all()?;
+    let manifest = Store::manifest(&records, &root);
+    let mut receipts: Vec<(&Record, Receipt)> = records
+        .iter()
+        .filter(|r| r.kind() == weft_core::receipt::KIND && *r.author() == root)
+        .filter(|r| verify(r, manifest.as_ref()).is_ok())
+        .filter_map(|r| Receipt::from_record(r).ok().map(|x| (r, x)))
+        .collect();
+    receipts.sort_by_key(|(r, _)| r.created());
+    for (record, receipt) in receipts {
+        println!(
+            "{}  {}  {} cents  {} records  until {}",
+            record.address(),
+            relay_id(&receipt.relay)?,
+            receipt.voucher.cents,
+            receipt.records.len(),
+            receipt.until
+        );
+    }
+    Ok(())
 }
 
 fn grant_add(
@@ -399,6 +475,17 @@ fn inspect(record: &Record) -> Result<()> {
         }
         weft_core::grant::REVOKE => {
             println!("grant   {}", Revoke::from_record(record)?.grant);
+        }
+        weft_core::receipt::KIND => {
+            let r = Receipt::from_record(record)?;
+            println!("relay   {}", relay_id(&r.relay)?);
+            println!("until   {}", r.until);
+            println!("cents   {}", r.voucher.cents);
+            println!("bank    {}", r.voucher.bank.address());
+            println!("voucher {}", r.voucher.id());
+            for a in &r.records {
+                println!("pins    {a}");
+            }
         }
         _ => {}
     }

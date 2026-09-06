@@ -6258,6 +6258,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "weft-bank"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "getrandom 0.3.4",
+ "iroh",
+ "weft-core",
+]
+
+[[package]]
 name = "weft-browser"
 version = "0.1.0"
 dependencies = [

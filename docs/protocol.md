@@ -152,9 +152,9 @@ holding a newer manifest must re-verify what it holds.
 
 ## 9. Reserved kinds
 
-`manifest`, `pointer`, `grant`, and `revoke` are defined here. `page` and
-`file` are conventional for M1 and carry no extra rules. Later versions
-define `receipt`, `label`, and `petname`.
+`manifest`, `pointer`, `grant`, `revoke`, and `receipt` are defined here.
+`page` and `file` are conventional for M1 and carry no extra rules. Later
+versions define `label` and `petname`.
 
 ## 10. Grants
 
@@ -176,3 +176,33 @@ A grant is active at time `t` when its record verifies, `expires` is
 absent or greater than `t`, and no verifying revoke by the same author
 cites it. A store enforces grants at the moment of each request. Records
 of a reserved kind are never readable or writable through a grant.
+
+## 11. Receipts and vouchers
+
+A voucher is money a bank signed. It is not a record. Its canonical map:
+
+| Key | Type | Rule |
+|---|---|---|
+| `bank` | bytes(32) | bank public key |
+| `to` | bytes(32) | public key of the relay that may redeem it |
+| `cents` | uint | at least 1 |
+| `nonce` | bytes(32) | random |
+| `sig` | bytes(64) | Ed25519 by `bank` over `"weft/voucher/1" \|\| 0x00 \|\| canonical(map without sig)` |
+
+An encoded voucher is at most 256 bytes. Its id is the hash address of the
+encoded bytes. A relay spends a voucher at most once.
+
+`kind = "receipt"`. Pays a relay to keep records until a date. `body` is a
+canonical map:
+
+| Key | Type | Rule |
+|---|---|---|
+| `relay` | bytes(32) | relay public key, equal to the voucher's `to` |
+| `records` | array of bytes(32) | 1 to 64 hash addresses, sorted, unique, each also in `refs` |
+| `until` | uint | greater than the record's `created` |
+| `voucher` | bytes | an encoded voucher that verifies |
+
+Root or device signed. A receipt only pays for records by its own author.
+What a relay charges and when it sweeps is the relay's contract, in
+`relay.md`. The voucher rail is an experiment: vouchers are bearer
+instruments with no privacy and a bank is a plain key the relay trusts.

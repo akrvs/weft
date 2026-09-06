@@ -1,0 +1,20 @@
+[package]
+name = "weft-bank"
+description = "A faucet that mints signed vouchers a relay accepts as payment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "weft-bank"
+path = "src/main.rs"
+
+[dependencies]
+weft-core = { path = "../core" }
+clap.workspace = true
+getrandom.workspace = true
+iroh.workspace = true
+
+[lints]
+workspace = true
