@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M7-yellow)
+![status](https://img.shields.io/badge/status-M8-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-66%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-71%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -33,7 +33,8 @@
 │              store [revoke a grant and watch access end]        │
 │              pay [a few cents to host a stranger's page]        │
 │              login [no account, no password, one signature]     │
-│ status     : M7 — spec frozen · 10 crates · paid pins · login   │
+│              gate [the browser signs nothing, the daemon does]   │
+│ status     : M8 — spec frozen · 10 crates · one gate · login    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,7 +53,7 @@ record is named by what it is, signed by who made it, and served by anyone.
 | Mutation | Overwrite in place | Immutable records, Lamport pointers |
 | Revocation | Ask the host | Root signs a manifest, readers enforce it |
 
-Seven milestones in: the record format, the identity model, one
+Eight milestones in: the record format, the identity model, one
 verification choke point, a relay that moves records and blobs between
 machines over iroh QUIC, a browser that opens signed records and the old
 web in the same window, a DNS registry that binds a domain to a key, a
@@ -193,6 +194,7 @@ weft-app write note today.md                  # the daemon signs it as you, with
 weft-app read note                            # every note you hold, verified
 weft grant revoke <grant> --as laptop         # or the revoke button in the browser's store view
 weft-app read note                            # refused: no active grant
+weft-browser                                  # compose, revoke, log in: no passphrase, the daemon signs
 ```
 
 A grant is a signed record naming an application key, the kinds it may
@@ -203,6 +205,12 @@ go through the daemon's device key and the local manifest, reads cover
 only your own verified records, and `manifest`, `pointer`, `grant`, and
 `revoke` can never be granted. The browser's store view lists your kinds
 and your active grants with a revoke form.
+
+The browser is the daemon's one privileged client. `weft-store serve`
+writes `browser.key` next to the socket once; the browser presents it and
+asks the daemon to sign pages, pointers, revokes, and logins. It never
+opens the keystore. Applications asking for the same requests are refused
+with `browser only`. With no daemon running the browser still reads.
 
 ## [ Pay Flag ] — a few cents to host a stranger's page
 
@@ -273,7 +281,8 @@ session for the root address, and shows it. Nothing is stored anywhere; a
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
-  at that instant, and never hands out a record it has not verified.
+  at that instant, and never hands out a record it has not verified. The
+  browser's privilege is one key comparison in that same function.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
@@ -283,12 +292,12 @@ crates/core/         weft-core: address · cbor · identity · record · manifes
 crates/home/         weft-home: encrypted keystore · record store · relay list
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
-crates/store/        weft-store: store wire · gate · daemon · client · weft-app sample
+crates/store/        weft-store: store wire · gate · browser key · daemon · client · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers · login sessions
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
-crates/browser/      weft-browser: Tauri 2 app over weft-resolve · TypeScript chrome · store view · login dialog
+crates/browser/      weft-browser: Tauri 2 app over weft-resolve · privileged store client · store view · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -315,6 +324,6 @@ cargo deny check
 ## [ Next Ops ]
 
 The roadmap is complete. What follows is open: a real payment rail behind
-the voucher seam, blob collection on sweep, the browser behind the store
-daemon, `weft:` as a registered URL handler so a site's login link opens
-the browser, persistent gateway sessions. See [`progress/`](progress/).
+the voucher seam, blob collection on sweep, rendering reads behind the
+store daemon, `weft:` as a registered URL handler so a site's login link
+opens the browser, persistent gateway sessions. See [`progress/`](progress/).

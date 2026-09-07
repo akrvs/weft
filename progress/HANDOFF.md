@@ -6,8 +6,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment |
-| Next | roadmap complete; M8 is open, pull it from `BACKLOG.md` |
+| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate |
+| Next | roadmap complete; M9 is open, pull it from `BACKLOG.md` |
 | Repo | private, github.com/akrvs/weft, CI on push to main, license deferred |
 
 Roadmap `docs/design.md`, plans `progress/M#.md`, loose ends `progress/BACKLOG.md`.
@@ -20,12 +20,12 @@ Roadmap `docs/design.md`, plans `progress/M#.md`, loose ends `progress/BACKLOG.m
 | weft-home | crates/home | Encrypted keystore, record store, active grants, relay list, home directory layout |
 | weft-net | crates/net | Relay wire protocol, client, relay handler with pricing, pins, sweep, redb index |
 | weft-resolve | crates/resolve | Target grammar, DNS registry over DoH, record and head resolution, Markdown renderer |
-| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, login request, `weft-store` and `weft-app` binaries |
+| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, browser key, privileged requests, `weft-store` and `weft-app` binaries |
 | weft-relay | crates/relay | Relay binary: init, allow, deny, rate, bank, price, serve |
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers |
 | weft-gateway | crates/gateway | HTTP gateway binary over hyper: any target the address bar takes, provenance headers, `/login` sessions |
 | weft | crates/cli | Commands over home, net, and resolve: grants, price, paid push, receipts, login |
-| weft-browser | crates/browser | Tauri 2 app over weft-resolve, TypeScript chrome, store view, login consent dialog |
+| weft-browser | crates/browser | Tauri 2 app over weft-resolve for reading, the daemon's privileged client for signing, store view, login consent dialog |
 
 `vectors/` regenerate only on a format change: `cargo run -p weft-core --example vectors`.
 
@@ -57,6 +57,10 @@ Roadmap `docs/design.md`, plans `progress/M#.md`, loose ends `progress/BACKLOG.m
 - The store is a daemon on `<home>/store.sock` mode 0600, relay framing,
   nonce handshake under `weft/store/1`. Writes are signed by the daemon's
   device key and verified against the manifest. Reads cover the root only.
+  The browser is its one privileged client: key `<home>/browser.key`, 32
+  seed bytes mode 0600, written once by `serve`. That key skips grants;
+  `kinds`, `grants`, `revoke`, `publish` are browser only. The browser
+  never signs; it reads locally for rendering and pushes to relays itself.
 - Payments: voucher `bank`, `to`, `cents`, `nonce`, `sig` under
   `weft/voucher/1`, 256 bytes max, spent once. `receipt` reserved: `relay`,
   sorted `records` 1 to 64 also in `refs`, `until`, `voucher`. Pays only
@@ -74,18 +78,14 @@ Roadmap `docs/design.md`, plans `progress/M#.md`, loose ends `progress/BACKLOG.m
 - iroh `presets::N0` needs internet. Tests use `presets::Minimal` with
   `RelayMode::Disabled` over loopback. CLI network commands need a relay.
 - hickory's `Resolver` never asks for the AD bit; `weft-resolve::Dns` builds it.
-- The relay reads `allow`, `banks`, and `rate` only at start. Argon2id makes
-  the CLI end to end tests take about fifteen seconds in debug. Expected.
+- Relay reads `allow`, `banks`, `rate` only at start. Argon2id: debug CLI tests take 15 s.
 - `deny.toml` ignores unmaintained advisories from iroh, GTK3, Tauri codegen.
-- Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j`, visible
-  workspace only, so `hyprctl dispatch focuswindow class:weft-browser` first.
-  Keys: `hyprctl dispatch sendshortcut ", Tab, class:weft-browser"`; no modifiers.
+- Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j` after `hyprctl dispatch
+  focuswindow class:weft-browser`. Keys: `hyprctl dispatch sendshortcut ", Tab, class:weft-browser"`.
 - Relay `put` order: manifests, records, receipts; unpaid records wait for a
-  receipt in the same batch. `iroh-blobs` 0.103 has no blob delete; `sweep`
-  only reports orphans.
-- reqwest with `rustls-no-provider` panics at `Client::build` unless a
-  provider is installed; the browser installs `rustls::crypto::ring` in
-  `main`. Only the smoke test covers it.
+  receipt in the batch. `iroh-blobs` 0.103 has no delete; `sweep` reports orphans.
+- reqwest `rustls-no-provider` panics at `Client::build` without a provider;
+  the browser installs `rustls::crypto::ring` in `main`. Smoke test only.
 
 ## Run it
 
