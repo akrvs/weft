@@ -10,7 +10,7 @@ pub struct Links {
 }
 
 impl Links {
-    pub const WEFT: Self = Self { record: "weft:", blob: "weft:" };
+    pub const WEFT: Self = Self { record: "weft:", blob: "weft://blob/" };
 }
 
 pub fn render(markdown: &str, links: &Links) -> String {
@@ -244,7 +244,7 @@ mod tests {
         let addr = weft_core::Address::of(b"img").to_string();
         assert_eq!(
             render(&format!("![alt](weft:{addr} \"t\")")),
-            format!("<p><img src=\"weft:{addr}\" alt=\"t\"></p>")
+            format!("<p><img src=\"weft://blob/{addr}\" alt=\"t\"></p>")
         );
         assert_eq!(render("![alt](https://evil.example/x.png)"), "<p></p>");
         assert_eq!(render("![alt](data:image/png;base64,AAAA)"), "<p></p>");

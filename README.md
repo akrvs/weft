@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M8-yellow)
+![status](https://img.shields.io/badge/status-M9-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-71%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-76%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -33,8 +33,9 @@
 │              store [revoke a grant and watch access end]        │
 │              pay [a few cents to host a stranger's page]        │
 │              login [no account, no password, one signature]     │
-│              gate [the browser signs nothing, the daemon does]   │
-│ status     : M8 — spec frozen · 10 crates · one gate · login    │
+│              gate [the browser signs nothing, the daemon does]  │
+│              reads [the browser opens no record or blob file]   │
+│ status     : M9 — spec frozen · 10 crates · one gate · one door │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -210,7 +211,22 @@ The browser is the daemon's one privileged client. `weft-store serve`
 writes `browser.key` next to the socket once; the browser presents it and
 asks the daemon to sign pages, pointers, revokes, and logins. It never
 opens the keystore. Applications asking for the same requests are refused
-with `browser only`. With no daemon running the browser still reads.
+with `browser only`.
+
+Since M9 the browser never opens the record or blob directory either.
+Every record, manifest, pointer, and blob it renders comes over the
+socket, blobs in 512 KiB chunks hashed whole on arrival, and every record
+it fetches from a relay goes back to the daemon, which verifies before it
+keeps. The daemon itself parses each record file once and remembers each
+verification per manifest, while still listing the directory on every
+request so the command line's writes are seen. With no daemon running
+the browser says so and the store dialog offers to start one:
+
+```bash
+weft-browser <root>/home                      # weft-store is not running
+# store > laptop > passphrase > start store   # spawns weft-store serve --device laptop --attach
+# close the browser                           # the daemon exits with it and removes its socket
+```
 
 ## [ Pay Flag ] — a few cents to host a stranger's page
 
@@ -283,21 +299,27 @@ session for the root address, and shows it. Nothing is stored anywhere; a
   authorizes every request through one function against the grants active
   at that instant, and never hands out a record it has not verified. The
   browser's privilege is one key comparison in that same function.
+- The browser holds no record or blob file. Every read for rendering
+  crosses the socket and is verified again by the resolver, blobs are
+  bounded per chunk and in total and hashed whole, and a record kept on
+  the browser's behalf is verified by the daemon first. The daemon the
+  browser starts takes its passphrase on a pipe, never on a command line,
+  and cannot outlive the browser.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
 
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
-crates/home/         weft-home: encrypted keystore · record store · relay list
+crates/home/         weft-home: encrypted keystore · record store · snapshot cache · Reads trait · relay list
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
-crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution · Markdown renderer
-crates/store/        weft-store: store wire · gate · browser key · daemon · client · weft-app sample
+crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution over any Reads · Markdown renderer
+crates/store/        weft-store: store wire · gate · browser key · daemon with --attach · client · Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers · login sessions
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
-crates/browser/      weft-browser: Tauri 2 app over weft-resolve · privileged store client · store view · login dialog
+crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -324,6 +346,6 @@ cargo deny check
 ## [ Next Ops ]
 
 The roadmap is complete. What follows is open: a real payment rail behind
-the voucher seam, blob collection on sweep, rendering reads behind the
-store daemon, `weft:` as a registered URL handler so a site's login link
-opens the browser, persistent gateway sessions. See [`progress/`](progress/).
+the voucher seam, blob collection on sweep, `weft:` as a registered URL
+handler so a site's login link opens the browser, persistent gateway
+sessions, browser visual design. See [`progress/`](progress/).

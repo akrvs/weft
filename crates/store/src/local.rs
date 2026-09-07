@@ -29,13 +29,22 @@ impl Local {
         }
     }
 
-    pub async fn call<T>(&self, f: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+    pub async fn call<T, F>(&self, f: F) -> Result<T>
+    where
+        F: AsyncFnOnce(&mut Client) -> Result<T> + Clone,
+    {
         let mut slot = self.client.lock().await;
-        if slot.is_none() {
+        let reused = slot.is_some();
+        if !reused {
             *slot = Some(self.connect().await?);
         }
         let Some(client) = slot.as_mut() else { return Err(Error::Down) };
-        let result = f(client).await;
+        let mut result = f.clone()(client).await;
+        if reused && matches!(result, Err(Error::Io(_) | Error::Wire(_))) {
+            *slot = Some(self.connect().await?);
+            let Some(client) = slot.as_mut() else { return Err(Error::Down) };
+            result = f(client).await;
+        }
         if matches!(result, Err(Error::Io(_) | Error::Wire(_) | Error::Down)) {
             *slot = None;
         }

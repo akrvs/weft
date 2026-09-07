@@ -17,8 +17,7 @@ scheduled.
 | Live `_weft` record | M4 | No domain carries one yet; the positive DoH path and the AD bit on a real answer are unverified |
 | Gateway host based routing and TLS | M4 | A publisher CNAME to the gateway, TLS in process |
 | Home directory creation outside `init` | M4 | `store` and `keep_blob` expect their directories to exist |
-| Rendering reads behind the store daemon | M8 | The browser signs through the daemon but still reads records and blobs from the home directory for rendering |
-| Store index | M5 | The gate re-reads and re-verifies every record per request |
+| Store cache eviction | M9 | The record cache and the verification memo in `weft_home::Store` never evict |
 | Grants over fetched records | M5 | Only the root's own records are visible through a grant |
 | Application display names | M5 | The store knows an app only by its key address |
 | Blob garbage collection on sweep | M7 | `sweep` reports orphaned blob hashes; iroh-blobs 0.103 keeps `delete` crate private |
@@ -29,6 +28,9 @@ scheduled.
 | Relay reloads config | M2, M7 | `allow`, `banks`, and `rate` are read only at start |
 | Gateway session persistence | M6 | Sessions and pending challenges live in memory; a restart logs everyone out |
 | `weft:` URL handler registration | M6 | A challenge page in Firefox cannot launch weft-browser; the link is pasted by hand |
-| Browser starts the daemon | M8 | With no daemon the browser is read only; a passphrase prompt that spawns `weft-store serve` is a later choice |
+| Start the store from a failed navigation | M9 | A navigation with the daemon down reports it; only the store dialog offers the start form |
+| Daemon stderr after start | M9 | The browser reads the child's stderr only when the start fails; the pipe stays open and unread afterwards |
+| Detached daemon from the browser | M9 | The browser only starts an attached daemon that dies with it |
+| One connection in `Local` | M9 | Browser requests to the daemon are serialized on one socket connection |
 | Browser key rotation | M8 | `browser.key` is written once; replacing it means deleting the file and restarting the daemon |
 | Login policy at the gateway | M6 | Any valid identity logs in; there is no allowlist or first seen record |
