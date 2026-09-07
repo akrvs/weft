@@ -8,6 +8,7 @@ pub enum Error {
     Home(String),
     Refused(&'static str),
     Remote(String),
+    Down,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -21,6 +22,7 @@ impl fmt::Display for Error {
             Self::Home(why) => write!(f, "home: {why}"),
             Self::Refused(why) => write!(f, "refused: {why}"),
             Self::Remote(why) => write!(f, "store: {why}"),
+            Self::Down => f.write_str("weft-store is not running"),
         }
     }
 }

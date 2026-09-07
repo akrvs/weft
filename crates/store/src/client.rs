@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use tokio::net::UnixStream;
-use weft_core::{Address, Challenge, Proof, Record, SecretKey};
+use weft_core::{Address, Challenge, Proof, PublicKey, Record, SecretKey};
 
-use crate::wire::{self, DOMAIN, Request, Response};
+use crate::wire::{self, DOMAIN, MAX_BLOB, Request, Response};
 use crate::{Error, Result};
 
 #[derive(Debug)]
@@ -90,6 +90,71 @@ impl Client {
         match self.call(&Request::Publish { body, name: name.map(str::to_owned) }).await? {
             Response::Publish { records } => decode_all(&records),
             _ => Err(Error::Wire("expected publish")),
+        }
+    }
+}
+
+impl Client {
+    pub async fn record(&mut self, address: Address) -> Result<Option<Record>> {
+        self.one(&Request::Record { address }).await
+    }
+
+    pub async fn manifest(&mut self, author: PublicKey) -> Result<Option<Record>> {
+        self.one(&Request::Manifest { author }).await
+    }
+
+    async fn one(&mut self, request: &Request) -> Result<Option<Record>> {
+        match self.call(request).await? {
+            Response::Get { record } => Ok(Some(Record::from_bytes(&record)?)),
+            Response::Missing => Ok(None),
+            _ => Err(Error::Wire("expected get or missing")),
+        }
+    }
+
+    pub async fn pointers(&mut self, author: PublicKey, name: &str) -> Result<Vec<Record>> {
+        match self.call(&Request::Pointers { author, name: name.to_owned() }).await? {
+            Response::Records { records } => decode_all(&records),
+            _ => Err(Error::Wire("expected records")),
+        }
+    }
+
+    pub async fn blob(&mut self, address: Address) -> Result<Option<Vec<u8>>> {
+        let mut data: Vec<u8> = Vec::new();
+        let mut total = None;
+        loop {
+            let offset = u64::try_from(data.len()).map_err(|_| Error::Wire("blob too large"))?;
+            match self.call(&Request::Blob { address, offset }).await? {
+                Response::Missing if total.is_none() => return Ok(None),
+                Response::Blob { total: t, chunk } => {
+                    if t > MAX_BLOB || total.is_some_and(|known| known != t) {
+                        return Err(Error::Wire("blob total changed or too large"));
+                    }
+                    if total.is_none() {
+                        data.reserve_exact(
+                            usize::try_from(t).map_err(|_| Error::Wire("blob too large"))?,
+                        );
+                        total = Some(t);
+                    }
+                    let end = offset.saturating_add(
+                        u64::try_from(chunk.len()).map_err(|_| Error::Wire("chunk too large"))?,
+                    );
+                    if end > t || (chunk.is_empty() && end < t) {
+                        return Err(Error::Wire("bad blob chunk"));
+                    }
+                    data.extend_from_slice(&chunk);
+                    if end == t {
+                        return Ok(Some(data));
+                    }
+                }
+                _ => return Err(Error::Wire("expected blob")),
+            }
+        }
+    }
+
+    pub async fn keep(&mut self, record: &Record) -> Result<()> {
+        match self.call(&Request::Keep { record: record.to_bytes() }).await? {
+            Response::Ok => Ok(()),
+            _ => Err(Error::Wire("expected ok")),
         }
     }
 }

@@ -58,6 +58,11 @@ answered with `error` and the connection is closed.
 | `grants` | | browser only |
 | `revoke` | `grant`: bytes(32) | browser only |
 | `publish` | `body`: bytes; `name`: text, optional | browser only, body at most 65536 bytes, name 1 to 64 bytes |
+| `record` | `address`: bytes(32) | browser only |
+| `manifest` | `author`: bytes(32) | browser only |
+| `pointers` | `author`: bytes(32); `name`: text | browser only, name 1 to 64 bytes |
+| `blob` | `address`: bytes(32); `offset`: uint | browser only, offset at most 1 GiB |
+| `keep` | `record`: bytes | browser only, at most 131072 bytes |
 
 ## Responses
 
@@ -70,6 +75,9 @@ answered with `error` and the connection is closed.
 | `kinds` | `kinds`: array of [`kind`: text, `count`: uint], sorted by kind |
 | `grants` | `records`: array of bytes, the active grant records |
 | `publish` | `records`: array of bytes, the page then the pointer |
+| `records` | `records`: array of bytes |
+| `blob` | `total`: uint, the blob length; `chunk`: bytes, at most 524288 |
+| `missing` | |
 | `error` | `why`: text |
 
 Arrays in a response hold at most 4096 entries.
@@ -104,3 +112,37 @@ Arrays in a response hold at most 4096 entries.
   given, a pointer for it with the next `seq` and the current head as
   `prev`, stores both, and returns them. The store never pushes to a
   relay; the browser does.
+- `record`, `manifest`, `pointers`, `blob`, and `keep` are the browser's
+  reads for rendering and answer `refused: browser only` for any other
+  key. They cover every author the store holds, not only the root.
+  `record` answers `get` with the record at that address or `missing`.
+  `manifest` answers `get` with the newest valid manifest record by that
+  author or `missing`. `pointers` answers `records` with the pointer
+  records of that author and name that verify against the author's
+  newest local manifest. The browser verifies again what it renders.
+- `blob` answers `blob` with the total length and the bytes from `offset`
+  up to 524288 of them, or `missing`. An offset past the end is refused.
+  The client asks again from the end of the last chunk until it holds
+  `total` bytes, refuses a `total` above 1 GiB or one that changes, and
+  the reader checks the blake3 hash of the whole against the address.
+- `keep` stores a record the browser fetched from a relay. The store
+  verifies it first: a manifest against nothing, anything else against
+  the newest local manifest for its author. What does not verify is
+  refused, and a `login` record is refused as always.
+
+## Index
+
+The store lists its record directory on every request and parses only
+files it has not seen, keyed by the address in the file name. A file
+whose content does not hash to its name is ignored. Verification
+outcomes are remembered per record and manifest, so a record is checked
+once per manifest that ever applied to it. Other writers to the same
+directory, such as the command line, are seen on the next request.
+
+## Attach
+
+`weft-store serve --device <label> --attach` reads the passphrase as the
+first line of standard input and exits when standard input closes. The
+browser starts the daemon this way with a pipe it holds until it exits,
+so the daemon lives exactly as long as the browser. Without `--attach`
+the daemon prompts on the terminal and runs until it is stopped.

@@ -22,6 +22,8 @@ reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 tauri.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk.workspace = true

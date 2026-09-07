@@ -1,29 +1,37 @@
 #![forbid(unsafe_code)]
 
 use std::fmt::Write;
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Challenge, Grant, Manifest, login};
+use weft_core::{Address, Challenge, Grant, login};
 use weft_home::Home;
 use weft_resolve::{Links, Page, Resolver, Target};
-use weft_store::{Client, browser_key, browser_key_path, socket_path};
+use weft_store::{Local, socket_path};
+use zeroize::Zeroizing;
 
 const CHROME_HEIGHT: i32 = 88;
-const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const NOT_RUNNING: &str = "weft-store is not running";
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
+const START_TIMEOUT: Duration = Duration::from_secs(60);
+const START_POLL: Duration = Duration::from_millis(200);
 
 struct App {
-    resolver: Resolver,
+    resolver: Resolver<Local>,
     web: Mutex<Option<Webview>>,
+    daemon: Mutex<Option<Child>>,
 }
 
 #[derive(Serialize)]
 struct Identity {
     root: String,
     devices: Vec<String>,
+    labels: Vec<String>,
     relays: Vec<String>,
 }
 
@@ -31,19 +39,6 @@ type Result<T> = core::result::Result<T, String>;
 
 fn err(e: &impl ToString) -> String {
     e.to_string()
-}
-
-async fn store_client(app: &App) -> Result<Client> {
-    let home = app.resolver.home().path();
-    if !browser_key_path(home).exists() {
-        return Err(NOT_RUNNING.to_owned());
-    }
-    let key = browser_key(home).map_err(|e| err(&e))?;
-    match Client::connect(&socket_path(home), &key).await {
-        Ok(client) => Ok(client),
-        Err(weft_store::Error::Io(_)) => Err(NOT_RUNNING.to_owned()),
-        Err(e) => Err(err(&e)),
-    }
 }
 
 #[tauri::command]
@@ -61,14 +56,11 @@ fn initial() -> Option<String> {
 #[allow(clippy::needless_pass_by_value)]
 fn identity(app: State<'_, App>) -> Result<Identity> {
     let home = app.resolver.home();
+    let devices = home.devices().map_err(|e| err(&e))?;
     Ok(Identity {
         root: home.root().map_err(|e| err(&e))?.address().to_string(),
-        devices: home
-            .devices()
-            .map_err(|e| err(&e))?
-            .into_iter()
-            .map(|d| format!("{}  {}", d.public.address(), d.label))
-            .collect(),
+        devices: devices.iter().map(|d| format!("{}  {}", d.public.address(), d.label)).collect(),
+        labels: devices.into_iter().map(|d| d.label).collect(),
         relays: home.relays().map_err(|e| err(&e))?.iter().map(ToString::to_string).collect(),
     })
 }
@@ -90,10 +82,10 @@ struct StoreView {
 
 #[tauri::command]
 async fn store_view(app: State<'_, App>) -> Result<StoreView> {
-    let mut client = store_client(&app).await?;
-    let kinds = client.kinds().await.map_err(|e| err(&e))?;
-    let grants = client
-        .grants()
+    let store = app.resolver.reads();
+    let kinds = store.call(async |c| c.kinds().await).await.map_err(|e| err(&e))?;
+    let grants = store
+        .call(async |c| c.grants().await)
         .await
         .map_err(|e| err(&e))?
         .iter()
@@ -114,16 +106,19 @@ async fn store_view(app: State<'_, App>) -> Result<StoreView> {
 #[tauri::command]
 async fn revoke_grant(app: State<'_, App>, grant: String) -> Result<String> {
     let grant: Address = grant.parse().map_err(|e| err(&e))?;
-    let mut client = store_client(&app).await?;
-    Ok(client.revoke(grant).await.map_err(|e| err(&e))?.to_string())
+    let revoked = app.resolver.reads().call(async |c| c.revoke(grant).await).await;
+    Ok(revoked.map_err(|e| err(&e))?.to_string())
 }
 
 #[tauri::command]
 async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<String> {
     let name = name.trim();
-    let mut client = store_client(&app).await?;
-    let records = client
-        .publish(markdown.into_bytes(), (!name.is_empty()).then_some(name))
+    let body = markdown.into_bytes();
+    let pointer = (!name.is_empty()).then_some(name);
+    let records = app
+        .resolver
+        .reads()
+        .call(async |c| c.publish(body, pointer).await)
         .await
         .map_err(|e| err(&e))?;
     let page = records.first().ok_or("store returned no records")?;
@@ -134,17 +129,10 @@ async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<
         let root = home.root().map_err(|e| err(&e))?;
         let client = app.resolver.client().await.map_err(|e| err(&e))?;
         let mut push = records.clone();
-        if let Some(m) = app.resolver.local_manifest(&root).map_err(|e| err(&e))? {
-            let manifest_record = app
-                .resolver
-                .store()
-                .all()
-                .map_err(|e| err(&e))?
-                .into_iter()
-                .find(|r| Manifest::from_record(r).is_ok_and(|x| x.seq == m.seq));
-            if let Some(mr) = manifest_record {
-                push.insert(0, mr);
-            }
+        if let Some(manifest) =
+            app.resolver.local_manifest_record(&root).await.map_err(|e| err(&e))?
+        {
+            push.insert(0, manifest);
         }
         for relay in relays {
             let outcome = client.put(relay, &push).await.map_err(|e| err(&e))?;
@@ -195,8 +183,8 @@ fn login_prompt(challenge: String) -> Result<LoginPrompt> {
 async fn login(app: State<'_, App>, challenge: String) -> Result<String> {
     let c = Challenge::from_text(&challenge).map_err(|e| err(&e))?;
     let url = service_url(&c.service)?;
-    let mut store = store_client(&app).await?;
-    let proof = store.login(&c).await.map_err(|e| err(&e))?;
+    let proof =
+        app.resolver.reads().call(async |s| s.login(&c).await).await.map_err(|e| err(&e))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(LOGIN_TIMEOUT)
@@ -215,6 +203,75 @@ async fn login(app: State<'_, App>, challenge: String) -> Result<String> {
     } else {
         Err(format!("{} answered {status}", c.service))
     }
+}
+
+fn store_binary() -> PathBuf {
+    std::env::current_exe()
+        .map(|p| p.with_file_name("weft-store"))
+        .ok()
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("weft-store"))
+}
+
+fn stderr_of(child: &mut Child) -> String {
+    let mut text = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut text);
+    }
+    text.trim().to_owned()
+}
+
+#[tauri::command]
+async fn start_store(app: State<'_, App>, device: String, passphrase: String) -> Result<String> {
+    let passphrase = Zeroizing::new(passphrase);
+    if passphrase.is_empty() || passphrase.contains(['\r', '\n']) {
+        return Err("passphrase must be one non-empty line".to_owned());
+    }
+    {
+        let mut slot = app.daemon.lock().map_err(|e| err(&e))?;
+        if let Some(child) = slot.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return Err("the store is already started from here".to_owned()),
+                _ => *slot = None,
+            }
+        }
+    }
+    let home = app.resolver.home().path();
+    let mut child = Command::new(store_binary())
+        .arg("serve")
+        .arg("--device")
+        .arg(&device)
+        .arg("--attach")
+        .env("WEFT_HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start weft-store: {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let mut line = Zeroizing::new(passphrase.as_bytes().to_vec());
+        line.push(b'\n');
+        std::io::Write::write_all(stdin, &line).map_err(|e| err(&e))?;
+        std::io::Write::flush(stdin).map_err(|e| err(&e))?;
+    }
+    let socket = socket_path(home);
+    let deadline = std::time::Instant::now() + START_TIMEOUT;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            let why = stderr_of(&mut child);
+            return Err(if why.is_empty() { format!("weft-store exited: {status}") } else { why });
+        }
+        if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err("weft-store did not open its socket in time".to_owned());
+        }
+        tokio::time::sleep(START_POLL).await;
+    }
+    *app.daemon.lock().map_err(|e| err(&e))? = Some(child);
+    Ok(format!("store started with device {device}; it stops when the browser closes"))
 }
 
 fn frame(chrome: &Webview) -> Result<()> {
@@ -288,29 +345,38 @@ fn close_web(app: State<'_, App>, window: Window) -> Result<()> {
     Ok(())
 }
 
-fn blob(app: &App, path: &str) -> Option<Vec<u8>> {
+async fn blob(app: &App, path: &str) -> Option<Vec<u8>> {
     let address: Address = path.rsplit('/').next()?.parse().ok()?;
-    app.resolver.blob(&address)
+    app.resolver.blob(address).await.ok().flatten()
 }
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let home = Home::new(std::env::var_os("WEFT_HOME").map_or_else(Home::default_dir, Into::into));
-    let app = App { resolver: Resolver::new(home), web: Mutex::new(None) };
+    let reads = Local::new(home.path().to_path_buf());
+    let app = App {
+        resolver: Resolver::new(home, reads),
+        web: Mutex::new(None),
+        daemon: Mutex::new(None),
+    };
     let result = tauri::Builder::default()
         .manage(app)
-        .register_uri_scheme_protocol("weft", |ctx, request| {
-            let body = blob(&ctx.app_handle().state::<App>(), request.uri().path());
-            match body {
-                Some(data) => tauri::http::Response::builder()
-                    .header("content-type", "application/octet-stream")
-                    .body(data)
-                    .unwrap_or_default(),
-                None => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap_or_default(),
-            }
+        .register_asynchronous_uri_scheme_protocol("weft", |ctx, request, responder| {
+            let handle = ctx.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            tauri::async_runtime::spawn(async move {
+                let response = match blob(&handle.state::<App>(), &path).await {
+                    Some(data) => tauri::http::Response::builder()
+                        .header("content-type", "application/octet-stream")
+                        .body(data)
+                        .unwrap_or_default(),
+                    None => tauri::http::Response::builder()
+                        .status(404)
+                        .body(Vec::new())
+                        .unwrap_or_default(),
+                };
+                responder.respond(response);
+            });
         })
         .invoke_handler(tauri::generate_handler![
             resolve,
@@ -322,7 +388,8 @@ fn main() {
             store_view,
             revoke_grant,
             login_prompt,
-            login
+            login,
+            start_store
         ])
         .setup(|app| {
             let window = tauri::window::WindowBuilder::new(app, "main")

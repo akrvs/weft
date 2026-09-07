@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::io::{BufRead, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -7,10 +8,11 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tokio::net::{UnixListener, UnixStream};
-use weft_home::{Home, Store, home};
+use weft_home::{Home, home};
 use weft_store::{
     Error, Gate, Result, browser_key, browser_key_path, create_browser_key, socket_path,
 };
+use zeroize::Zeroizing;
 
 #[derive(Parser, Debug)]
 #[command(name = "weft-store", version, about = "The personal store as a gate")]
@@ -26,6 +28,8 @@ enum Command {
     Serve {
         #[arg(long)]
         device: String,
+        #[arg(long)]
+        attach: bool,
     },
 }
 
@@ -33,8 +37,8 @@ enum Command {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = Home::new(cli.home.unwrap_or_else(Home::default_dir));
-    let Command::Serve { device } = cli.command;
-    match serve(home, &device).await {
+    let Command::Serve { device, attach } = cli.command;
+    match serve(home, &device, attach).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -55,11 +59,32 @@ async fn bind(path: &std::path::Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-async fn serve(home: Home, device: &str) -> Result<()> {
+fn passphrase_line() -> Result<Zeroizing<Vec<u8>>> {
+    let mut line = Zeroizing::new(String::new());
+    std::io::stdin().lock().read_line(&mut line)?;
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Err(Error::Home("passphrase must not be empty".to_owned()));
+    }
+    Ok(Zeroizing::new(trimmed.as_bytes().to_vec()))
+}
+
+async fn stdin_closed() {
+    let _ = tokio::task::spawn_blocking(|| {
+        let mut sink = [0u8; 64];
+        let mut stdin = std::io::stdin().lock();
+        while matches!(stdin.read(&mut sink), Ok(n) if n > 0) {}
+    })
+    .await;
+}
+
+async fn serve(home: Home, device: &str, attach: bool) -> Result<()> {
     let root = home.root()?;
-    let key = home.open(device, &home::passphrase(false)?)?;
-    let records = home.store().all()?;
-    let manifest = Store::manifest(&records, &root);
+    let pass = if attach { passphrase_line()? } else { home::passphrase(false)? };
+    let key = home.open(device, &pass)?;
+    drop(pass);
+    let snap = home.store().snapshot()?;
+    let manifest = snap.manifest(&root);
     let authorized = key.public() == root
         || manifest
             .as_ref()
@@ -85,6 +110,7 @@ async fn serve(home: Home, device: &str) -> Result<()> {
         r = weft_store::serve(gate, listener) => r?,
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+        () = stdin_closed(), if attach => {}
     }
     let _ = std::fs::remove_file(&path);
     Ok(())

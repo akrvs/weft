@@ -11,6 +11,7 @@ pub enum Error {
     Target(&'static str),
     Binding(&'static str),
     NotFound(Address),
+    Blob(Address),
     NoPointer(String),
     Text,
 }
@@ -27,6 +28,7 @@ impl fmt::Display for Error {
             Self::Target(why) => write!(f, "target: {why}"),
             Self::Binding(why) => write!(f, "binding: {why}"),
             Self::NotFound(address) => write!(f, "{address} not found locally or on any relay"),
+            Self::Blob(address) => write!(f, "blob {address} does not hash to its address"),
             Self::NoPointer(name) => write!(f, "no valid pointer named {name}"),
             Self::Text => f.write_str("page body is not utf-8"),
         }

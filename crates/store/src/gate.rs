@@ -1,12 +1,14 @@
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use weft_core::{
     Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, PublicKey, Record, Revoke,
-    SecretKey, grant, login, verify,
+    SecretKey, grant, login, manifest, verify,
 };
-use weft_home::{Home, Store};
+use weft_home::{Home, Snapshot, Store};
 use zeroize::Zeroizing;
 
+use crate::wire::MAX_CHUNK;
 use crate::{Error, Result};
 
 pub const SOCKET: &str = "store.sock";
@@ -45,15 +47,19 @@ pub struct Gate {
     browser: PublicKey,
 }
 
-struct Snapshot {
-    records: Vec<Record>,
+struct View {
+    snap: Snapshot,
     manifest: Option<Manifest>,
     now: u64,
 }
 
-impl Snapshot {
+impl View {
     fn grants(&self, root: &PublicKey) -> Vec<(&Record, Grant)> {
-        Store::grants(&self.records, root, self.manifest.as_ref(), self.now)
+        self.snap.grants(root, self.manifest.as_ref(), self.now)
+    }
+
+    fn own<'a>(&'a self, root: &PublicKey) -> impl Iterator<Item = &'a Record> {
+        self.snap.own(root, self.manifest.as_ref())
     }
 }
 
@@ -70,24 +76,24 @@ impl Gate {
         self.key.public()
     }
 
-    fn snapshot(&self) -> Result<Snapshot> {
-        let records = self.home.store().all()?;
-        let manifest = Store::manifest(&records, &self.root);
-        Ok(Snapshot { records, manifest, now: weft_home::now()? })
+    fn view(&self) -> Result<View> {
+        let snap = self.home.store().snapshot()?;
+        let manifest = snap.manifest(&self.root);
+        Ok(View { snap, manifest, now: weft_home::now()? })
     }
 
     fn privileged(&self, app: &PublicKey) -> Result<()> {
         if app == &self.browser { Ok(()) } else { Err(Error::Refused("browser only")) }
     }
 
-    fn allow(&self, snap: &Snapshot, app: &PublicKey, kind: &str, write: bool) -> Result<()> {
+    fn allow(&self, view: &View, app: &PublicKey, kind: &str, write: bool) -> Result<()> {
         if grant::RESERVED.contains(&kind) {
             return Err(Error::Refused("reserved kind"));
         }
         if app == &self.browser {
             return Ok(());
         }
-        let permitted = snap.grants(&self.root).iter().any(|(_, g)| {
+        let permitted = view.grants(&self.root).iter().any(|(_, g)| {
             &g.app == app
                 && g.covers(kind)
                 && if write { g.access.writes() } else { g.access.reads() }
@@ -95,51 +101,45 @@ impl Gate {
         if permitted { Ok(()) } else { Err(Error::Refused("no active grant")) }
     }
 
-    fn own<'a>(&self, snap: &'a Snapshot) -> impl Iterator<Item = &'a Record> {
-        let root = self.root;
-        let manifest = snap.manifest.as_ref();
-        snap.records.iter().filter(move |r| r.author() == &root && verify(r, manifest).is_ok())
-    }
-
-    fn draft(&self, snap: &Snapshot, kind: &str, refs: Vec<Address>, body: Vec<u8>) -> Draft {
+    fn draft(&self, view: &View, kind: &str, refs: Vec<Address>, body: Vec<u8>) -> Draft {
         Draft {
             author: self.root,
             signer: self.key.public(),
             kind: kind.to_owned(),
-            created: snap.now,
+            created: view.now,
             refs,
             body: Body::Inline(body),
         }
     }
 
-    fn sign(&self, snap: &Snapshot, draft: Draft) -> Result<Record> {
+    fn sign(&self, view: &View, draft: Draft) -> Result<Record> {
         let record = draft.sign(&self.key)?;
-        verify(&record, snap.manifest.as_ref())?;
+        verify(&record, view.manifest.as_ref())?;
         Ok(record)
     }
 
-    fn keep(&self, snap: &Snapshot, draft: Draft) -> Result<Record> {
-        let record = self.sign(snap, draft)?;
+    fn keep_signed(&self, view: &View, draft: Draft) -> Result<Record> {
+        let record = self.sign(view, draft)?;
         self.home.store().put(&record)?;
         Ok(record)
     }
 
     pub fn list(&self, app: &PublicKey, kind: &str) -> Result<Vec<Address>> {
-        let snap = self.snapshot()?;
-        self.allow(&snap, app, kind, false)?;
+        let view = self.view()?;
+        self.allow(&view, app, kind, false)?;
         let mut out: Vec<Address> =
-            self.own(&snap).filter(|r| r.kind() == kind).map(Record::address).collect();
+            view.own(&self.root).filter(|r| r.kind() == kind).map(Record::address).collect();
         out.sort_unstable();
         Ok(out)
     }
 
     pub fn get(&self, app: &PublicKey, address: &Address) -> Result<Vec<u8>> {
-        let snap = self.snapshot()?;
-        let record = self
-            .own(&snap)
+        let view = self.view()?;
+        let record = view
+            .own(&self.root)
             .find(|r| &r.address() == address)
             .ok_or(Error::Refused("no such record"))?;
-        self.allow(&snap, app, record.kind(), false)?;
+        self.allow(&view, app, record.kind(), false)?;
         Ok(record.to_bytes())
     }
 
@@ -150,25 +150,25 @@ impl Gate {
         body: Vec<u8>,
         refs: Vec<Address>,
     ) -> Result<Address> {
-        let snap = self.snapshot()?;
-        self.allow(&snap, app, kind, true)?;
-        Ok(self.keep(&snap, self.draft(&snap, kind, refs, body))?.address())
+        let view = self.view()?;
+        self.allow(&view, app, kind, true)?;
+        Ok(self.keep_signed(&view, self.draft(&view, kind, refs, body))?.address())
     }
 
     pub fn login(&self, app: &PublicKey, challenge: &[u8]) -> Result<Vec<u8>> {
-        let snap = self.snapshot()?;
-        self.allow(&snap, app, login::KIND, true)?;
+        let view = self.view()?;
+        self.allow(&view, app, login::KIND, true)?;
         let challenge = Challenge::decode(challenge)?;
-        let record = self.sign(&snap, challenge.draft(&self.root, &self.key.public(), snap.now))?;
-        let manifest = Store::manifest_record(&snap.records, &self.root).cloned();
+        let record = self.sign(&view, challenge.draft(&self.root, &self.key.public(), view.now))?;
+        let manifest = view.snap.manifest_record(&self.root).cloned();
         Ok(Proof { login: record, manifest }.encode())
     }
 
     pub fn kinds(&self, app: &PublicKey) -> Result<Vec<(String, u64)>> {
         self.privileged(app)?;
-        let snap = self.snapshot()?;
+        let view = self.view()?;
         let mut out: Vec<(String, u64)> = Vec::new();
-        for r in self.own(&snap) {
+        for r in view.own(&self.root) {
             match out.iter_mut().find(|(k, _)| k == r.kind()) {
                 Some((_, n)) => *n += 1,
                 None => out.push((r.kind().to_owned(), 1)),
@@ -180,18 +180,18 @@ impl Gate {
 
     pub fn grants(&self, app: &PublicKey) -> Result<Vec<Record>> {
         self.privileged(app)?;
-        let snap = self.snapshot()?;
-        Ok(snap.grants(&self.root).into_iter().map(|(r, _)| r.clone()).collect())
+        let view = self.view()?;
+        Ok(view.grants(&self.root).into_iter().map(|(r, _)| r.clone()).collect())
     }
 
     pub fn revoke(&self, app: &PublicKey, grant: Address) -> Result<Address> {
         self.privileged(app)?;
-        let snap = self.snapshot()?;
-        if !snap.grants(&self.root).iter().any(|(r, _)| r.address() == grant) {
+        let view = self.view()?;
+        if !view.grants(&self.root).iter().any(|(r, _)| r.address() == grant) {
             return Err(Error::Refused("no such grant"));
         }
-        let draft = Revoke { grant }.draft(&self.root, &self.key.public(), snap.now);
-        Ok(self.keep(&snap, draft)?.address())
+        let draft = Revoke { grant }.draft(&self.root, &self.key.public(), view.now);
+        Ok(self.keep_signed(&view, draft)?.address())
     }
 
     pub fn publish(
@@ -201,20 +201,77 @@ impl Gate {
         name: Option<&str>,
     ) -> Result<Vec<Record>> {
         self.privileged(app)?;
-        let snap = self.snapshot()?;
-        let page = self.sign(&snap, self.draft(&snap, PAGE, vec![], body))?;
+        let view = self.view()?;
+        let page = self.sign(&view, self.draft(&view, PAGE, vec![], body))?;
         let mut out = vec![page];
         if let Some(name) = name {
-            let existing = Store::pointers(&snap.records, &self.root, name, snap.manifest.as_ref());
+            let existing = view.snap.pointers(&self.root, name, view.manifest.as_ref());
             let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
             let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
             let pointer = Pointer { name: name.to_owned(), target: out[0].address(), seq, prev };
-            out.push(self.sign(&snap, pointer.draft(&self.root, &self.key.public(), snap.now))?);
+            out.push(self.sign(&view, pointer.draft(&self.root, &self.key.public(), view.now))?);
         }
         for record in &out {
             self.home.store().put(record)?;
         }
         Ok(out)
+    }
+
+    pub fn record(&self, app: &PublicKey, address: Address) -> Result<Option<Vec<u8>>> {
+        self.privileged(app)?;
+        Ok(self.home.store().record(address)?.map(|r| r.to_bytes()))
+    }
+
+    pub fn manifest(&self, app: &PublicKey, author: &PublicKey) -> Result<Option<Vec<u8>>> {
+        self.privileged(app)?;
+        Ok(self.home.store().snapshot()?.manifest_record(author).map(Record::to_bytes))
+    }
+
+    pub fn pointers(&self, app: &PublicKey, author: &PublicKey, name: &str) -> Result<Vec<Record>> {
+        self.privileged(app)?;
+        let snap = self.home.store().snapshot()?;
+        let manifest = snap.manifest(author);
+        Ok(snap
+            .pointers(author, name, manifest.as_ref())
+            .into_iter()
+            .map(|(r, _)| r.clone())
+            .collect())
+    }
+
+    pub fn blob(
+        &self,
+        app: &PublicKey,
+        address: &Address,
+        offset: u64,
+    ) -> Result<Option<(u64, Vec<u8>)>> {
+        self.privileged(app)?;
+        let mut file = match std::fs::File::open(self.home.blob_path(address)) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let total = file.metadata()?.len();
+        if offset > total {
+            return Err(Error::Refused("offset past the end"));
+        }
+        let want = usize::try_from(total - offset).map_or(MAX_CHUNK, |rest| rest.min(MAX_CHUNK));
+        file.seek(SeekFrom::Start(offset))?;
+        let mut chunk = vec![0u8; want];
+        file.read_exact(&mut chunk)?;
+        Ok(Some((total, chunk)))
+    }
+
+    pub fn keep(&self, app: &PublicKey, record: &[u8]) -> Result<()> {
+        self.privileged(app)?;
+        let record = Record::from_bytes(record)?;
+        let manifest = if record.kind() == manifest::KIND {
+            None
+        } else {
+            self.home.store().snapshot()?.manifest(record.author())
+        };
+        verify(&record, manifest.as_ref())?;
+        self.home.store().put(&record)?;
+        Ok(())
     }
 
     pub fn verify_auth(app: &PublicKey, nonce: &[u8; 32], sig: &[u8; 64]) -> Result<()> {

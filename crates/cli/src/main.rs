@@ -234,8 +234,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         }
         Command::Login { command: LoginCommand::Verify { proof, service } } => {
             let proof = Proof::from_text(&proof)?;
-            let records = store.all()?;
-            let local = Store::manifest(&records, proof.login.author());
+            let local = store.snapshot()?.manifest(proof.login.author());
             let login = proof.verify(&service, home::now()?, local.as_ref())?;
             println!("{}", login.author.address());
             println!("signer  {}", login.signer.address());
@@ -250,8 +249,8 @@ fn login_sign(home: &Home, store: &Store, challenge: &str, signer: &str) -> Resu
     let root = home.root()?;
     let key = home.open(signer, &home::passphrase(false)?)?;
     let record = challenge.draft(&root, &key.public(), home::now()?).sign(&key)?;
-    let records = store.all()?;
-    let manifest = Store::manifest_record(&records, &root);
+    let snap = store.snapshot()?;
+    let manifest = snap.manifest_record(&root);
     verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())?;
     let proof = Proof { login: record, manifest: manifest.cloned() };
     println!("{}", proof.to_text());
@@ -267,7 +266,7 @@ fn sign_own(
     let root = home.root()?;
     let key = home.open(signer, &home::passphrase(false)?)?;
     let record = draft(&root, &key.public(), home::now()?).sign(&key)?;
-    let manifest = Store::manifest(&store.all()?, &root);
+    let manifest = store.snapshot()?.manifest(&root);
     verify(&record, manifest.as_ref())?;
     store.put(&record)?;
     Ok(record)
@@ -308,12 +307,11 @@ fn pay(
 
 fn receipts(home: &Home, store: &Store) -> Result<()> {
     let root = home.root()?;
-    let records = store.all()?;
-    let manifest = Store::manifest(&records, &root);
-    let mut receipts: Vec<(&Record, Receipt)> = records
-        .iter()
-        .filter(|r| r.kind() == weft_core::receipt::KIND && *r.author() == root)
-        .filter(|r| verify(r, manifest.as_ref()).is_ok())
+    let snap = store.snapshot()?;
+    let manifest = snap.manifest(&root);
+    let mut receipts: Vec<(&Record, Receipt)> = snap
+        .own(&root, manifest.as_ref())
+        .filter(|r| r.kind() == weft_core::receipt::KIND)
         .filter_map(|r| Receipt::from_record(r).ok().map(|x| (r, x)))
         .collect();
     receipts.sort_by_key(|(r, _)| r.created());
@@ -358,9 +356,9 @@ fn grant_add(
 
 fn grant_list(home: &Home, store: &Store) -> Result<()> {
     let root = home.root()?;
-    let records = store.all()?;
-    let manifest = Store::manifest(&records, &root);
-    for (record, grant) in Store::grants(&records, &root, manifest.as_ref(), home::now()?) {
+    let snap = store.snapshot()?;
+    let manifest = snap.manifest(&root);
+    for (record, grant) in snap.grants(&root, manifest.as_ref(), home::now()?) {
         let expiry = grant.expires.map_or(String::new(), |e| format!("  expires {e}"));
         println!(
             "{}  app {}  {}  {}{expiry}",
@@ -402,9 +400,9 @@ fn whoami(home: &Home) -> Result<()> {
 
 fn manifest(home: &Home, store: &Store) -> Result<()> {
     let root = home.root()?;
-    let records = store.all()?;
-    let prev = records
-        .iter()
+    let snap = store.snapshot()?;
+    let prev = snap
+        .records()
         .filter(|r| r.author() == &root && r.kind() == weft_core::manifest::KIND)
         .filter_map(|r| Manifest::from_record(r).ok().map(|m| (r.address(), m)))
         .max_by_key(|(_, m)| m.seq);
@@ -413,7 +411,7 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
     let created = home::now()?;
     let record = next.draft(&root, created).sign(&key)?;
     let path = store.put(&record)?;
-    let heads = Store::pointers(&records, &root, weft_core::pointer::MANIFEST, None);
+    let heads = snap.pointers(&root, weft_core::pointer::MANIFEST, None);
     let seq = heads.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
     let prev_heads = Store::head(&heads).map(|(r, _)| r.address()).into_iter().collect();
     let pointer = Pointer {
@@ -461,9 +459,9 @@ fn sign(
 
 fn point(home: &Home, store: &Store, name: String, target: Address, signer: &str) -> Result<()> {
     let root = home.root()?;
-    let records = store.all()?;
-    let manifest = Store::manifest(&records, &root);
-    let existing = Store::pointers(&records, &root, &name, manifest.as_ref());
+    let snap = store.snapshot()?;
+    let manifest = snap.manifest(&root);
+    let existing = snap.pointers(&root, &name, manifest.as_ref());
     let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
     let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
     let key = home.open(signer, &home::passphrase(false)?)?;
@@ -483,7 +481,7 @@ fn verify_file(
     let manifest = match manifest_path {
         Some(p) => Some(Manifest::from_record(&read_record(p)?)?),
         None if record.self_signed() => None,
-        None => Store::manifest(&store.all()?, record.author()),
+        None => store.snapshot()?.manifest(record.author()),
     };
     let v = verify(&record, manifest.as_ref())?;
     println!("ok      {}", v.address);
@@ -574,13 +572,13 @@ async fn dns(domain: &str) -> Result<()> {
 
 fn resolve(store: &Store, author: Address, name: &str) -> Result<()> {
     let author = weft_core::PublicKey::from_bytes(author.bytes())?;
-    let records = store.all()?;
-    let manifest = Store::manifest(&records, &author);
-    let pointers = Store::pointers(&records, &author, name, manifest.as_ref());
+    let snap = store.snapshot()?;
+    let manifest = snap.manifest(&author);
+    let pointers = snap.pointers(&author, name, manifest.as_ref());
     let Some((record, pointer)) = Store::head(&pointers) else {
         return fail(format!("no valid pointer named {name} by {}", author.address()));
     };
-    let present = records.iter().any(|r| r.address() == pointer.target);
+    let present = snap.find(pointer.target).is_some();
     println!("{}", pointer.target);
     println!(
         "seq {}  signer {}  pointer {}",

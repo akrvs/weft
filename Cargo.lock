@@ -6278,10 +6278,12 @@ dependencies = [
  "serde",
  "tauri",
  "tauri-build",
+ "tokio",
  "weft-core",
  "weft-home",
  "weft-resolve",
  "weft-store",
+ "zeroize",
 ]
 
 [[package]]

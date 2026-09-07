@@ -12,7 +12,7 @@ type Page = {
   blob: string | null;
 };
 
-type Identity = { root: string; devices: string[]; relays: string[] };
+type Identity = { root: string; devices: string[]; labels: string[]; relays: string[] };
 
 declare global {
   interface Window {
@@ -144,7 +144,27 @@ type StoreView = { kinds: [string, number][]; grants: GrantView[] };
 
 const storeDialog = el<HTMLDialogElement>("store");
 const revokeForm = el<HTMLFormElement>("revoke");
+const startForm = el<HTMLFormElement>("start");
+const startDevice = el<HTMLSelectElement>("start-device");
+const startPass = el<HTMLInputElement>("start-pass");
 const storeResult = el("store-result");
+const NOT_RUNNING = "weft-store is not running";
+
+async function offerStart(): Promise<void> {
+  startDevice.replaceChildren();
+  try {
+    const id = await invoke<Identity>("identity");
+    for (const label of id.labels) {
+      const option = document.createElement("option");
+      option.value = label;
+      option.textContent = label;
+      startDevice.append(option);
+    }
+  } catch (e) {
+    storeResult.textContent = String(e);
+  }
+  startForm.hidden = false;
+}
 
 function row(cells: (string | HTMLElement)[]): HTMLTableRowElement {
   const tr = document.createElement("tr");
@@ -179,10 +199,27 @@ async function showStore(): Promise<void> {
       grants.append(row([g.app, g.access, g.kinds, expires, button]));
     }
     if (view.grants.length === 0) grants.append(row(["no active grants"]));
+    startForm.hidden = true;
+  } catch (e) {
+    storeResult.textContent = String(e);
+    if (String(e).includes(NOT_RUNNING)) await offerStart();
+  }
+}
+
+startForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  storeResult.textContent = "starting...";
+  try {
+    storeResult.textContent = await invoke<string>("start_store", {
+      device: startDevice.value,
+      passphrase: startPass.value,
+    });
+    startPass.value = "";
+    await showStore();
   } catch (e) {
     storeResult.textContent = String(e);
   }
-}
+});
 
 el("store-toggle").addEventListener("click", async () => {
   storeResult.textContent = "";

@@ -8,4 +8,4 @@ pub mod store;
 
 pub use fail::{Fail, Result, fail};
 pub use home::{Home, ROOT, now, passphrase};
-pub use store::{Store, read_record};
+pub use store::{Reads, Snapshot, Store, read_record};

@@ -14,11 +14,12 @@ pub const ROOT: &str = "root";
 #[derive(Debug)]
 pub struct Home {
     dir: PathBuf,
+    store: Store,
 }
 
 impl Home {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self { store: Store::new(dir.clone()), dir }
     }
 
     pub fn default_dir() -> PathBuf {
@@ -30,7 +31,7 @@ impl Home {
     }
 
     pub fn store(&self) -> Store {
-        Store::new(self.dir.join("records"))
+        self.store.clone()
     }
 
     fn root_path(&self) -> PathBuf {
@@ -200,15 +201,11 @@ impl Home {
     }
 
     pub fn blob_path(&self, address: &weft_core::Address) -> PathBuf {
-        self.dir.join("blobs").join(address.to_string())
+        self.store.blob_path(address)
     }
 
     pub fn keep_blob(&self, address: &weft_core::Address, data: &[u8]) -> Result<()> {
-        let path = self.blob_path(address);
-        if path.is_file() {
-            return Ok(());
-        }
-        fs::write(&path, data)
+        self.store.keep_blob(address, data)
     }
 
     pub fn path(&self) -> &Path {

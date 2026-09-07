@@ -75,7 +75,8 @@ async fn start(site: &Site) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let gateway =
-        Gateway::new(Resolver::new(Home::new(site.dir.clone())), format!("http://{addr}")).unwrap();
+        Gateway::new(Resolver::local(Home::new(site.dir.clone())), format!("http://{addr}"))
+            .unwrap();
     tokio::spawn(weft_gateway::serve(listener, Arc::new(gateway)));
     addr.to_string()
 }
@@ -186,6 +187,9 @@ async fn rejects_what_it_should() {
         404
     );
     assert_eq!(request(&addr, "GET", "/blob/junk").await.status, 400);
+    let forged = Address::of(b"forged");
+    Home::new(site.dir.clone()).keep_blob(&forged, b"not the bytes it names").unwrap();
+    assert_eq!(request(&addr, "GET", &format!("/blob/{forged}")).await.status, 404);
     assert_eq!(request(&addr, "GET", "/notanaddress").await.status, 400);
     assert_eq!(request(&addr, "GET", "/../etc/passwd").await.status, 400);
     assert_eq!(request(&addr, "GET", "/%ff").await.status, 400);

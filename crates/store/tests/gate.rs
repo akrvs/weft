@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::missing_panics_doc)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines
+)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -9,9 +15,9 @@ use weft_core::{
     Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Record, Revoke,
     SecretKey, verify,
 };
-use weft_home::{Home, Store};
-use weft_store::wire::{self, DOMAIN, Request, Response};
-use weft_store::{Client, Error, Gate};
+use weft_home::{Home, Reads, Store};
+use weft_store::wire::{self, DOMAIN, MAX_BLOB, MAX_CHUNK, MAX_RECORD, Request, Response};
+use weft_store::{Client, Error, Gate, Local};
 
 const T0: u64 = 1_000;
 
@@ -48,7 +54,7 @@ impl World {
             }],
             revoked: vec![],
         };
-        let store = Store::new(dir.join("records"));
+        let store = Store::new(dir.clone());
         store.put(&manifest.draft(&root.public(), T0).sign(&root).unwrap()).unwrap();
         let socket = dir.join("store.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -65,7 +71,15 @@ impl World {
     }
 
     fn store(&self) -> Store {
-        Store::new(self.dir.join("records"))
+        Store::new(self.dir.clone())
+    }
+
+    fn all(&self) -> Vec<Record> {
+        self.store().snapshot().unwrap().records().cloned().collect()
+    }
+
+    fn manifest(&self) -> Manifest {
+        self.store().snapshot().unwrap().manifest(&self.root.public()).unwrap()
     }
 
     fn put(&self, record: &Record) -> Address {
@@ -211,9 +225,7 @@ async fn grants_gate_every_request() {
     assert_eq!(record.signer(), &w.device.public());
     assert_eq!(record.author(), &w.root.public());
     assert_eq!(record.refs(), &[note]);
-    let all = w.store().all().unwrap();
-    let manifest = Store::manifest(&all, &w.root.public()).unwrap();
-    verify(&record, Some(&manifest)).unwrap();
+    verify(&record, Some(&w.manifest())).unwrap();
     refused(c.put("pointer", b"x".to_vec(), vec![]).await, "reserved kind");
 }
 
@@ -262,14 +274,14 @@ async fn login_needs_a_write_grant_and_stores_nothing() {
     refused(c.login(&challenge).await, "no active grant");
     w.revoke(read);
     w.grant(&["login", "note"], Access::ReadWrite, None);
-    let before = w.store().all().unwrap().len();
+    let before = w.all().len();
     let proof = c.login(&challenge).await.unwrap();
     let login = proof.verify("http://127.0.0.1:8080", T0 + 5, None).unwrap();
     assert_eq!(login.author, w.root.public());
     assert_eq!(login.signer, w.device.public());
     assert_eq!(login.challenge, challenge);
     assert!(proof.verify("http://127.0.0.1:8081", T0 + 5, None).is_err());
-    assert_eq!(w.store().all().unwrap().len(), before);
+    assert_eq!(w.all().len(), before);
     refused(c.put("login", challenge.encode(), vec![]).await, "never stored");
     assert!(c.list("login").await.unwrap().is_empty());
     let bad = Challenge { service: "HTTP://X".into(), ..challenge };
@@ -312,7 +324,7 @@ async fn browser_is_privileged_and_applications_are_not() {
     assert_eq!(grants[0].address(), grant);
     assert_eq!(Grant::from_record(&grants[0]).unwrap().app, w.app.public());
     let revoke = b.revoke(grant).await.unwrap();
-    let all = w.store().all().unwrap();
+    let all = w.all();
     let record = all.iter().find(|r| r.address() == revoke).unwrap();
     assert_eq!(record.kind(), "revoke");
     assert_eq!(Revoke::from_record(record).unwrap().grant, grant);
@@ -346,13 +358,13 @@ async fn publish_signs_a_page_and_the_next_pointer() {
     assert_eq!(pointer.prev, vec![first[1].address()]);
     assert_eq!(pointer.target, second[0].address());
 
-    let all = w.store().all().unwrap();
-    let manifest = Store::manifest(&all, &w.root.public()).unwrap();
+    let snap = w.store().snapshot().unwrap();
+    let manifest = snap.manifest(&w.root.public()).unwrap();
     for r in alone.iter().chain(&first).chain(&second) {
         verify(r, Some(&manifest)).unwrap();
-        assert!(all.iter().any(|x| x.address() == r.address()));
+        assert!(snap.find(r.address()).is_some());
     }
-    let heads = Store::pointers(&all, &w.root.public(), "home", Some(&manifest));
+    let heads = snap.pointers(&w.root.public(), "home", Some(&manifest));
     assert_eq!(Store::head(&heads).unwrap().1.target, second[0].address());
     assert_eq!(b.kinds().await.unwrap()[1], ("page".to_owned(), 3));
     assert_eq!(b.kinds().await.unwrap()[2], ("pointer".to_owned(), 2));
@@ -365,7 +377,7 @@ async fn unauthorized_device_cannot_publish_or_revoke() {
     let mut b = w.browser().await;
     refused(b.publish(b"# x".to_vec(), Some("home")).await, "not authorized");
     refused(b.revoke(grant).await, "not authorized");
-    assert!(w.store().all().unwrap().iter().all(|r| r.kind() != "page"));
+    assert!(w.all().iter().all(|r| r.kind() != "page"));
 }
 
 #[test]
@@ -477,6 +489,33 @@ fn wire_rejects_malformed_frames() {
             ]),
             "long name",
         ),
+        (
+            map(vec![
+                ("t", Value::Text("keep".into())),
+                ("record", Value::Bytes(vec![0; MAX_RECORD + 1])),
+            ]),
+            "record over the limit",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("blob".into())),
+                ("address", Value::Bytes(vec![0; 32])),
+                ("offset", Value::Uint(MAX_BLOB + 1)),
+            ]),
+            "offset over the limit",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("pointers".into())),
+                ("author", Value::Bytes(vec![0; 32])),
+                ("name", Value::Text(String::new())),
+            ]),
+            "empty pointer name",
+        ),
+        (
+            map(vec![("t", Value::Text("manifest".into())), ("author", Value::Bytes(vec![0; 31]))]),
+            "short author",
+        ),
         (map(vec![("t", Value::Text("drop".into()))]), "unknown type"),
         (Value::Array(vec![]).encode(), "not a map"),
         (vec![0xa1, 0x61, 0x74, 0x64, 0x6c, 0x69, 0x73, 0x74, 0x00], "trailing bytes"),
@@ -487,6 +526,15 @@ fn wire_rejects_malformed_frames() {
     assert_eq!(Request::decode(&round.encode()).unwrap(), round);
     let round = Request::Publish { body: b"x".to_vec(), name: None };
     assert_eq!(Request::decode(&round.encode()).unwrap(), round);
+    for round in [
+        Request::Record { address: Address::of(b"r") },
+        Request::Manifest { author: key(1).public() },
+        Request::Pointers { author: key(1).public(), name: "home".into() },
+        Request::Blob { address: Address::of(b"b"), offset: 7 },
+        Request::Keep { record: vec![1, 2, 3] },
+    ] {
+        assert_eq!(Request::decode(&round.encode()).unwrap(), round);
+    }
 }
 
 #[test]
@@ -537,8 +585,35 @@ fn wire_rejects_malformed_responses() {
             ]),
             "too many records",
         ),
+        (
+            map(vec![
+                ("t", Value::Text("blob".into())),
+                ("total", Value::Uint(MAX_BLOB + 1)),
+                ("chunk", Value::Bytes(vec![])),
+            ]),
+            "total over the limit",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("blob".into())),
+                ("total", Value::Uint(1)),
+                ("chunk", Value::Bytes(vec![0; MAX_CHUNK + 1])),
+            ]),
+            "chunk over the limit",
+        ),
+        (
+            map(vec![("t", Value::Text("missing".into())), ("x", Value::Uint(1))]),
+            "missing with a field",
+        ),
     ] {
         assert!(Response::decode(&buf).is_err(), "{why}");
+    }
+    for round in [
+        Response::Missing,
+        Response::Records { records: vec![vec![1], vec![2]] },
+        Response::Blob { total: 9, chunk: vec![0; 4] },
+    ] {
+        assert_eq!(Response::decode(&round.encode()).unwrap(), round);
     }
     let round = Response::Kinds { kinds: vec![("note".into(), 2)] };
     assert_eq!(Response::decode(&round.encode()).unwrap(), round);
@@ -546,4 +621,133 @@ fn wire_rejects_malformed_responses() {
     assert_eq!(Request::decode(&put.encode()).unwrap(), put);
     let list = Response::List { addresses: vec![Address::of(b"a")] };
     assert_eq!(Response::decode(&list.encode()).unwrap(), list);
+}
+
+fn foreign() -> (SecretKey, Record, Record, Record) {
+    let root = key(7);
+    let device = key(8);
+    let manifest = Manifest {
+        seq: 1,
+        prev: None,
+        devices: vec![Device {
+            key: device.public(),
+            label: "d".into(),
+            created: T0,
+            expires: None,
+        }],
+        revoked: vec![],
+    }
+    .draft(&root.public(), T0)
+    .sign(&root)
+    .unwrap();
+    let page = Draft {
+        author: root.public(),
+        signer: device.public(),
+        kind: "page".into(),
+        created: T0 + 1,
+        refs: vec![],
+        body: Body::Inline(b"# far away".to_vec()),
+    }
+    .sign(&device)
+    .unwrap();
+    let pointer = Pointer { name: "home".into(), target: page.address(), seq: 1, prev: vec![] }
+        .draft(&root.public(), &device.public(), T0 + 2)
+        .sign(&device)
+        .unwrap();
+    (root, manifest, page, pointer)
+}
+
+async fn raw(w: &World, key: &SecretKey, request: &Request) -> Response {
+    let mut stream = UnixStream::connect(&w.socket).await.unwrap();
+    let hello = wire::recv(&mut stream).await.unwrap().unwrap();
+    let Response::Hello { nonce } = Response::decode(&hello).unwrap() else { panic!() };
+    let auth = Request::Auth { app: key.public(), sig: key.sign_in(DOMAIN, &nonce) };
+    wire::send(&mut stream, &auth.encode()).await.unwrap();
+    wire::recv(&mut stream).await.unwrap().unwrap();
+    wire::send(&mut stream, &request.encode()).await.unwrap();
+    Response::decode(&wire::recv(&mut stream).await.unwrap().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn reads_are_browser_only() {
+    let w = World::start("reads-browser-only", 2);
+    let (root, manifest, page, _) = foreign();
+    let mut c = w.client().await;
+    refused(c.record(page.address()).await, "browser only");
+    refused(c.manifest(root.public()).await, "browser only");
+    refused(c.pointers(root.public(), "home").await, "browser only");
+    refused(c.blob(Address::of(b"x")).await, "browser only");
+    refused(c.keep(&manifest).await, "browser only");
+    assert!(w.all().iter().all(|r| r.address() != manifest.address()));
+}
+
+#[tokio::test]
+async fn keep_verifies_before_storing() {
+    let w = World::start("keep-verifies", 2);
+    let (root, manifest, page, pointer) = foreign();
+    let mut b = w.browser().await;
+    assert!(matches!(b.keep(&page).await, Err(Error::Remote(_))));
+    assert!(b.record(page.address()).await.unwrap().is_none());
+    assert!(b.manifest(root.public()).await.unwrap().is_none());
+    b.keep(&manifest).await.unwrap();
+    b.keep(&page).await.unwrap();
+    b.keep(&pointer).await.unwrap();
+    assert_eq!(b.record(page.address()).await.unwrap().unwrap(), page);
+    assert_eq!(b.manifest(root.public()).await.unwrap().unwrap(), manifest);
+    assert_eq!(b.pointers(root.public(), "home").await.unwrap(), vec![pointer]);
+    assert!(b.pointers(root.public(), "other").await.unwrap().is_empty());
+    let challenge =
+        Challenge { service: "http://127.0.0.1:8080".into(), nonce: [9; 32], expires: T0 + 100 };
+    let login = challenge.draft(&w.root.public(), &w.root.public(), T0 + 3).sign(&w.root).unwrap();
+    refused(b.keep(&login).await, "never stored");
+    let mut forged = page.to_bytes();
+    let last = forged.len() - 1;
+    forged[last] ^= 1;
+    let reply = raw(&w, &w.browser, &Request::Keep { record: forged }).await;
+    assert!(matches!(reply, Response::Error { .. }));
+}
+
+#[tokio::test]
+async fn blobs_cross_in_chunks() {
+    let w = World::start("blob-chunks", 2);
+    let data: Vec<u8> = (0..MAX_CHUNK + 1000).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let address = Address::of(&data);
+    Home::new(w.dir.clone()).keep_blob(&address, &data).unwrap();
+    let mut b = w.browser().await;
+    assert_eq!(b.blob(address).await.unwrap().unwrap(), data);
+    assert!(b.blob(Address::of(b"nowhere")).await.unwrap().is_none());
+    let first = raw(&w, &w.browser, &Request::Blob { address, offset: 0 }).await;
+    let Response::Blob { total, chunk } = first else { panic!("{first:?}") };
+    assert_eq!(total, data.len() as u64);
+    assert_eq!(chunk.len(), MAX_CHUNK);
+    let last = raw(&w, &w.browser, &Request::Blob { address, offset: total }).await;
+    assert_eq!(last, Response::Blob { total, chunk: vec![] });
+    let past = raw(&w, &w.browser, &Request::Blob { address, offset: total + 1 }).await;
+    assert!(matches!(past, Response::Error { .. }));
+}
+
+#[tokio::test]
+async fn local_reads_over_the_socket_and_reports_a_missing_daemon() {
+    let w = World::start("local-reads", 2);
+    let (root, manifest, page, pointer) = foreign();
+    std::fs::write(w.dir.join("browser.key"), [6u8; 32]).unwrap();
+    let local = Local::new(w.dir.clone());
+    assert!(local.record(page.address()).await.unwrap().is_none());
+    local.keep(&manifest).await.unwrap();
+    local.keep(&page).await.unwrap();
+    local.keep(&pointer).await.unwrap();
+    assert_eq!(local.record(page.address()).await.unwrap().unwrap(), page);
+    assert_eq!(local.manifest(root.public()).await.unwrap().unwrap(), manifest);
+    assert_eq!(local.pointers(root.public(), "home").await.unwrap(), vec![pointer]);
+    let data = b"blob bytes".to_vec();
+    let address = Address::of(&data);
+    Home::new(w.dir.clone()).keep_blob(&address, &data).unwrap();
+    assert_eq!(local.blob(address).await.unwrap().unwrap(), data);
+    let dead = std::env::temp_dir().join(format!("weft-store-{}-dead", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dead);
+    std::fs::create_dir_all(&dead).unwrap();
+    let down = Local::new(dead.clone());
+    assert_eq!(down.blob(address).await.unwrap_err().to_string(), Error::Down.to_string());
+    std::fs::write(dead.join("browser.key"), [6u8; 32]).unwrap();
+    assert_eq!(down.blob(address).await.unwrap_err().to_string(), Error::Down.to_string());
 }

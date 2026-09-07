@@ -48,8 +48,8 @@ pub async fn push(
         Some(p) => vec![p.relay],
         None => relays(home)?,
     };
-    let all = store.all()?;
-    let mut records = all.clone();
+    let snap = store.snapshot()?;
+    let mut records: Vec<Record> = snap.records().cloned().collect();
     if !addresses.is_empty() {
         records.retain(|r| addresses.contains(&r.address()));
     }
@@ -58,8 +58,8 @@ pub async fn push(
     }
     if let Some(p) = &paid {
         let root = home.root()?;
-        let manifest = all
-            .iter()
+        let manifest = snap
+            .records()
             .filter(|r| r.kind() == weft_core::manifest::KIND && *r.author() == root)
             .filter_map(|r| Manifest::from_record(r).ok().map(|m| (m.seq, r)))
             .max_by_key(|(seq, _)| *seq);

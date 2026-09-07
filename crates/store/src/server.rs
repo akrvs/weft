@@ -91,6 +91,20 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
                 records: records.iter().map(Record::to_bytes).collect(),
             })
         }
+        Request::Record { address } => gate.record(app, address).map(found),
+        Request::Manifest { author } => gate.manifest(app, &author).map(found),
+        Request::Pointers { author, name } => gate.pointers(app, &author, &name).map(|records| {
+            Response::Records { records: records.iter().map(Record::to_bytes).collect() }
+        }),
+        Request::Blob { address, offset } => gate.blob(app, &address, offset).map(|b| match b {
+            Some((total, chunk)) => Response::Blob { total, chunk },
+            None => Response::Missing,
+        }),
+        Request::Keep { record } => gate.keep(app, &record).map(|()| Response::Ok),
     };
     result.unwrap_or_else(|e| Response::Error { why: e.to_string() })
+}
+
+fn found(record: Option<Vec<u8>>) -> Response {
+    record.map_or(Response::Missing, |record| Response::Get { record })
 }

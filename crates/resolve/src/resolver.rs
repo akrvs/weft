@@ -4,7 +4,7 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
-use weft_home::{Home, Store};
+use weft_home::{Home, Reads, Store};
 use weft_net::Client;
 
 use crate::dns::Dns;
@@ -29,25 +29,31 @@ pub struct Page {
 }
 
 #[derive(Debug)]
-pub struct Resolver {
+pub struct Resolver<R: Reads = Store> {
     home: Home,
-    store: Store,
+    reads: R,
     client: OnceCell<Client>,
     dns: OnceCell<Dns>,
 }
 
-impl Resolver {
-    pub fn new(home: Home) -> Self {
-        let store = home.store();
-        Self { home, store, client: OnceCell::new(), dns: OnceCell::new() }
+impl Resolver<Store> {
+    pub fn local(home: Home) -> Self {
+        let reads = home.store();
+        Self::new(home, reads)
+    }
+}
+
+impl<R: Reads> Resolver<R> {
+    pub fn new(home: Home, reads: R) -> Self {
+        Self { home, reads, client: OnceCell::new(), dns: OnceCell::new() }
     }
 
     pub fn home(&self) -> &Home {
         &self.home
     }
 
-    pub fn store(&self) -> &Store {
-        &self.store
+    pub fn reads(&self) -> &R {
+        &self.reads
     }
 
     pub async fn client(&self) -> Result<&Client> {
@@ -60,17 +66,32 @@ impl Resolver {
             .await
     }
 
-    pub fn blob(&self, address: &Address) -> Option<Vec<u8>> {
-        let data = std::fs::read(self.home.blob_path(address)).ok()?;
-        (Address::of(&data) == *address).then_some(data)
+    pub async fn blob(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        let Some(data) = self.reads.blob(address).await? else { return Ok(None) };
+        if Address::of(&data) != address {
+            return Err(Error::Blob(address));
+        }
+        Ok(Some(data))
     }
 
-    pub fn local_manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
-        Ok(Store::manifest(&self.store.all()?, author))
+    pub async fn local_manifest_record(&self, author: &PublicKey) -> Result<Option<Record>> {
+        let Some(record) = self.reads.manifest(*author).await? else { return Ok(None) };
+        if record.author() != author {
+            return Ok(None);
+        }
+        verify(&record, None)?;
+        Ok(Some(record))
+    }
+
+    pub async fn local_manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
+        match self.local_manifest_record(author).await? {
+            Some(record) => Ok(Some(Manifest::from_record(&record)?)),
+            None => Ok(None),
+        }
     }
 
     pub async fn manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
-        if let Some(m) = self.local_manifest(author)? {
+        if let Some(m) = self.local_manifest(author).await? {
             return Ok(Some(m));
         }
         let client = self.client().await?;
@@ -82,8 +103,11 @@ impl Resolver {
                 continue;
             };
             if let Some(record) = head.manifest {
+                if record.author() != author {
+                    continue;
+                }
                 verify(&record, None)?;
-                self.store.put(&record)?;
+                self.reads.keep(&record).await?;
                 return Ok(Some(Manifest::from_record(&record)?));
             }
         }
@@ -91,7 +115,7 @@ impl Resolver {
     }
 
     pub async fn freshest_manifest(&self, author: &PublicKey) -> Result<Option<Manifest>> {
-        let mut best = self.local_manifest(author)?;
+        let mut best = self.local_manifest(author).await?;
         let relays = self.home.relays()?;
         if relays.is_empty() {
             return Ok(best);
@@ -110,7 +134,7 @@ impl Resolver {
             }
             let manifest = Manifest::from_record(&record)?;
             if best.as_ref().is_none_or(|b| manifest.seq > b.seq) {
-                self.store.put(&record)?;
+                self.reads.keep(&record).await?;
                 best = Some(manifest);
             }
         }
@@ -118,7 +142,7 @@ impl Resolver {
     }
 
     pub async fn record(&self, address: Address) -> Result<(Record, String)> {
-        if let Some(record) = self.store.all()?.into_iter().find(|r| r.address() == address) {
+        if let Some(record) = self.reads.record(address).await? {
             return Ok((record, "local store".to_owned()));
         }
         let client = self.client().await?;
@@ -140,29 +164,28 @@ impl Resolver {
                 continue;
             };
             let Some(record) = head.pointer else { continue };
-            if record.author() != &author || verify(&record, manifest.as_ref()).is_err() {
-                continue;
-            }
-            let pointer = Pointer::from_record(&record)?;
-            if pointer.name != name {
-                continue;
-            }
-            if best
-                .as_ref()
-                .is_none_or(|(r, p)| Pointer::compare((&record, &pointer), (r, p)).is_gt())
+            if let Some(candidate) = pointer_named(record, &author, name, manifest.as_ref())
+                && best.as_ref().is_none_or(|(r, p)| {
+                    Pointer::compare((&candidate.0, &candidate.1), (r, p)).is_gt()
+                })
             {
-                best = Some((record, pointer));
+                best = Some(candidate);
             }
         }
-        let records = self.store.all()?;
-        let local = Store::pointers(&records, &author, name, manifest.as_ref());
-        if let Some((r, p)) = Store::head(&local)
+        let local: Vec<(Record, Pointer)> = self
+            .reads
+            .pointers(author, name)
+            .await?
+            .into_iter()
+            .filter_map(|r| pointer_named(r, &author, name, manifest.as_ref()))
+            .collect();
+        if let Some((r, p)) = Pointer::head(local.iter().map(|(r, p)| (r, p)))
             && best.as_ref().is_none_or(|(br, bp)| Pointer::compare((r, p), (br, bp)).is_gt())
         {
             best = Some((r.clone(), p.clone()));
         }
         let (record, pointer) = best.ok_or_else(|| Error::NoPointer(name.to_owned()))?;
-        self.store.put(&record)?;
+        self.reads.keep(&record).await?;
         Ok(pointer.target)
     }
 
@@ -191,7 +214,7 @@ impl Resolver {
         let manifest =
             if record.self_signed() { None } else { self.manifest(record.author()).await? };
         let verified = verify(&record, manifest.as_ref())?;
-        self.store.put(&record)?;
+        self.reads.keep(&record).await?;
         let (html, blob) = match record.body() {
             Body::Inline(bytes) if record.kind() == "page" => {
                 (render(core::str::from_utf8(bytes).map_err(|_| Error::Text)?, links), None)
@@ -219,4 +242,17 @@ impl Resolver {
             blob,
         })
     }
+}
+
+fn pointer_named(
+    record: Record,
+    author: &PublicKey,
+    name: &str,
+    manifest: Option<&Manifest>,
+) -> Option<(Record, Pointer)> {
+    if record.author() != author || verify(&record, manifest).is_err() {
+        return None;
+    }
+    let pointer = Pointer::from_record(&record).ok()?;
+    (pointer.name == name).then_some((record, pointer))
 }

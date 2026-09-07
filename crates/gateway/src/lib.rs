@@ -118,7 +118,7 @@ async fn route(resolver: &Resolver, path: &str, query: Option<&str>) -> Reply {
             r
         }
         "/go" => go(query),
-        _ if path.starts_with("/blob/") => blob(resolver, &path[6..]),
+        _ if path.starts_with("/blob/") => blob(resolver, &path[6..]).await,
         _ => page(resolver, &path[1..]).await,
     }
 }
@@ -142,11 +142,11 @@ fn go(query: Option<&str>) -> Reply {
     r
 }
 
-fn blob(resolver: &Resolver, rest: &str) -> Reply {
+async fn blob(resolver: &Resolver, rest: &str) -> Reply {
     let Ok(address) = rest.parse::<Address>() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "not a blob address"));
     };
-    let Some(data) = resolver.blob(&address) else {
+    let Ok(Some(data)) = resolver.blob(address).await else {
         return html_reply(StatusCode::NOT_FOUND, html::error(404, "blob not in the local store"));
     };
     let kind = sniff(&data);
@@ -179,7 +179,9 @@ async fn page(resolver: &Resolver, rest: &str) -> Reply {
                 Error::NotFound(_) | Error::NoPointer(_) | Error::Dns(_) | Error::Binding(_) => {
                     StatusCode::NOT_FOUND
                 }
-                Error::Core(_) | Error::Net(_) | Error::Text => StatusCode::BAD_GATEWAY,
+                Error::Core(_) | Error::Net(_) | Error::Text | Error::Blob(_) => {
+                    StatusCode::BAD_GATEWAY
+                }
                 Error::Home(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
             html_reply(status, html::error(status.as_u16(), &e.to_string()))

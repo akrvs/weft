@@ -10,6 +10,9 @@ pub const DOMAIN: &[u8] = b"weft/store/1";
 pub const MAX_FRAME: usize = 1 << 20;
 pub const MAX_CHALLENGE: usize = 1024;
 pub const MAX_ENTRIES: usize = 4096;
+pub const MAX_CHUNK: usize = MAX_FRAME / 2;
+pub const MAX_BLOB: u64 = 1 << 30;
+pub const MAX_RECORD: usize = 1 << 17;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -22,6 +25,11 @@ pub enum Request {
     Grants,
     Revoke { grant: Address },
     Publish { body: Vec<u8>, name: Option<String> },
+    Record { address: Address },
+    Manifest { author: PublicKey },
+    Pointers { author: PublicKey, name: String },
+    Blob { address: Address, offset: u64 },
+    Keep { record: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +43,9 @@ pub enum Response {
     Kinds { kinds: Vec<(String, u64)> },
     Grants { records: Vec<Vec<u8>> },
     Publish { records: Vec<Vec<u8>> },
+    Records { records: Vec<Vec<u8>> },
+    Blob { total: u64, chunk: Vec<u8> },
+    Missing,
     Error { why: String },
 }
 
@@ -88,6 +99,30 @@ fn record_list(m: &[(String, Value)]) -> Result<Vec<Vec<u8>>> {
         .collect()
 }
 
+fn address(m: &[(String, Value)], name: &'static str) -> Result<Address> {
+    Ok(Address::hash(cbor::bytes32(cbor::field(m, name)?, name)?))
+}
+
+fn author(m: &[(String, Value)]) -> Result<PublicKey> {
+    Ok(PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "author")?, "author")?)?)
+}
+
+fn name_text(v: &Value) -> Result<String> {
+    let n = v.as_text().ok_or(CoreError::Field("name"))?;
+    if n.is_empty() || n.len() > MAX_NAME {
+        return Err(Error::Core(CoreError::Field("name")));
+    }
+    Ok(n.to_owned())
+}
+
+fn sized<'a>(m: &'a [(String, Value)], name: &'static str, max: usize) -> Result<&'a [u8]> {
+    let b = cbor::field(m, name)?.as_bytes().ok_or(CoreError::Field(name))?;
+    if b.len() > max {
+        return Err(Error::Core(CoreError::Limit(name)));
+    }
+    Ok(b)
+}
+
 fn decode_map(buf: &[u8], what: &'static str) -> Result<Vec<(String, Value)>> {
     let value = cbor::decode(buf)?;
     Ok(value.as_map().ok_or(Error::Wire(what))?.to_vec())
@@ -131,6 +166,31 @@ impl Request {
                 m.push(("t".to_owned(), text("publish")));
                 m
             }
+            Self::Record { address } => {
+                vec![
+                    ("address".to_owned(), bytes(address.bytes())),
+                    ("t".to_owned(), text("record")),
+                ]
+            }
+            Self::Manifest { author } => {
+                vec![
+                    ("author".to_owned(), bytes(author.bytes())),
+                    ("t".to_owned(), text("manifest")),
+                ]
+            }
+            Self::Pointers { author, name } => vec![
+                ("author".to_owned(), bytes(author.bytes())),
+                ("name".to_owned(), text(name)),
+                ("t".to_owned(), text("pointers")),
+            ],
+            Self::Blob { address, offset } => vec![
+                ("address".to_owned(), bytes(address.bytes())),
+                ("offset".to_owned(), Value::Uint(*offset)),
+                ("t".to_owned(), text("blob")),
+            ],
+            Self::Keep { record } => {
+                vec![("record".to_owned(), bytes(record)), ("t".to_owned(), text("keep"))]
+            }
         };
         Value::Map(m).encode()
     }
@@ -153,9 +213,7 @@ impl Request {
             }
             "get" => {
                 cbor::only(&m, &["address", "t"])?;
-                Ok(Self::Get {
-                    address: Address::hash(cbor::bytes32(cbor::field(&m, "address")?, "address")?),
-                })
+                Ok(Self::Get { address: address(&m, "address")? })
             }
             "put" => {
                 cbor::only(&m, &["body", "kind", "refs", "t"])?;
@@ -189,9 +247,7 @@ impl Request {
             }
             "revoke" => {
                 cbor::only(&m, &["grant", "t"])?;
-                Ok(Self::Revoke {
-                    grant: Address::hash(cbor::bytes32(cbor::field(&m, "grant")?, "grant")?),
-                })
+                Ok(Self::Revoke { grant: address(&m, "grant")? })
             }
             "publish" => {
                 cbor::only(&m, &["body", "name", "t"])?;
@@ -199,17 +255,36 @@ impl Request {
                 if body.len() > MAX_INLINE {
                     return Err(Error::Core(CoreError::Limit("body")));
                 }
-                let name = match cbor::optional(&m, "name") {
-                    None => None,
-                    Some(v) => {
-                        let n = v.as_text().ok_or(CoreError::Field("name"))?;
-                        if n.is_empty() || n.len() > MAX_NAME {
-                            return Err(Error::Core(CoreError::Field("name")));
-                        }
-                        Some(n.to_owned())
-                    }
-                };
+                let name = cbor::optional(&m, "name").map(name_text).transpose()?;
                 Ok(Self::Publish { body: body.to_vec(), name })
+            }
+            "record" => {
+                cbor::only(&m, &["address", "t"])?;
+                Ok(Self::Record { address: address(&m, "address")? })
+            }
+            "manifest" => {
+                cbor::only(&m, &["author", "t"])?;
+                Ok(Self::Manifest { author: author(&m)? })
+            }
+            "pointers" => {
+                cbor::only(&m, &["author", "name", "t"])?;
+                Ok(Self::Pointers {
+                    author: author(&m)?,
+                    name: name_text(cbor::field(&m, "name")?)?,
+                })
+            }
+            "blob" => {
+                cbor::only(&m, &["address", "offset", "t"])?;
+                let offset =
+                    cbor::field(&m, "offset")?.as_uint().ok_or(CoreError::Field("offset"))?;
+                if offset > MAX_BLOB {
+                    return Err(Error::Core(CoreError::Limit("offset")));
+                }
+                Ok(Self::Blob { address: address(&m, "address")?, offset })
+            }
+            "keep" => {
+                cbor::only(&m, &["record", "t"])?;
+                Ok(Self::Keep { record: sized(&m, "record", MAX_RECORD)?.to_vec() })
             }
             _ => Err(Error::Wire("unknown request type")),
         }
@@ -248,6 +323,15 @@ impl Response {
             Self::Publish { records: r } => {
                 vec![("records".to_owned(), records(r)), ("t".to_owned(), text("publish"))]
             }
+            Self::Records { records: r } => {
+                vec![("records".to_owned(), records(r)), ("t".to_owned(), text("records"))]
+            }
+            Self::Blob { total, chunk } => vec![
+                ("chunk".to_owned(), bytes(chunk)),
+                ("t".to_owned(), text("blob")),
+                ("total".to_owned(), Value::Uint(*total)),
+            ],
+            Self::Missing => vec![("t".to_owned(), text("missing"))],
             Self::Error { why } => {
                 vec![("t".to_owned(), text("error")), ("why".to_owned(), text(why))]
             }
@@ -278,9 +362,7 @@ impl Response {
             }
             "put" => {
                 cbor::only(&m, &["address", "t"])?;
-                Ok(Self::Put {
-                    address: Address::hash(cbor::bytes32(cbor::field(&m, "address")?, "address")?),
-                })
+                Ok(Self::Put { address: address(&m, "address")? })
             }
             "login" => {
                 cbor::only(&m, &["proof", "t"])?;
@@ -312,6 +394,22 @@ impl Response {
             "publish" => {
                 cbor::only(&m, &["records", "t"])?;
                 Ok(Self::Publish { records: record_list(&m)? })
+            }
+            "records" => {
+                cbor::only(&m, &["records", "t"])?;
+                Ok(Self::Records { records: record_list(&m)? })
+            }
+            "blob" => {
+                cbor::only(&m, &["chunk", "t", "total"])?;
+                let total = cbor::field(&m, "total")?.as_uint().ok_or(CoreError::Field("total"))?;
+                if total > MAX_BLOB {
+                    return Err(Error::Core(CoreError::Limit("total")));
+                }
+                Ok(Self::Blob { total, chunk: sized(&m, "chunk", MAX_CHUNK)?.to_vec() })
+            }
+            "missing" => {
+                cbor::only(&m, &["t"])?;
+                Ok(Self::Missing)
             }
             "error" => {
                 cbor::only(&m, &["t", "why"])?;

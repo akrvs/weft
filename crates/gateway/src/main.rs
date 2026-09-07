@@ -26,7 +26,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let home = Home::new(cli.home.unwrap_or_else(Home::default_dir));
     let origin = cli.origin.unwrap_or_else(|| format!("http://{}", cli.bind));
-    let gateway = match weft_gateway::Gateway::new(Resolver::new(home), origin.clone()) {
+    let gateway = match weft_gateway::Gateway::new(Resolver::local(home), origin.clone()) {
         Ok(g) => Arc::new(g),
         Err(e) => {
             eprintln!("error: origin {origin}: {e}");

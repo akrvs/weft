@@ -51,6 +51,12 @@
     <span id="revoke-target"></span>
     <button type="submit">revoke</button>
   </form>
+  <form id="start" hidden>
+    <p>weft-store is not running. start it here; it stops when the browser closes.</p>
+    <select id="start-device"></select>
+    <input id="start-pass" type="password" autocomplete="off" placeholder="passphrase">
+    <button type="submit">start store</button>
+  </form>
   <pre id="store-result"></pre>
   <button id="store-close" type="button">close</button>
 </dialog>
