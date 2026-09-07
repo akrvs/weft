@@ -116,19 +116,14 @@ el("compose-toggle").addEventListener("click", () => {
 
 el<HTMLFormElement>("publish").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const passphrase = el<HTMLInputElement>("passphrase");
   const result = el("publish-result");
   try {
     result.textContent = await invoke<string>("publish", {
       markdown: el<HTMLTextAreaElement>("markdown").value,
       name: el<HTMLInputElement>("name").value,
-      device: el<HTMLInputElement>("device").value,
-      passphrase: passphrase.value,
     });
   } catch (e) {
     result.textContent = String(e);
-  } finally {
-    passphrase.value = "";
   }
 });
 
@@ -198,19 +193,12 @@ el("store-close").addEventListener("click", () => storeDialog.close());
 
 revokeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const passphrase = el<HTMLInputElement>("revoke-passphrase");
   try {
-    const address = await invoke<string>("revoke_grant", {
-      grant: revokeForm.dataset.grant ?? "",
-      device: el<HTMLInputElement>("revoke-device").value,
-      passphrase: passphrase.value,
-    });
+    const address = await invoke<string>("revoke_grant", { grant: revokeForm.dataset.grant ?? "" });
     storeResult.textContent = `revoked, record ${address}`;
     await showStore();
   } catch (e) {
     storeResult.textContent = String(e);
-  } finally {
-    passphrase.value = "";
   }
 });
 
@@ -241,18 +229,11 @@ async function openLogin(challenge: string): Promise<void> {
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const passphrase = el<HTMLInputElement>("login-passphrase");
   try {
-    loginResult.textContent = await invoke<string>("login", {
-      challenge: loginForm.dataset.challenge ?? "",
-      device: el<HTMLInputElement>("login-device").value,
-      passphrase: passphrase.value,
-    });
+    loginResult.textContent = await invoke<string>("login", { challenge: loginForm.dataset.challenge ?? "" });
     loginForm.hidden = true;
   } catch (e) {
     loginResult.textContent = String(e);
-  } finally {
-    passphrase.value = "";
   }
 });
 el("login-cancel").addEventListener("click", () => loginDialog.close());

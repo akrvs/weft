@@ -3,6 +3,15 @@
 The personal store is a daemon. Applications never touch the record
 directory; they hold a key, present it over a local socket, and get
 exactly what an active grant by the store's owner allows at that moment.
+The browser is the daemon's one privileged client: it holds the key at
+`<home>/browser.key` and signs nothing itself.
+
+## Browser key
+
+`weft-store serve` writes `<home>/browser.key` on its first start: 32
+seed bytes, mode 0600, created with `create_new` so a second daemon never
+overwrites it. The daemon treats exactly that public key as privileged.
+Every other key is an application under grants.
 
 ## Transport
 
@@ -45,6 +54,10 @@ answered with `error` and the connection is closed.
 | `get` | `address`: bytes(32) | |
 | `put` | `kind`: text; `body`: bytes; `refs`: array of bytes(32) | body at most 65536 bytes, at most 1024 refs |
 | `login` | `challenge`: bytes | a canonical challenge from `protocol.md` section 12, at most 1024 bytes |
+| `kinds` | | browser only |
+| `grants` | | browser only |
+| `revoke` | `grant`: bytes(32) | browser only |
+| `publish` | `body`: bytes; `name`: text, optional | browser only, body at most 65536 bytes, name 1 to 64 bytes |
 
 ## Responses
 
@@ -54,7 +67,12 @@ answered with `error` and the connection is closed.
 | `get` | `record`: bytes |
 | `put` | `address`: bytes(32) |
 | `login` | `proof`: bytes |
+| `kinds` | `kinds`: array of [`kind`: text, `count`: uint], sorted by kind |
+| `grants` | `records`: array of bytes, the active grant records |
+| `publish` | `records`: array of bytes, the page then the pointer |
 | `error` | `why`: text |
+
+Arrays in a response hold at most 4096 entries.
 
 ## Rules
 
@@ -76,3 +94,13 @@ answered with `error` and the connection is closed.
   against the local manifest, and returns a proof holding the record and
   the manifest record. Nothing is stored; a `put` of kind `login` is
   refused.
+- The browser key skips the grant lookup on `list`, `get`, `put`, and
+  `login`. Reserved kinds stay refused on `list` and `put` for every key.
+- `kinds`, `grants`, `revoke`, and `publish` answer `refused: browser only`
+  for any other key. `kinds` counts the root's verified records per kind.
+  `grants` returns the grant records active now. `revoke` refuses a grant
+  that is not active, otherwise signs and stores a `revoke` citing it and
+  answers `put`. `publish` signs a `page` record and, when `name` is
+  given, a pointer for it with the next `seq` and the current head as
+  `prev`, stores both, and returns them. The store never pushes to a
+  relay; the browser does.

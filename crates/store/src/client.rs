@@ -64,4 +64,36 @@ impl Client {
             _ => Err(Error::Wire("expected login")),
         }
     }
+
+    pub async fn kinds(&mut self) -> Result<Vec<(String, u64)>> {
+        match self.call(&Request::Kinds).await? {
+            Response::Kinds { kinds } => Ok(kinds),
+            _ => Err(Error::Wire("expected kinds")),
+        }
+    }
+
+    pub async fn grants(&mut self) -> Result<Vec<Record>> {
+        match self.call(&Request::Grants).await? {
+            Response::Grants { records } => decode_all(&records),
+            _ => Err(Error::Wire("expected grants")),
+        }
+    }
+
+    pub async fn revoke(&mut self, grant: Address) -> Result<Address> {
+        match self.call(&Request::Revoke { grant }).await? {
+            Response::Put { address } => Ok(address),
+            _ => Err(Error::Wire("expected put")),
+        }
+    }
+
+    pub async fn publish(&mut self, body: Vec<u8>, name: Option<&str>) -> Result<Vec<Record>> {
+        match self.call(&Request::Publish { body, name: name.map(str::to_owned) }).await? {
+            Response::Publish { records } => decode_all(&records),
+            _ => Err(Error::Wire("expected publish")),
+        }
+    }
+}
+
+fn decode_all(records: &[Vec<u8>]) -> Result<Vec<Record>> {
+    records.iter().map(|r| Record::from_bytes(r).map_err(Error::Core)).collect()
 }

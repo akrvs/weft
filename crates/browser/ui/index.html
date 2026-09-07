@@ -33,9 +33,7 @@
 <section id="compose" hidden>
   <form id="publish">
     <input id="name" type="text" spellcheck="false" autocomplete="off" placeholder="pointer name, optional">
-    <input id="device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
     <textarea id="markdown" placeholder="# title&#10;&#10;markdown body"></textarea>
-    <input id="passphrase" type="password" placeholder="passphrase">
     <button type="submit">sign and push</button>
   </form>
   <pre id="publish-result"></pre>
@@ -51,8 +49,6 @@
   <table id="store-grants"></table>
   <form id="revoke" hidden>
     <span id="revoke-target"></span>
-    <input id="revoke-device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
-    <input id="revoke-passphrase" type="password" placeholder="passphrase">
     <button type="submit">revoke</button>
   </form>
   <pre id="store-result"></pre>
@@ -66,8 +62,6 @@
     <dt>challenge</dt><dd id="login-nonce"></dd>
   </dl>
   <form id="login-form">
-    <input id="login-device" type="text" spellcheck="false" autocomplete="off" placeholder="device label" value="root">
-    <input id="login-passphrase" type="password" placeholder="passphrase">
     <button type="submit">sign and log in</button>
     <button id="login-cancel" type="button">cancel</button>
   </form>

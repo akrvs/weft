@@ -17,11 +17,11 @@ tauri-build.workspace = true
 weft-core = { path = "../core" }
 weft-home = { path = "../home" }
 weft-resolve = { path = "../resolve" }
+weft-store = { path = "../store" }
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 tauri.workspace = true
-zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk.workspace = true

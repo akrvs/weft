@@ -6281,7 +6281,7 @@ dependencies = [
  "weft-core",
  "weft-home",
  "weft-resolve",
- "zeroize",
+ "weft-store",
 ]
 
 [[package]]
@@ -6371,6 +6371,7 @@ dependencies = [
  "tokio",
  "weft-core",
  "weft-home",
+ "zeroize",
 ]
 
 [[package]]

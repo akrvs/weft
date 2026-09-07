@@ -8,5 +8,5 @@ pub mod wire;
 
 pub use client::Client;
 pub use error::{Error, Result};
-pub use gate::{Gate, socket_path};
+pub use gate::{Gate, browser_key, browser_key_path, create_browser_key, socket_path};
 pub use server::serve;

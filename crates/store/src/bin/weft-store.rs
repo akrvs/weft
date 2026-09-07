@@ -8,7 +8,9 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tokio::net::{UnixListener, UnixStream};
 use weft_home::{Home, Store, home};
-use weft_store::{Error, Gate, Result, socket_path};
+use weft_store::{
+    Error, Gate, Result, browser_key, browser_key_path, create_browser_key, socket_path,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "weft-store", version, about = "The personal store as a gate")]
@@ -65,12 +67,19 @@ async fn serve(home: Home, device: &str) -> Result<()> {
     if !authorized {
         eprintln!("warning: {device} is not in the current manifest; writes will be refused");
     }
+    let browser = if browser_key_path(home.path()).exists() {
+        browser_key(home.path())?
+    } else {
+        create_browser_key(home.path())?
+    }
+    .public();
     let path = socket_path(home.path());
     let listener = bind(&path).await?;
     println!("{}", path.display());
-    println!("root    {}", root.address());
-    println!("signer  {}  {device}", key.public().address());
-    let gate = Arc::new(Gate::new(home, root, key));
+    println!("root     {}", root.address());
+    println!("signer   {}  {device}", key.public().address());
+    println!("browser  {}", browser.address());
+    let gate = Arc::new(Gate::new(home, root, key, browser));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         r = weft_store::serve(gate, listener) => r?,

@@ -20,6 +20,7 @@ weft-home = { path = "../home" }
 clap.workspace = true
 getrandom.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

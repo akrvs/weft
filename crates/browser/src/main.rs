@@ -6,13 +6,14 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Body, Challenge, Draft, Manifest, Pointer, Proof, Revoke, login, verify};
-use weft_home::{Home, Store};
+use weft_core::{Address, Challenge, Grant, Manifest, login};
+use weft_home::Home;
 use weft_resolve::{Links, Page, Resolver, Target};
-use zeroize::Zeroizing;
+use weft_store::{Client, browser_key, browser_key_path, socket_path};
 
 const CHROME_HEIGHT: i32 = 88;
 const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const NOT_RUNNING: &str = "weft-store is not running";
 
 struct App {
     resolver: Resolver,
@@ -30,6 +31,19 @@ type Result<T> = core::result::Result<T, String>;
 
 fn err(e: &impl ToString) -> String {
     e.to_string()
+}
+
+async fn store_client(app: &App) -> Result<Client> {
+    let home = app.resolver.home().path();
+    if !browser_key_path(home).exists() {
+        return Err(NOT_RUNNING.to_owned());
+    }
+    let key = browser_key(home).map_err(|e| err(&e))?;
+    match Client::connect(&socket_path(home), &key).await {
+        Ok(client) => Ok(client),
+        Err(weft_store::Error::Io(_)) => Err(NOT_RUNNING.to_owned()),
+        Err(e) => Err(err(&e)),
+    }
 }
 
 #[tauri::command]
@@ -70,109 +84,60 @@ struct GrantView {
 
 #[derive(Serialize)]
 struct StoreView {
-    kinds: Vec<(String, usize)>,
+    kinds: Vec<(String, u64)>,
     grants: Vec<GrantView>,
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn store_view(app: State<'_, App>) -> Result<StoreView> {
-    let root = app.resolver.home().root().map_err(|e| err(&e))?;
-    let records = app.resolver.store().all().map_err(|e| err(&e))?;
-    let manifest = Store::manifest(&records, &root);
-    let mut kinds: Vec<(String, usize)> = Vec::new();
-    for r in records.iter().filter(|r| r.author() == &root && verify(r, manifest.as_ref()).is_ok())
-    {
-        match kinds.iter_mut().find(|(k, _)| k == r.kind()) {
-            Some((_, n)) => *n += 1,
-            None => kinds.push((r.kind().to_owned(), 1)),
-        }
-    }
-    kinds.sort_unstable();
-    let now = weft_home::now().map_err(|e| err(&e))?;
-    let grants = Store::grants(&records, &root, manifest.as_ref(), now)
-        .into_iter()
-        .map(|(r, g)| GrantView {
-            address: r.address().to_string(),
-            app: g.app.address().to_string(),
-            access: g.access.to_string(),
-            kinds: g.kinds.join(","),
-            expires: g.expires,
+async fn store_view(app: State<'_, App>) -> Result<StoreView> {
+    let mut client = store_client(&app).await?;
+    let kinds = client.kinds().await.map_err(|e| err(&e))?;
+    let grants = client
+        .grants()
+        .await
+        .map_err(|e| err(&e))?
+        .iter()
+        .map(|r| {
+            Grant::from_record(r).map(|g| GrantView {
+                address: r.address().to_string(),
+                app: g.app.address().to_string(),
+                access: g.access.to_string(),
+                kinds: g.kinds.join(","),
+                expires: g.expires,
+            })
         })
-        .collect();
+        .collect::<core::result::Result<Vec<_>, _>>()
+        .map_err(|e| err(&e))?;
     Ok(StoreView { kinds, grants })
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn revoke_grant(
-    app: State<'_, App>,
-    grant: String,
-    device: String,
-    passphrase: String,
-) -> Result<String> {
-    let passphrase = Zeroizing::new(passphrase.into_bytes());
-    let home = app.resolver.home();
-    let store = app.resolver.store();
-    let root = home.root().map_err(|e| err(&e))?;
-    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
+async fn revoke_grant(app: State<'_, App>, grant: String) -> Result<String> {
     let grant: Address = grant.parse().map_err(|e| err(&e))?;
-    let created = weft_home::now().map_err(|e| err(&e))?;
-    let record =
-        Revoke { grant }.draft(&root, &key.public(), created).sign(&key).map_err(|e| err(&e))?;
-    let manifest = Store::manifest(&store.all().map_err(|e| err(&e))?, &root);
-    verify(&record, manifest.as_ref()).map_err(|e| err(&e))?;
-    store.put(&record).map_err(|e| err(&e))?;
-    Ok(record.address().to_string())
+    let mut client = store_client(&app).await?;
+    Ok(client.revoke(grant).await.map_err(|e| err(&e))?.to_string())
 }
 
 #[tauri::command]
-async fn publish(
-    app: State<'_, App>,
-    markdown: String,
-    name: String,
-    device: String,
-    passphrase: String,
-) -> Result<String> {
-    let passphrase = Zeroizing::new(passphrase.into_bytes());
-    let home = app.resolver.home();
-    let store = app.resolver.store();
-    let root = home.root().map_err(|e| err(&e))?;
-    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
-    let created = weft_home::now().map_err(|e| err(&e))?;
-    let page = Draft {
-        author: root,
-        signer: key.public(),
-        kind: "page".to_owned(),
-        created,
-        refs: vec![],
-        body: Body::Inline(markdown.into_bytes()),
-    }
-    .sign(&key)
-    .map_err(|e| err(&e))?;
-    let mut records = vec![page.clone()];
-    if !name.trim().is_empty() {
-        let all = store.all().map_err(|e| err(&e))?;
-        let manifest = Store::manifest(&all, &root);
-        let existing = Store::pointers(&all, &root, name.trim(), manifest.as_ref());
-        let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
-        let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
-        let pointer = Pointer { name: name.trim().to_owned(), target: page.address(), seq, prev };
-        let record =
-            pointer.draft(&root, &key.public(), created).sign(&key).map_err(|e| err(&e))?;
-        verify(&record, manifest.as_ref()).map_err(|e| err(&e))?;
-        records.push(record);
-    }
-    for r in &records {
-        store.put(r).map_err(|e| err(&e))?;
-    }
-    let relays = home.relays().map_err(|e| err(&e))?;
+async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<String> {
+    let name = name.trim();
+    let mut client = store_client(&app).await?;
+    let records = client
+        .publish(markdown.into_bytes(), (!name.is_empty()).then_some(name))
+        .await
+        .map_err(|e| err(&e))?;
+    let page = records.first().ok_or("store returned no records")?;
     let mut report = format!("{}\n", page.address());
+    let home = app.resolver.home();
+    let relays = home.relays().map_err(|e| err(&e))?;
     if !relays.is_empty() {
+        let root = home.root().map_err(|e| err(&e))?;
         let client = app.resolver.client().await.map_err(|e| err(&e))?;
         let mut push = records.clone();
         if let Some(m) = app.resolver.local_manifest(&root).map_err(|e| err(&e))? {
-            let manifest_record = store
+            let manifest_record = app
+                .resolver
+                .store()
                 .all()
                 .map_err(|e| err(&e))?
                 .into_iter()
@@ -227,25 +192,11 @@ fn login_prompt(challenge: String) -> Result<LoginPrompt> {
 }
 
 #[tauri::command]
-async fn login(
-    app: State<'_, App>,
-    challenge: String,
-    device: String,
-    passphrase: String,
-) -> Result<String> {
-    let passphrase = Zeroizing::new(passphrase.into_bytes());
+async fn login(app: State<'_, App>, challenge: String) -> Result<String> {
     let c = Challenge::from_text(&challenge).map_err(|e| err(&e))?;
     let url = service_url(&c.service)?;
-    let home = app.resolver.home();
-    let root = home.root().map_err(|e| err(&e))?;
-    let key = home.open(&device, &passphrase).map_err(|e| err(&e))?;
-    let created = weft_home::now().map_err(|e| err(&e))?;
-    let record = c.draft(&root, &key.public(), created).sign(&key).map_err(|e| err(&e))?;
-    let records = app.resolver.store().all().map_err(|e| err(&e))?;
-    let manifest = Store::manifest_record(&records, &root);
-    verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())
-        .map_err(|e| err(&e))?;
-    let proof = Proof { login: record, manifest: manifest.cloned() };
+    let mut store = store_client(&app).await?;
+    let proof = store.login(&c).await.map_err(|e| err(&e))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(LOGIN_TIMEOUT)
@@ -260,7 +211,7 @@ async fn login(
         .map_err(|e| err(&e))?;
     let status = response.status();
     if status.is_success() {
-        Ok(format!("logged in at {} as {}", c.service, root.address()))
+        Ok(format!("logged in at {} as {}", c.service, proof.login.author().address()))
     } else {
         Err(format!("{} answered {status}", c.service))
     }

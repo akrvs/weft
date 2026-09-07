@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
-use weft_core::PublicKey;
+use weft_core::{PublicKey, Record};
 
 use crate::wire::{self, Request, Response};
 use crate::{Error, Gate, Result};
@@ -78,6 +78,18 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
         }
         Request::Login { challenge } => {
             gate.login(app, &challenge).map(|proof| Response::Login { proof })
+        }
+        Request::Kinds => gate.kinds(app).map(|kinds| Response::Kinds { kinds }),
+        Request::Grants => gate.grants(app).map(|records| Response::Grants {
+            records: records.iter().map(Record::to_bytes).collect(),
+        }),
+        Request::Revoke { grant } => {
+            gate.revoke(app, grant).map(|address| Response::Put { address })
+        }
+        Request::Publish { body, name } => {
+            gate.publish(app, body, name.as_deref()).map(|records| Response::Publish {
+                records: records.iter().map(Record::to_bytes).collect(),
+            })
         }
     };
     result.unwrap_or_else(|e| Response::Error { why: e.to_string() })
