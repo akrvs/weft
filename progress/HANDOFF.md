@@ -6,8 +6,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening |
-| Next | roadmap complete; M11 is open, pull it from `BACKLOG.md` |
+| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening, M11 gateway behind the gate |
+| Next | roadmap complete; M12 is open, pull it from `BACKLOG.md` |
 | Repo | private, github.com/akrvs/weft, CI on push to main, license deferred |
 
 ## Crates
@@ -21,7 +21,7 @@ Read first, rewritten at every close, never appended, under 120 lines.
 | weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, pooled `Local` reads, browser key per run, `weft-store` and `weft-app` binaries |
 | weft-relay | crates/relay | Relay binary: init, allow, deny, rate, bank, price, serve |
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers |
-| weft-gateway | crates/gateway | HTTP gateway binary over hyper: any target the address bar takes, provenance headers, `/login` sessions |
+| weft-gateway | crates/gateway | HTTP gateway binary over hyper and `Resolver<Local>`: any target the address bar takes, provenance headers, `/login` sessions on disk, allow list |
 | weft | crates/cli | Commands over home, net, and resolve: grants, price, paid push, receipts, login |
 | weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: every record and blob over the socket, store view with daemon log, start form from a failed navigation, login consent |
 
@@ -39,14 +39,17 @@ Read first, rewritten at every close, never appended, under 120 lines.
   element set. Links `weft:` or `https:` only, images `weft:` only, which
   the browser renders as `weft://blob/<address>`. Tauri 2 with vanilla
   TypeScript, no framework, no bundler, strict CSP.
-- Address bar grammar lives in `Target`: raw address, `author/name`,
-  `domain`, `domain/name`. A bare domain opens `home`. Domains are
-  lowercase ASCII labels with at least one dot. DNS registry:
-  `_weft.<domain>` TXT `weft=<key address>`, exactly one, over DoH to
-  Cloudflare unless `WEFT_DOH=ip,name`. DNSSEC reported, never required.
+- Address bar grammar lives in `Target`: raw address, `author/name`, `domain`,
+  `domain/name`; a bare domain opens `home`; domains are lowercase ASCII labels
+  with a dot. DNS registry: `_weft.<domain>` TXT `weft=<key address>`, exactly
+  one, over DoH to Cloudflare unless `WEFT_DOH=ip,name`. DNSSEC reported only.
 - Gateway: plain HTTP on an explicit bind, default loopback, GET and HEAD
-  only except POST `/login` and `/logout`, no script, no remote origin. TLS
-  is a reverse proxy's job. It reads the home directory, not the socket.
+  only except POST `/login` and `/logout`, no script, no remote origin, TLS
+  is a reverse proxy's job. Records and blobs come over the store socket
+  through `Local`; a stopped daemon answers 503, never the directory.
+  Sessions: `<home>/gateway/sessions`, canonical CBOR, mode 0600, rewritten
+  on every login and logout, at most 1024. `--allow <path>`: one root
+  address per line, read at start, checked before the nonce is consumed.
 - Grants: `grant` body `app`, sorted `kinds` of 1 to 16, `access` 1 read 2
   write 3 both, optional `expires`; `revoke` cites the grant in body and `refs`.
   Device signed allowed. Reserved kinds never grantable. Active means valid,
@@ -54,25 +57,21 @@ Read first, rewritten at every close, never appended, under 120 lines.
 - The store is a daemon on `<home>/store.sock` mode 0600, relay framing,
   nonce handshake under `weft/store/1`, idle connections closed at 60 s.
   Writes are signed by the daemon's device key and verified against the
-  manifest. Grant reads cover the root only. The browser is its one
-  privileged client: key `<home>/browser.key`, 32 seed bytes mode 0600,
-  written fresh by every `serve` once it holds the socket; `Local` reads it
-  at connect. That key skips grants; `kinds`, `grants`,
-  `revoke`, `publish`, `record`, `manifest`, `pointers`, `blob`, `keep`
-  are browser only. The browser never signs and never opens `records/`
-  or `blobs/`: it reads through `Local`, keeps fetched records through
-  `keep` after the daemon verifies them, and pushes to relays itself.
+  manifest. Grant reads cover the root only. The browser and the gateway
+  are its privileged clients through one key, `<home>/browser.key`, 32 seed
+  bytes mode 0600, written fresh by every `serve` once it holds the socket;
+  `Local` reads it at connect. That key skips grants; `kinds`, `grants`,
+  `revoke`, `publish`, `record`, `manifest`, `pointers`, `blob`, `keep` are
+  browser only. Neither client signs or opens `records/` or `blobs/`; the
+  browser pushes to relays itself.
 - Blobs cross the socket by `offset` in chunks of at most 512 KiB, total at
   most 1 GiB, hashed whole by the resolver. Every local read goes through
-  `weft_home::Reads` and the resolver verifies every candidate.
-  `Store::new` takes the home directory; its cache is memory only, parsed
-  records by address and a verification memo per manifest, with the
-  directory listed on every snapshot so other writers are seen and the
-  cache pruned to what the listing showed.
+  `weft_home::Reads` and the resolver verifies every candidate. `Store`'s
+  cache is memory only, records by address plus a verification memo per
+  manifest, listed against the directory on every snapshot and pruned to it.
 - `weft-store serve --attach` reads the passphrase from stdin and exits on
-  stdin EOF; the browser starts it so, holds the pipe until it exits, and
-  drains its stderr into a 16 KiB ring shown in the store dialog. `Local`
-  pools up to 4 idle connections.
+  stdin EOF; the browser holds the pipe and drains stderr into a 16 KiB
+  ring shown in the store dialog. `Local` pools up to 4 idle connections.
 - Payments: voucher `bank`, `to`, `cents`, `nonce`, `sig` under
   `weft/voucher/1`, 256 bytes max, spent once. `receipt` reserved: `relay`,
   sorted `records` 1 to 64 also in `refs`, `until`, `voucher`. Pays only
@@ -93,14 +92,15 @@ Read first, rewritten at every close, never appended, under 120 lines.
 - hickory's `Resolver` never asks for the AD bit; `weft-resolve::Dns` builds it.
   Relay reads `allow`, `banks`, `rate` only at start. Argon2id: debug CLI tests take 15 s.
 - Idle connections close after 60 s; `Local` retries once, a bare `Client` does
-  not. `serve` holds its connection tasks in a `JoinSet`; aborting only the
-  accept loop leaves them alive. `deny.toml` ignores unmaintained advisories.
-- Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j` after `hyprctl dispatch
-  focuswindow class:weft-browser`. `ydotool` after `systemctl --user start ydotool`;
-  its absolute coordinates are doubled on a 2560 wide screen, pass half.
+  not. `serve` owns its connections in a `JoinSet`. `deny.toml` ignores unmaintained advisories.
+- Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j` after focusing
+  `class:weft-browser`. `ydotool` coordinates are doubled at 2560 wide, pass half.
 - Relay `put` order: manifests, records, receipts; unpaid records wait for a
   receipt in the batch. `iroh-blobs` 0.103 has no delete; `sweep` reports orphans.
   reqwest `rustls-no-provider` panics without a provider; the browser installs `ring` in `main`.
+- `Local` reports a missing daemon only as text, `weft_store::Error::Down`; the
+  browser and the gateway compare against it. `echo pass | weft-store serve
+  --attach &` dies at once on EOF. `weft login sign` takes the `c=` value alone.
 
 ## Verify before commit
 

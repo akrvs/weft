@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M10-yellow)
+![status](https://img.shields.io/badge/status-M11-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-77%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-81%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -173,6 +173,7 @@ _weft.example.com.  TXT  "weft=<root address>"
 ```bash
 weft dns example.com                         # bound key, dnssec verified or unverified
 weft-browser example.com/blog                # domain tier in the address bar
+weft-store serve --device laptop             # the gateway reads through the daemon
 weft-gateway --bind 127.0.0.1:8080           # then open http://127.0.0.1:8080/example.com/blog
 ```
 
@@ -180,8 +181,9 @@ The lookup goes over DNS over HTTPS to Cloudflare, or to `WEFT_DOH=ip,name`,
 and the resolver's DNSSEC verdict rides along as provenance. The gateway
 serves every form the address bar takes, `/<address>`, `/<author>/<name>`,
 `/<domain>/<name>`, with the signature check in a header bar and in
-`x-weft-*` response headers. Plain HTTP on loopback by default; TLS is the
-reverse proxy's job.
+`x-weft-*` response headers. Every record and blob comes over the store
+socket; with the daemon stopped every page is a 503. Plain HTTP on
+loopback by default; TLS is the reverse proxy's job.
 
 ## [ Store Flag ] — revoke a grant and watch access end
 
@@ -207,11 +209,12 @@ only your own verified records, and `manifest`, `pointer`, `grant`, and
 `revoke` can never be granted. The browser's store view lists your kinds
 and your active grants with a revoke form.
 
-The browser is the daemon's one privileged client. `weft-store serve`
-writes a fresh `browser.key` next to the socket on every start; the
-browser presents it and asks the daemon to sign pages, pointers, revokes,
-and logins. It never opens the keystore. Applications asking for the same
-requests are refused with `browser only`.
+The browser and the gateway are the daemon's privileged clients.
+`weft-store serve` writes a fresh `browser.key` next to the socket on
+every start; the browser presents it and asks the daemon to sign pages,
+pointers, revokes, and logins, the gateway presents it to read. Neither
+opens the keystore or the record directory. Applications asking for the
+same requests are refused with `browser only`.
 
 Since M9 the browser never opens the record or blob directory either.
 Every record, manifest, pointer, and blob it renders comes over the
@@ -257,6 +260,7 @@ purpose: the seam for real money is one function.
 
 ```bash
 weft-gateway --bind 127.0.0.1:8080          # GET /login issues a challenge and waits
+weft-gateway --allow allow.txt              # one root address per line; unlisted identities get 403
 weft login sign <challenge> --as laptop     # a proof: the signed challenge plus your manifest
 weft-browser 'weft:login?c=<challenge>'     # or the consent dialog signs and posts it for you
 weft grant add <app> --kind login --write --as laptop
@@ -268,8 +272,10 @@ response is a record of kind `login` whose body is the challenge verbatim,
 signed by a device the manifest authorizes, carried with that manifest so
 any verifier can check it offline. The gateway matches the origin, the
 nonce, and the clock, prefers the newest manifest it can find, opens a
-session for the root address, and shows it. Nothing is stored anywhere; a
-`login` record is refused by every store and every relay.
+session for the root address, and shows it. Sessions live in
+`$WEFT_HOME/gateway/sessions`, mode 0600, so a gateway restart keeps
+everyone logged in and logout still revokes. The `login` record itself is
+stored nowhere; every store and every relay refuses it.
 
 ## [ Persistence ] — posture
 
@@ -297,7 +303,12 @@ session for the root address, and shows it. Nothing is stored anywhere; a
   magic bytes and serves everything else as an attachment.
 - Logins bind the service origin and a single use nonce with a five minute
   life, session cookies are `HttpOnly` and `SameSite=Strict`, and the
-  tables behind them are capped and swept.
+  tables behind them are capped and swept. The session file is canonical
+  CBOR with no unknown fields; a malformed file or allow list refuses to
+  start.
+- The gateway holds no record or blob path. Every read goes over the
+  store socket under the browser key, so the daemon is the one process
+  that opens signed state.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
@@ -321,7 +332,7 @@ crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head reso
 crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
-crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers · login sessions
+crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk · allow list
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
 crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view with daemon log · login dialog
 docs/protocol.md     normative record spec
@@ -349,8 +360,9 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete and the store daemon is hardened. What follows is
-open: blob pull on miss, a real payment rail behind the voucher seam, blob
-collection on sweep, `weft:` as a registered URL handler so a site's login
-link opens the browser, persistent gateway sessions, browser visual
-design. See [`progress/`](progress/).
+The roadmap is complete, the store daemon is hardened, and every reader
+is behind it. What follows is open: blob pull on miss, a real payment
+rail behind the voucher seam, blob collection on sweep, `weft:` as a
+registered URL handler so a site's login link opens the browser, gateway
+host based routing and TLS, browser visual design. See
+[`progress/`](progress/).

@@ -34,7 +34,7 @@ impl core::fmt::Display for Refusal {
             Self::Full => f.write_str("too many logins in flight"),
             Self::Random => f.write_str("no randomness"),
             Self::Denied => f.write_str("identity is not on the allow list"),
-            Self::State(e) => write!(f, "session state: {e}"),
+            Self::State(e) => f.write_str(e),
         }
     }
 }
@@ -96,6 +96,10 @@ pub fn allowlist(text: &str) -> Result<HashSet<PublicKey>, Refusal> {
 }
 
 fn load(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
+    parse(path, now).map_err(|e| Refusal::State(format!("{}: {e}", path.display())))
+}
+
+fn parse(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),

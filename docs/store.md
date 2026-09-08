@@ -3,17 +3,20 @@
 The personal store is a daemon. Applications never touch the record
 directory; they hold a key, present it over a local socket, and get
 exactly what an active grant by the store's owner allows at that moment.
-The browser is the daemon's one privileged client: it holds the key at
-`<home>/browser.key` and signs nothing itself.
+The browser and the gateway are the daemon's privileged clients: they
+hold the key at `<home>/browser.key` and sign nothing themselves.
 
 ## Browser key
 
 `weft-store serve` writes a fresh `<home>/browser.key` on every start,
 after it holds the socket: 32 seed bytes, mode 0600, written to a
 temporary file and renamed into place. The key lives exactly as long as
-one daemon run. The browser reads it when it connects, so it follows a
-restart on its next request. The daemon treats exactly that public key as
-privileged. Every other key is an application under grants.
+one daemon run. The key means a process on this host with access to the
+home directory; the browser and the gateway both read it when they
+connect, so they follow a restart on their next request. The daemon
+treats exactly that public key as privileged. Every other key is an
+application under grants. Nothing but the daemon opens `records/` or
+`blobs/`; with the daemon stopped the gateway answers 503.
 
 ## Transport
 

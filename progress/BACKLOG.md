@@ -24,9 +24,9 @@ scheduled.
 | Sponsorship | M7 | A receipt pays only for its author's records |
 | Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
 | Relay reloads config | M2, M7 | `allow`, `banks`, and `rate` are read only at start |
-| Gateway session persistence | M6 | Sessions and pending challenges live in memory; a restart logs everyone out |
 | `weft:` URL handler registration | M6 | A challenge page in Firefox cannot launch weft-browser; the link is pasted by hand |
 | Detached daemon from the browser | M9 | The browser only starts an attached daemon that dies with it |
-| Login policy at the gateway | M6 | Any valid identity logs in; there is no allowlist or first seen record |
+| Gateway allow list reload | M11 | `--allow` is read once at start, like the relay's `allow` |
+| Gateway sessions cap on disk | M11 | The file holds at most 1024 sessions; a full table refuses new logins until a sweep |
 | Store cache cap | M10 | The cache mirrors the directory; a store larger than memory has no hard cap |
 | Passphrase field after a failed start | M10 | The start form keeps the typed passphrase after the daemon refuses it |
