@@ -1,15 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use weft_core::{Address, Body, Challenge, Device, Draft, Manifest, Pointer, Proof, SecretKey};
+use tokio::net::{TcpListener, TcpStream, UnixListener};
+use weft_core::{
+    Address, Body, Challenge, Device, Draft, Manifest, Pointer, Proof, PublicKey, SecretKey,
+};
 use weft_gateway::Gateway;
 use weft_home::Home;
 use weft_resolve::Resolver;
+use weft_store::{Gate, Local};
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
@@ -19,6 +23,19 @@ struct Site {
     blob: Address,
     file: Address,
     dir: PathBuf,
+    daemon: tokio::task::JoinHandle<()>,
+}
+
+fn daemon(dir: &std::path::Path, root: &SecretKey) -> tokio::task::JoinHandle<()> {
+    let socket = weft_store::socket_path(dir);
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let browser = weft_store::create_browser_key(dir).unwrap();
+    let gate =
+        Arc::new(Gate::new(Home::new(dir.to_path_buf()), root.public(), key(2), browser.public()));
+    tokio::spawn(async move {
+        let _ = weft_store::serve(gate, listener).await;
+    })
 }
 
 fn key(n: u8) -> SecretKey {
@@ -68,17 +85,21 @@ fn site() -> Site {
     .sign(&root)
     .unwrap();
     store.put(&file).unwrap();
-    Site { root, page: page.address(), blob, file: file.address(), dir }
+    let daemon = daemon(&dir, &root);
+    Site { root, page: page.address(), blob, file: file.address(), dir, daemon }
+}
+
+async fn start_with(site: &Site, allow: Option<HashSet<PublicKey>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap();
+    tokio::spawn(weft_gateway::serve(listener, Arc::new(gateway)));
+    addr.to_string()
 }
 
 async fn start(site: &Site) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let gateway =
-        Gateway::new(Resolver::local(Home::new(site.dir.clone())), format!("http://{addr}"))
-            .unwrap();
-    tokio::spawn(weft_gateway::serve(listener, Arc::new(gateway)));
-    addr.to_string()
+    start_with(site, None).await
 }
 
 struct Reply {
@@ -189,7 +210,7 @@ async fn rejects_what_it_should() {
     assert_eq!(request(&addr, "GET", "/blob/junk").await.status, 400);
     let forged = Address::of(b"forged");
     Home::new(site.dir.clone()).keep_blob(&forged, b"not the bytes it names").unwrap();
-    assert_eq!(request(&addr, "GET", &format!("/blob/{forged}")).await.status, 404);
+    assert_eq!(request(&addr, "GET", &format!("/blob/{forged}")).await.status, 502);
     assert_eq!(request(&addr, "GET", "/notanaddress").await.status, 400);
     assert_eq!(request(&addr, "GET", "/../etc/passwd").await.status, 400);
     assert_eq!(request(&addr, "GET", "/%ff").await.status, 400);
@@ -369,5 +390,76 @@ async fn login_round_trip() {
     let r = request(&addr, "GET", "/login/zzz").await;
     assert_eq!(r.status, 400);
 
+    let _ = std::fs::remove_dir_all(&site.dir);
+}
+
+#[tokio::test]
+async fn store_down_answers_503_and_sessions_survive_a_gateway_restart() {
+    let site = site();
+    let addr = start(&site).await;
+    let now = weft_home::now().unwrap();
+    assert_eq!(request(&addr, "GET", &format!("/{}", site.page)).await.status, 200);
+
+    let r = request(&addr, "GET", "/login").await;
+    let location = r.header("location").unwrap().to_owned();
+    let challenge = challenge_in(&request(&addr, "GET", &location).await.text());
+    let proof = Proof {
+        login: challenge
+            .draft(&site.root.public(), &site.root.public(), now)
+            .sign(&site.root)
+            .unwrap(),
+        manifest: None,
+    };
+    let r = send(&addr, "POST", "/login", &[], proof.to_text().as_bytes()).await;
+    assert_eq!(r.status, 200);
+    let cookie = cookie_of(&r);
+    let file = std::fs::read(site.dir.join(weft_gateway::login::SESSIONS)).unwrap();
+    assert!(!file.is_empty());
+
+    let again = start(&site).await;
+    let r = send(&again, "GET", "/login", &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "the session came from the file");
+    assert!(r.text().contains("Logged in"));
+    let r = send(&again, "POST", "/logout", &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 303);
+    let third = start(&site).await;
+    let r = send(&third, "GET", "/login", &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 303, "logout reached the file");
+
+    site.daemon.abort();
+    std::fs::remove_file(weft_store::socket_path(&site.dir)).unwrap();
+    let r = request(&addr, "GET", &format!("/{}", site.page)).await;
+    assert_eq!(r.status, 503);
+    assert!(r.text().contains("not running"));
+    let r = request(&addr, "GET", &format!("/blob/{}", site.blob)).await;
+    assert_eq!(r.status, 503);
+    let r = request(&addr, "GET", "/login").await;
+    assert_eq!(r.status, 303, "login does not need the daemon");
+
+    let _ = std::fs::remove_dir_all(&site.dir);
+}
+
+#[tokio::test]
+async fn allow_list_decides_who_logs_in() {
+    let site = site();
+    let listed = site.root.public();
+    let addr = start_with(&site, Some(HashSet::from([listed]))).await;
+    let now = weft_home::now().unwrap();
+    let sign = |c: &Challenge, key: &SecretKey| Proof {
+        login: c.draft(&key.public(), &key.public(), now).sign(key).unwrap(),
+        manifest: None,
+    };
+    let r = request(&addr, "GET", "/login").await;
+    let location = r.header("location").unwrap().to_owned();
+    let challenge = challenge_in(&request(&addr, "GET", &location).await.text());
+    let stranger = key(9);
+    let r =
+        send(&addr, "POST", "/login", &[], sign(&challenge, &stranger).to_text().as_bytes()).await;
+    assert_eq!(r.status, 403);
+    assert!(r.text().contains("allow list"));
+    let r =
+        send(&addr, "POST", "/login", &[], sign(&challenge, &site.root).to_text().as_bytes()).await;
+    assert_eq!(r.status, 200, "a refused stranger does not burn the nonce");
+    assert!(r.text().contains(&listed.address().to_string()));
     let _ = std::fs::remove_dir_all(&site.dir);
 }

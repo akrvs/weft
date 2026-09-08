@@ -3,6 +3,7 @@
 pub mod html;
 pub mod login;
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_enco
 use tokio::net::TcpListener;
 use weft_core::{Address, Proof, PublicKey, login as text};
 use weft_resolve::{Error, Links, Page, Resolver, Target};
+use weft_store::Local;
 
 use crate::login::{Claim, Logins, Refusal, Token, token_from_cookies};
 
@@ -48,14 +50,24 @@ type Fail = (StatusCode, String);
 
 #[derive(Debug)]
 pub struct Gateway {
-    pub resolver: Resolver,
+    pub resolver: Resolver<Local>,
     pub logins: Logins,
 }
 
 impl Gateway {
-    pub fn new(resolver: Resolver, origin: String) -> Result<Self, Refusal> {
-        Ok(Self { resolver, logins: Logins::new(origin)? })
+    pub fn new(
+        resolver: Resolver<Local>,
+        origin: String,
+        allow: Option<HashSet<PublicKey>>,
+    ) -> Result<Self, Refusal> {
+        let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
+        let logins = Logins::new(origin, resolver.home().path(), allow, now)?;
+        Ok(Self { resolver, logins })
     }
+}
+
+fn down(e: &Error) -> bool {
+    matches!(e, Error::Home(f) if f.to_string() == weft_store::Error::Down.to_string())
 }
 
 pub async fn serve(listener: TcpListener, gateway: Arc<Gateway>) -> std::io::Result<()> {
@@ -105,7 +117,7 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
     Ok(reply)
 }
 
-async fn route(resolver: &Resolver, path: &str, query: Option<&str>) -> Reply {
+async fn route(resolver: &Resolver<Local>, path: &str, query: Option<&str>) -> Reply {
     if path.len() > MAX_PATH {
         return html_reply(StatusCode::URI_TOO_LONG, html::error(414, "path too long"));
     }
@@ -142,12 +154,22 @@ fn go(query: Option<&str>) -> Reply {
     r
 }
 
-async fn blob(resolver: &Resolver, rest: &str) -> Reply {
+async fn blob(resolver: &Resolver<Local>, rest: &str) -> Reply {
     let Ok(address) = rest.parse::<Address>() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "not a blob address"));
     };
-    let Ok(Some(data)) = resolver.blob(address).await else {
-        return html_reply(StatusCode::NOT_FOUND, html::error(404, "blob not in the local store"));
+    let data = match resolver.blob(address).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return html_reply(
+                StatusCode::NOT_FOUND,
+                html::error(404, "blob not in the local store"),
+            );
+        }
+        Err(e) if down(&e) => {
+            return html_reply(StatusCode::SERVICE_UNAVAILABLE, html::error(503, &e.to_string()));
+        }
+        Err(e) => return html_reply(StatusCode::BAD_GATEWAY, html::error(502, &e.to_string())),
     };
     let kind = sniff(&data);
     let mut r = reply(StatusCode::OK, kind, data.into());
@@ -159,7 +181,7 @@ async fn blob(resolver: &Resolver, rest: &str) -> Reply {
     r
 }
 
-async fn page(resolver: &Resolver, rest: &str) -> Reply {
+async fn page(resolver: &Resolver<Local>, rest: &str) -> Reply {
     let Ok(input) = percent_decode_str(rest).decode_utf8() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "path is not utf-8"));
     };
@@ -175,6 +197,7 @@ async fn page(resolver: &Resolver, rest: &str) -> Reply {
         }
         Err(e) => {
             let status = match e {
+                _ if down(&e) => StatusCode::SERVICE_UNAVAILABLE,
                 Error::Target(_) => StatusCode::BAD_REQUEST,
                 Error::NotFound(_) | Error::NoPointer(_) | Error::Dns(_) | Error::Binding(_) => {
                     StatusCode::NOT_FOUND
@@ -229,9 +252,9 @@ fn with_cookie(mut reply: Reply, cookie: &str) -> Reply {
 
 fn refused(refusal: &Refusal) -> Reply {
     let status = match refusal {
-        Refusal::Proof(_) | Refusal::Nonce => StatusCode::FORBIDDEN,
+        Refusal::Proof(_) | Refusal::Nonce | Refusal::Denied => StatusCode::FORBIDDEN,
         Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
-        Refusal::Origin | Refusal::Random => StatusCode::INTERNAL_SERVER_ERROR,
+        Refusal::Origin | Refusal::Random | Refusal::State(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     html_reply(status, html::error(status.as_u16(), &refusal.to_string()))
 }
@@ -299,8 +322,8 @@ fn claim(logins: &Logins, rest: &str) -> Reply {
 }
 
 fn logout(logins: &Logins, token: Option<&Token>) -> Reply {
-    if let Some(t) = token {
-        logins.logout(t);
+    if let Some(Err(r)) = token.map(|t| logins.logout(t)) {
+        return refused(&r);
     }
     let mut r = html_reply(StatusCode::SEE_OTHER, html::error(303, "/login"));
     r.headers_mut().insert(LOCATION, HeaderValue::from_static("/login"));

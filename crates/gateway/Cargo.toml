@@ -14,6 +14,7 @@ path = "src/main.rs"
 weft-core = { path = "../core" }
 weft-home = { path = "../home" }
 weft-resolve = { path = "../resolve" }
+weft-store = { path = "../store" }
 bytes.workspace = true
 clap.workspace = true
 getrandom.workspace = true
