@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M13-yellow)
+![status](https://img.shields.io/badge/status-M14-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-98%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -36,7 +36,8 @@
 │              gate [the browser signs nothing, the daemon does]  │
 │              reads [the browser opens no record or blob file]   │
 │              fetch [a public gateway is nobody's proxy]         │
-│ status     : M13 — spec frozen · 10 crates · one gate · one door│
+│              ops [a signal reloads, a budget bounds the pulls]  │
+│ status     : M14 — spec frozen · 10 crates · one gate · one door│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -189,9 +190,9 @@ signature check in a header bar and in `x-weft-*` response headers. Every
 record and blob comes over the store socket; with the daemon stopped every
 page is a 503. Anonymous readers see what the store holds and nothing
 more; a logged in session may have the gateway pull from its relays, at
-most four pulls in flight, and what one session pulled is local for
-everyone after. Plain HTTP on loopback by default; TLS is the reverse
-proxy's job.
+most four pulls in flight and 64 MiB per identity per hour, and what one
+session pulled is local for everyone after. Plain HTTP on loopback by
+default; TLS is the reverse proxy's job.
 
 ## [ Store Flag ] — revoke a grant and watch access end
 
@@ -259,6 +260,7 @@ weft price                                        # every relay's rate and banks
 weft push <page> <pointer>                        # rejected: payment required
 weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch, both records pin
 weft receipts                                     # what you paid, to whom, until when
+weft-relay rate 2 && kill -HUP $(pidof weft-relay) # allow, banks, and rate reload in place
 ```
 
 A voucher is a bank signed note naming the relay it can be redeemed at, a
@@ -274,6 +276,8 @@ purpose: the seam for real money is one function.
 ```bash
 weft-gateway --bind 127.0.0.1:8080          # GET /login issues a challenge and waits
 weft-gateway --allow allow.txt              # one root address per line; unlisted identities get 403
+weft-gateway --pulls 4 --budget 64          # pulls in flight, MiB per identity per hour, 0 is unlimited
+kill -HUP $(pidof weft-gateway)             # rereads the allow list and sweeps expired sessions
 weft login sign <challenge> --as laptop     # a proof: the signed challenge plus your manifest
 weft-browser 'weft:login?c=<challenge>'     # or the consent dialog signs and posts it for you
 weft grant add <app> --kind login --write --as laptop
@@ -322,9 +326,11 @@ stored nowhere; every store and every relay refuses it.
 - The gateway holds no record or blob path. Every read goes over the
   store socket under the browser key, so the daemon is the one process
   that opens signed state. It pulls from a relay only for a request that
-  carries a live session, never for an anonymous one, and never more than
-  four at a time, so a public gateway is not a fetch proxy for its relay
-  list.
+  carries a live session, never for an anonymous one, never more than
+  four at a time, and never past a byte budget per identity per hour, so
+  a public gateway is not a fetch proxy for its relay list. Over budget a
+  reader still gets every local record; a miss says when the window
+  resets.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
@@ -346,9 +352,9 @@ crates/home/         weft-home: encrypted keystore · record store · snapshot c
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer
 crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach · client · pooled Local reads · weft-app sample
-crates/relay/        weft-relay: init · allow · rate · bank · price · serve
+crates/relay/        weft-relay: init · allow · rate · bank · price · serve · SIGHUP reload
 crates/bank/         weft-bank: init · whoami · mint
-crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk · allow list · pulls for sessions only
+crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
 crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view with daemon log · login dialog
 docs/protocol.md     normative record spec
@@ -377,9 +383,9 @@ cargo deny check
 ## [ Next Ops ]
 
 The roadmap is complete, the store daemon is hardened, every reader is
-behind it, what the store lacks is pulled from the relays, and the gateway
-pulls only for readers it knows. What follows is open: a real payment
-rail behind the voucher seam, blob collection on sweep, `weft:` as a
-registered URL handler so a site's login link opens the browser, gateway
-host based routing and TLS, config reload for relay and gateway, browser
-visual design. See [`progress/`](progress/).
+behind it, what the store lacks is pulled from the relays, the gateway
+pulls only for readers it knows and only so much, and both daemons reload
+on a signal. What follows is open: a real payment rail behind the voucher
+seam, blob collection on sweep, `weft:` as a registered URL handler so a
+site's login link opens the browser, gateway host based routing and TLS,
+browser visual design. See [`progress/`](progress/).

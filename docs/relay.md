@@ -87,3 +87,13 @@ passed, heads that point at a dropped record, and manifests of authors
 who are not allowlisted and have no pin left. Allowlisted authors are
 never swept. Spent voucher ids are kept forever. Blobs of swept records
 stay in the blob store until a later milestone collects them.
+
+## Reload
+
+`allow`, `banks`, and `rate` are read at start and again on SIGHUP. A
+reload replaces all three at once, then sweeps. A batch in flight keeps
+the rules it started with; the next batch sees the new ones. A file that
+fails to parse is reported on stderr and the running config stays. A
+delisted author is refused on the next push; records the relay already
+holds for that author stay until a pin they never had would have passed,
+which is never.

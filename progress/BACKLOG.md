@@ -21,13 +21,12 @@ scheduled.
 | Real payment rail | M7 | Lightning preimage or ecash token behind the voucher seam in `Relay::settle` |
 | Sponsorship | M7 | A receipt pays only for its author's records |
 | Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
-| Relay reloads config | M2, M7 | `allow`, `banks`, and `rate` are read only at start |
 | `weft:` URL handler registration | M6 | A challenge page in Firefox cannot launch weft-browser; the link is pasted by hand |
 | Detached daemon from the browser | M9 | The browser only starts an attached daemon that dies with it |
-| Gateway allow list reload | M11 | `--allow` is read once at start, like the relay's `allow` |
-| Gateway sessions cap on disk | M11 | The file holds at most 1024 sessions; a full table refuses new logins until a sweep |
+| Gateway sessions cap on disk | M11 | The file holds at most 1024 sessions; a full table refuses new logins until a login or a SIGHUP sweeps |
 | Store cache cap | M10 | The cache mirrors the directory; a store larger than memory has no hard cap |
 | Passphrase field after a failed start | M10 | The start form keeps the typed passphrase after the daemon refuses it |
 | Blob download progress | M12 | The browser shows nothing while a large blob pulls |
-| Per session pull budget | M13 | A logged in reader may pull without limit beyond the gateway wide in-flight cap of 4; no bytes per session accounting |
-| Gateway pull cap flag | M13 | `Gateway::pull_cap` exists for tests; the binary has no `--pulls` flag |
+| Pull budget survives a restart | M14 | Budget counters live in memory; a gateway restart opens every window afresh |
+| Fake name server for negative DNS | M13, M14 | The negative DoH path is verified only end to end against Cloudflare |
+| Relay drops a delisted author's records | M14 | A reload refuses the next push; records already stored free stay forever |
