@@ -7,15 +7,17 @@ use weft_home::{Fail, Reads};
 use crate::gate::{browser_key, browser_key_path, socket_path};
 use crate::{Client, Error, Result};
 
+pub const POOL: usize = 4;
+
 #[derive(Debug)]
 pub struct Local {
     home: PathBuf,
-    client: Mutex<Option<Client>>,
+    idle: Mutex<Vec<Client>>,
 }
 
 impl Local {
     pub fn new(home: PathBuf) -> Self {
-        Self { home, client: Mutex::new(None) }
+        Self { home, idle: Mutex::new(Vec::new()) }
     }
 
     async fn connect(&self) -> Result<Client> {
@@ -33,20 +35,22 @@ impl Local {
     where
         F: AsyncFnOnce(&mut Client) -> Result<T> + Clone,
     {
-        let mut slot = self.client.lock().await;
-        let reused = slot.is_some();
-        if !reused {
-            *slot = Some(self.connect().await?);
-        }
-        let Some(client) = slot.as_mut() else { return Err(Error::Down) };
-        let mut result = f.clone()(client).await;
+        let taken = self.idle.lock().await.pop();
+        let reused = taken.is_some();
+        let mut client = match taken {
+            Some(c) => c,
+            None => self.connect().await?,
+        };
+        let mut result = f.clone()(&mut client).await;
         if reused && matches!(result, Err(Error::Io(_) | Error::Wire(_))) {
-            *slot = Some(self.connect().await?);
-            let Some(client) = slot.as_mut() else { return Err(Error::Down) };
-            result = f(client).await;
+            client = self.connect().await?;
+            result = f(&mut client).await;
         }
-        if matches!(result, Err(Error::Io(_) | Error::Wire(_) | Error::Down)) {
-            *slot = None;
+        if !matches!(result, Err(Error::Io(_) | Error::Wire(_) | Error::Down)) {
+            let mut idle = self.idle.lock().await;
+            if idle.len() < POOL {
+                idle.push(client);
+            }
         }
         result
     }

@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::fmt::Write;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -20,11 +21,13 @@ const CHROME_HEIGHT: i32 = 88;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const START_POLL: Duration = Duration::from_millis(200);
+const LOG_BYTES: usize = 16 * 1024;
 
 struct App {
     resolver: Resolver<Local>,
     web: Mutex<Option<Webview>>,
     daemon: Mutex<Option<Child>>,
+    log: Arc<Mutex<VecDeque<u8>>>,
 }
 
 #[derive(Serialize)]
@@ -213,12 +216,31 @@ fn store_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("weft-store"))
 }
 
-fn stderr_of(child: &mut Child) -> String {
-    let mut text = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut text);
-    }
-    text.trim().to_owned()
+fn drain(child: &mut Child, log: &Arc<Mutex<VecDeque<u8>>>) -> Option<std::thread::JoinHandle<()>> {
+    let mut stderr = child.stderr.take()?;
+    let log = Arc::clone(log);
+    Some(std::thread::spawn(move || {
+        let mut chunk = [0u8; 1024];
+        while let Ok(n) = stderr.read(&mut chunk)
+            && n > 0
+            && let Ok(mut log) = log.lock()
+        {
+            log.extend(&chunk[..n]);
+            let excess = log.len().saturating_sub(LOG_BYTES);
+            log.drain(..excess);
+        }
+    }))
+}
+
+fn log_text(log: &Arc<Mutex<VecDeque<u8>>>) -> String {
+    let Ok(mut log) = log.lock() else { return String::new() };
+    String::from_utf8_lossy(log.make_contiguous()).trim().to_owned()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn daemon_log(app: State<'_, App>) -> String {
+    log_text(&app.log)
 }
 
 #[tauri::command]
@@ -248,6 +270,10 @@ async fn start_store(app: State<'_, App>, device: String, passphrase: String) ->
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot start weft-store: {e}"))?;
+    if let Ok(mut log) = app.log.lock() {
+        log.clear();
+    }
+    let reader = drain(&mut child, &app.log);
     if let Some(stdin) = child.stdin.as_mut() {
         let mut line = Zeroizing::new(passphrase.as_bytes().to_vec());
         line.push(b'\n');
@@ -258,7 +284,10 @@ async fn start_store(app: State<'_, App>, device: String, passphrase: String) ->
     let deadline = std::time::Instant::now() + START_TIMEOUT;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
-            let why = stderr_of(&mut child);
+            if let Some(reader) = reader {
+                let _ = reader.join();
+            }
+            let why = log_text(&app.log);
             return Err(if why.is_empty() { format!("weft-store exited: {status}") } else { why });
         }
         if tokio::net::UnixStream::connect(&socket).await.is_ok() {
@@ -358,6 +387,7 @@ fn main() {
         resolver: Resolver::new(home, reads),
         web: Mutex::new(None),
         daemon: Mutex::new(None),
+        log: Arc::default(),
     };
     let result = tauri::Builder::default()
         .manage(app)
@@ -389,7 +419,8 @@ fn main() {
             revoke_grant,
             login_prompt,
             login,
-            start_store
+            start_store,
+            daemon_log
         ])
         .setup(|app| {
             let window = tauri::window::WindowBuilder::new(app, "main")

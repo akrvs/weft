@@ -35,7 +35,7 @@ pub fn browser_key(home: &Path) -> Result<SecretKey> {
 pub fn create_browser_key(home: &Path) -> Result<SecretKey> {
     let mut seed = Zeroizing::new([0u8; 32]);
     getrandom::fill(seed.as_mut()).map_err(|e| Error::Io(e.to_string()))?;
-    weft_home::fs::write_private(&browser_key_path(home), seed.as_ref())?;
+    weft_home::fs::replace_private(&browser_key_path(home), seed.as_ref())?;
     Ok(SecretKey::from_seed(*seed))
 }
 

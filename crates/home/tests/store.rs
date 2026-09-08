@@ -62,4 +62,8 @@ fn snapshots_see_every_writer_and_skip_files_that_lie() {
     assert!(a.blob(&Address::of(b"none")).unwrap().is_none());
     a.keep_blob(&Address::of(b"bytes"), b"bytes").unwrap();
     assert_eq!(b.blob(&Address::of(b"bytes")).unwrap().unwrap(), b"bytes");
+    std::fs::remove_file(records.join(format!("{}.weft", note.address()))).unwrap();
+    assert!(a.record(note.address()).unwrap().is_some());
+    assert_eq!(a.snapshot().unwrap().records().count(), 1);
+    assert!(a.record(note.address()).unwrap().is_none());
 }

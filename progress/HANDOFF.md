@@ -6,8 +6,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate |
-| Next | roadmap complete; M10 is open, pull it from `BACKLOG.md` |
+| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening |
+| Next | roadmap complete; M11 is open, pull it from `BACKLOG.md` |
 | Repo | private, github.com/akrvs/weft, CI on push to main, license deferred |
 
 ## Crates
@@ -15,17 +15,15 @@ Read first, rewritten at every close, never appended, under 120 lines.
 | Crate | Path | One line |
 |---|---|---|
 | weft-core | crates/core | Address, canonical CBOR, identity, record, manifest, pointer, grant, revoke, receipt, voucher, login challenge and proof, one `verify` |
-| weft-home | crates/home | Encrypted keystore, record store with a shared cache and `Snapshot`, `Reads` trait, relay list, home directory layout |
+| weft-home | crates/home | Encrypted keystore, record store with a shared cache that mirrors the directory, `Snapshot`, `Reads` trait, relay list, home directory layout |
 | weft-net | crates/net | Relay wire protocol, client, relay handler with pricing, pins, sweep, redb index |
 | weft-resolve | crates/resolve | Target grammar, DNS registry over DoH, `Resolver<R: Reads>` for records, heads, blobs, Markdown renderer |
-| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, `Local` reads, browser key, `weft-store` and `weft-app` binaries |
+| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, pooled `Local` reads, browser key per run, `weft-store` and `weft-app` binaries |
 | weft-relay | crates/relay | Relay binary: init, allow, deny, rate, bank, price, serve |
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers |
 | weft-gateway | crates/gateway | HTTP gateway binary over hyper: any target the address bar takes, provenance headers, `/login` sessions |
 | weft | crates/cli | Commands over home, net, and resolve: grants, price, paid push, receipts, login |
-| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: every record and blob over the socket, store view, start dialog, login consent |
-
-`vectors/` regenerate only on a format change: `cargo run -p weft-core --example vectors`.
+| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: every record and blob over the socket, store view with daemon log, start form from a failed navigation, login consent |
 
 ## Frozen decisions
 
@@ -49,28 +47,32 @@ Read first, rewritten at every close, never appended, under 120 lines.
 - Gateway: plain HTTP on an explicit bind, default loopback, GET and HEAD
   only except POST `/login` and `/logout`, no script, no remote origin. TLS
   is a reverse proxy's job. It reads the home directory, not the socket.
-- Grants: `grant` body `app`, sorted `kinds` of 1 to 16, `access` 1 read
-  2 write 3 both, optional `expires`; `revoke` cites the grant in body and
-  `refs`. Device signed allowed. Reserved kinds never grantable. Active
-  means valid, unexpired, not revoked, checked at every request.
+- Grants: `grant` body `app`, sorted `kinds` of 1 to 16, `access` 1 read 2
+  write 3 both, optional `expires`; `revoke` cites the grant in body and `refs`.
+  Device signed allowed. Reserved kinds never grantable. Active means valid,
+  unexpired, not revoked, checked at every request.
 - The store is a daemon on `<home>/store.sock` mode 0600, relay framing,
   nonce handshake under `weft/store/1`, idle connections closed at 60 s.
   Writes are signed by the daemon's device key and verified against the
   manifest. Grant reads cover the root only. The browser is its one
   privileged client: key `<home>/browser.key`, 32 seed bytes mode 0600,
-  written once by `serve`. That key skips grants; `kinds`, `grants`,
+  written fresh by every `serve` once it holds the socket; `Local` reads it
+  at connect. That key skips grants; `kinds`, `grants`,
   `revoke`, `publish`, `record`, `manifest`, `pointers`, `blob`, `keep`
   are browser only. The browser never signs and never opens `records/`
   or `blobs/`: it reads through `Local`, keeps fetched records through
   `keep` after the daemon verifies them, and pushes to relays itself.
-- Blobs cross the socket by `offset` in chunks of at most 512 KiB, total
-  at most 1 GiB, hashed whole by the resolver. Every local read goes
-  through `weft_home::Reads` and the resolver verifies every candidate.
+- Blobs cross the socket by `offset` in chunks of at most 512 KiB, total at
+  most 1 GiB, hashed whole by the resolver. Every local read goes through
+  `weft_home::Reads` and the resolver verifies every candidate.
   `Store::new` takes the home directory; its cache is memory only, parsed
   records by address and a verification memo per manifest, with the
-  directory listed on every snapshot so other writers are seen.
+  directory listed on every snapshot so other writers are seen and the
+  cache pruned to what the listing showed.
 - `weft-store serve --attach` reads the passphrase from stdin and exits on
-  stdin EOF; the browser starts it so and holds the pipe until it exits.
+  stdin EOF; the browser starts it so, holds the pipe until it exits, and
+  drains its stderr into a 16 KiB ring shown in the store dialog. `Local`
+  pools up to 4 idle connections.
 - Payments: voucher `bank`, `to`, `cents`, `nonce`, `sig` under
   `weft/voucher/1`, 256 bytes max, spent once. `receipt` reserved: `relay`,
   sorted `records` 1 to 64 also in `refs`, `until`, `voucher`. Pays only
@@ -90,26 +92,24 @@ Read first, rewritten at every close, never appended, under 120 lines.
   `RelayMode::Disabled` over loopback. CLI network commands need a relay.
 - hickory's `Resolver` never asks for the AD bit; `weft-resolve::Dns` builds it.
   Relay reads `allow`, `banks`, `rate` only at start. Argon2id: debug CLI tests take 15 s.
-- The daemon closes idle connections after 60 s; `Local` retries once on a
-  reused connection, a bare `Client` does not. The browser reads the
-  daemon's stderr only when the start fails.
-- `deny.toml` ignores unmaintained advisories from iroh, GTK3, Tauri codegen.
-  Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j` after `hyprctl dispatch
-  focuswindow class:weft-browser`. Input: `ydotool` after `systemctl --user start ydotool`.
+- Idle connections close after 60 s; `Local` retries once, a bare `Client` does
+  not. `serve` holds its connection tasks in a `JoinSet`; aborting only the
+  accept loop leaves them alive. `deny.toml` ignores unmaintained advisories.
+- Screenshots: `grim -g "x,y wxh"` from `hyprctl clients -j` after `hyprctl dispatch
+  focuswindow class:weft-browser`. `ydotool` after `systemctl --user start ydotool`;
+  its absolute coordinates are doubled on a 2560 wide screen, pass half.
 - Relay `put` order: manifests, records, receipts; unpaid records wait for a
   receipt in the batch. `iroh-blobs` 0.103 has no delete; `sweep` reports orphans.
   reqwest `rustls-no-provider` panics without a provider; the browser installs `ring` in `main`.
 
-## Run it
-
-Every flag section of `README.md` is a runnable transcript.
-
 ## Verify before commit
+
+Every flag section of `README.md` is a runnable transcript. `vectors/`
+regenerate only on a format change: `cargo run -p weft-core --example vectors`.
 
 ```bash
 cargo fmt --all --check && cargo clippy --workspace --all-targets
-cargo test --workspace && cargo deny check
-npm run --prefix crates/browser/ui check
+cargo test --workspace && cargo deny check && npm run --prefix crates/browser/ui check
 grep -rnP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]' README.md docs progress crates --exclude-dir=node_modules
 grep -rn '//' crates --include='*.rs' --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist | grep -v '://'
 ```

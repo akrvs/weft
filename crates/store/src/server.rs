@@ -11,12 +11,18 @@ use crate::{Error, Gate, Result};
 pub const IDLE: Duration = Duration::from_secs(60);
 
 pub async fn serve(gate: Arc<Gate>, listener: UnixListener) -> Result<()> {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let (stream, _) = listener.accept().await?;
-        let gate = Arc::clone(&gate);
-        tokio::spawn(async move {
-            let _ = handle(&gate, stream).await;
-        });
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let gate = Arc::clone(&gate);
+                connections.spawn(async move {
+                    let _ = handle(&gate, stream).await;
+                });
+            }
+            Some(_) = connections.join_next() => {}
+        }
     }
 }
 

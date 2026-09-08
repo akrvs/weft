@@ -22,6 +22,14 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+pub fn replace_private(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    write_private(&tmp, data)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 pub fn write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;

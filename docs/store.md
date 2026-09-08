@@ -8,10 +8,12 @@ The browser is the daemon's one privileged client: it holds the key at
 
 ## Browser key
 
-`weft-store serve` writes `<home>/browser.key` on its first start: 32
-seed bytes, mode 0600, created with `create_new` so a second daemon never
-overwrites it. The daemon treats exactly that public key as privileged.
-Every other key is an application under grants.
+`weft-store serve` writes a fresh `<home>/browser.key` on every start,
+after it holds the socket: 32 seed bytes, mode 0600, written to a
+temporary file and renamed into place. The key lives exactly as long as
+one daemon run. The browser reads it when it connects, so it follows a
+restart on its next request. The daemon treats exactly that public key as
+privileged. Every other key is an application under grants.
 
 ## Transport
 
@@ -136,8 +138,10 @@ The store lists its record directory on every request and parses only
 files it has not seen, keyed by the address in the file name. A file
 whose content does not hash to its name is ignored. Verification
 outcomes are remembered per record and manifest, so a record is checked
-once per manifest that ever applied to it. Other writers to the same
-directory, such as the command line, are seen on the next request.
+once per manifest. Each listing drops cached records whose file is gone
+and outcomes for manifests no longer on disk, so the cache never
+outgrows the directory. Other writers to the same directory, such as the
+command line, are seen on the next request.
 
 ## Attach
 
@@ -145,4 +149,8 @@ directory, such as the command line, are seen on the next request.
 first line of standard input and exits when standard input closes. The
 browser starts the daemon this way with a pipe it holds until it exits,
 so the daemon lives exactly as long as the browser. Without `--attach`
-the daemon prompts on the terminal and runs until it is stopped.
+the daemon prompts on the terminal and runs until it is stopped. The
+browser drains the daemon's standard error into a ring of the last 16 KiB
+and shows it in the store dialog; a failed start reports that text. The
+browser's `Local` reads keep up to four idle connections to the daemon
+and open more as requests overlap.

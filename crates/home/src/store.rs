@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,15 @@ impl Cache {
         let record = Arc::new(record);
         self.records.lock().map_err(|_| "cache poisoned")?.insert(address, Arc::clone(&record));
         Ok(Some(record))
+    }
+
+    fn retain(&self, seen: &HashSet<Address>, manifests: &HashSet<Address>) -> Result<()> {
+        self.records.lock().map_err(|_| "cache poisoned")?.retain(|a, _| seen.contains(a));
+        self.verified
+            .lock()
+            .map_err(|_| "cache poisoned")?
+            .retain(|(a, m), _| seen.contains(a) && m.is_none_or(|m| manifests.contains(&m)));
+        Ok(())
     }
 
     fn verified(&self, address: Address, record: &Record, manifest: Option<&Manifest>) -> bool {
@@ -125,6 +134,14 @@ impl Store {
                 }
             }
         }
+        let seen = entries.iter().map(|(a, _)| *a).collect();
+        let manifests = entries
+            .iter()
+            .filter(|(_, r)| r.kind() == weft_core::manifest::KIND)
+            .filter_map(|(_, r)| Manifest::from_record(r).ok())
+            .map(|m| Address::of(&m.encode()))
+            .collect();
+        self.cache.retain(&seen, &manifests)?;
         Ok(Snapshot { entries, cache: Arc::clone(&self.cache) })
     }
 

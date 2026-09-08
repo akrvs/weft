@@ -9,9 +9,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tokio::net::{UnixListener, UnixStream};
 use weft_home::{Home, home};
-use weft_store::{
-    Error, Gate, Result, browser_key, browser_key_path, create_browser_key, socket_path,
-};
+use weft_store::{Error, Gate, Result, create_browser_key, socket_path};
 use zeroize::Zeroizing;
 
 #[derive(Parser, Debug)]
@@ -92,14 +90,9 @@ async fn serve(home: Home, device: &str, attach: bool) -> Result<()> {
     if !authorized {
         eprintln!("warning: {device} is not in the current manifest; writes will be refused");
     }
-    let browser = if browser_key_path(home.path()).exists() {
-        browser_key(home.path())?
-    } else {
-        create_browser_key(home.path())?
-    }
-    .public();
     let path = socket_path(home.path());
     let listener = bind(&path).await?;
+    let browser = create_browser_key(home.path())?.public();
     println!("{}", path.display());
     println!("root     {}", root.address());
     println!("signer   {}  {device}", key.public().address());

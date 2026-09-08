@@ -30,7 +30,8 @@ dialog { border: 1px solid #8886; border-radius: 8px; background: Canvas; color:
 #store td { border: 1px solid #8886; padding: 4px 8px; word-break: break-all; }
 #revoke { display: grid; gap: 8px; margin: 8px 0; }
 #revoke input { font: inherit; padding: 6px 10px; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
-#store-result { white-space: pre-wrap; }
+#store-result, #store-log { white-space: pre-wrap; }
+#store-log { max-height: 12em; overflow-y: auto; background: #8882; padding: 6px; }
 #start { display: grid; gap: 8px; margin: 8px 0; }
 #start input, #start select { font: inherit; padding: 6px 10px; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
 #start p { margin: 0; }

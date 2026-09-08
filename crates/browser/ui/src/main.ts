@@ -89,6 +89,7 @@ async function go(input: string, remember = true): Promise<void> {
     content.innerHTML = "";
     unsigned.hidden = true;
     setStatus(String(e), false);
+    if (String(e).includes(NOT_RUNNING)) await openStore(value);
   }
 }
 
@@ -148,7 +149,23 @@ const startForm = el<HTMLFormElement>("start");
 const startDevice = el<HTMLSelectElement>("start-device");
 const startPass = el<HTMLInputElement>("start-pass");
 const storeResult = el("store-result");
+const storeLog = el("store-log");
+const storeLogTitle = el("store-log-title");
 const NOT_RUNNING = "weft-store is not running";
+let retry = "";
+
+async function showLog(): Promise<void> {
+  const text = await invoke<string>("daemon_log");
+  storeLog.textContent = text;
+  storeLog.hidden = storeLogTitle.hidden = text === "";
+}
+
+async function openStore(pending = ""): Promise<void> {
+  retry = pending;
+  storeResult.textContent = "";
+  await showStore();
+  if (!storeDialog.open) storeDialog.showModal();
+}
 
 async function offerStart(): Promise<void> {
   startDevice.replaceChildren();
@@ -204,6 +221,7 @@ async function showStore(): Promise<void> {
     storeResult.textContent = String(e);
     if (String(e).includes(NOT_RUNNING)) await offerStart();
   }
+  await showLog();
 }
 
 startForm.addEventListener("submit", async (event) => {
@@ -216,16 +234,18 @@ startForm.addEventListener("submit", async (event) => {
     });
     startPass.value = "";
     await showStore();
+    if (retry) {
+      storeDialog.close();
+      const pending = retry;
+      retry = "";
+      await go(pending, false);
+    }
   } catch (e) {
     storeResult.textContent = String(e);
   }
 });
 
-el("store-toggle").addEventListener("click", async () => {
-  storeResult.textContent = "";
-  await showStore();
-  storeDialog.showModal();
-});
+el("store-toggle").addEventListener("click", () => void openStore());
 el("store-close").addEventListener("click", () => storeDialog.close());
 
 revokeForm.addEventListener("submit", async (event) => {

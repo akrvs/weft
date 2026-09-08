@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M9-yellow)
+![status](https://img.shields.io/badge/status-M10-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-76%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-77%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -208,10 +208,10 @@ only your own verified records, and `manifest`, `pointer`, `grant`, and
 and your active grants with a revoke form.
 
 The browser is the daemon's one privileged client. `weft-store serve`
-writes `browser.key` next to the socket once; the browser presents it and
-asks the daemon to sign pages, pointers, revokes, and logins. It never
-opens the keystore. Applications asking for the same requests are refused
-with `browser only`.
+writes a fresh `browser.key` next to the socket on every start; the
+browser presents it and asks the daemon to sign pages, pointers, revokes,
+and logins. It never opens the keystore. Applications asking for the same
+requests are refused with `browser only`.
 
 Since M9 the browser never opens the record or blob directory either.
 Every record, manifest, pointer, and blob it renders comes over the
@@ -219,12 +219,16 @@ socket, blobs in 512 KiB chunks hashed whole on arrival, and every record
 it fetches from a relay goes back to the daemon, which verifies before it
 keeps. The daemon itself parses each record file once and remembers each
 verification per manifest, while still listing the directory on every
-request so the command line's writes are seen. With no daemon running
-the browser says so and the store dialog offers to start one:
+request so the command line's writes are seen, and drops what the
+listing no longer shows. With no daemon running the browser says so and
+opens the start form; the navigation that failed runs again once the
+daemon is up, and the daemon's log is one click away in the store dialog:
 
 ```bash
-weft-browser <root>/home                      # weft-store is not running
-# store > laptop > passphrase > start store   # spawns weft-store serve --device laptop --attach
+weft-browser                                  # cold, no daemon
+# <root>/home                                 # weft-store is not running, the start form opens
+# laptop > passphrase > start store           # spawns weft-store serve --device laptop --attach, page renders
+# store                                       # kinds, grants, daemon log
 # close the browser                           # the daemon exits with it and removes its socket
 ```
 
@@ -311,15 +315,15 @@ session for the root address, and shows it. Nothing is stored anywhere; a
 
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
-crates/home/         weft-home: encrypted keystore · record store · snapshot cache · Reads trait · relay list
+crates/home/         weft-home: encrypted keystore · record store · snapshot cache that mirrors the directory · Reads trait · relay list
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS · head resolution over any Reads · Markdown renderer
-crates/store/        weft-store: store wire · gate · browser key · daemon with --attach · client · Local reads · weft-app sample
+crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server · provenance bar · x-weft headers · login sessions
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
-crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view · login dialog
+crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view with daemon log · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -345,7 +349,8 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete. What follows is open: a real payment rail behind
-the voucher seam, blob collection on sweep, `weft:` as a registered URL
-handler so a site's login link opens the browser, persistent gateway
-sessions, browser visual design. See [`progress/`](progress/).
+The roadmap is complete and the store daemon is hardened. What follows is
+open: blob pull on miss, a real payment rail behind the voucher seam, blob
+collection on sweep, `weft:` as a registered URL handler so a site's login
+link opens the browser, persistent gateway sessions, browser visual
+design. See [`progress/`](progress/).

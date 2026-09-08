@@ -32,6 +32,7 @@ struct World {
     app: SecretKey,
     browser: SecretKey,
     socket: PathBuf,
+    server: std::sync::Mutex<tokio::task::JoinHandle<()>>,
 }
 
 impl World {
@@ -57,17 +58,34 @@ impl World {
         let store = Store::new(dir.clone());
         store.put(&manifest.draft(&root.public(), T0).sign(&root).unwrap()).unwrap();
         let socket = dir.join("store.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let server = Self::serve(&dir, &root, gate_key, &browser, &socket);
+        Self { dir, root, device, app, browser, socket, server: std::sync::Mutex::new(server) }
+    }
+
+    fn serve(
+        dir: &std::path::Path,
+        root: &SecretKey,
+        gate_key: u8,
+        browser: &SecretKey,
+        socket: &std::path::Path,
+    ) -> tokio::task::JoinHandle<()> {
+        let _ = std::fs::remove_file(socket);
+        let listener = UnixListener::bind(socket).unwrap();
         let gate = Arc::new(Gate::new(
-            Home::new(dir.clone()),
+            Home::new(dir.to_path_buf()),
             root.public(),
             key(gate_key),
             browser.public(),
         ));
         tokio::spawn(async move {
             let _ = weft_store::serve(gate, listener).await;
-        });
-        Self { dir, root, device, app, browser, socket }
+        })
+    }
+
+    fn restart(&self, gate_key: u8, browser: &SecretKey) {
+        let mut server = self.server.lock().unwrap();
+        server.abort();
+        *server = Self::serve(&self.dir, &self.root, gate_key, browser, &self.socket);
     }
 
     fn store(&self) -> Store {
@@ -381,7 +399,7 @@ async fn unauthorized_device_cannot_publish_or_revoke() {
 }
 
 #[test]
-fn browser_key_file_is_created_once() {
+fn browser_key_file_is_replaced_on_every_start() {
     let dir = std::env::temp_dir().join(format!("weft-store-{}-key", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -390,8 +408,11 @@ fn browser_key_file_is_created_once() {
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 32);
     assert_eq!(weft_store::browser_key(&dir).unwrap().public(), created.public());
-    assert!(weft_store::create_browser_key(&dir).is_err());
-    assert_eq!(weft_store::browser_key(&dir).unwrap().public(), created.public());
+    let replaced = weft_store::create_browser_key(&dir).unwrap();
+    assert_ne!(replaced.public(), created.public());
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(weft_store::browser_key(&dir).unwrap().public(), replaced.public());
+    assert!(!path.with_extension("tmp").exists());
     std::fs::write(&path, [0u8; 31]).unwrap();
     assert!(weft_store::browser_key(&dir).is_err());
     let _ = std::fs::remove_dir_all(&dir);
@@ -750,4 +771,33 @@ async fn local_reads_over_the_socket_and_reports_a_missing_daemon() {
     assert_eq!(down.blob(address).await.unwrap_err().to_string(), Error::Down.to_string());
     std::fs::write(dead.join("browser.key"), [6u8; 32]).unwrap();
     assert_eq!(down.blob(address).await.unwrap_err().to_string(), Error::Down.to_string());
+}
+
+#[tokio::test]
+async fn local_pools_connections_and_follows_a_restart() {
+    let w = World::start("local-pool", 2);
+    let (root, manifest, page, pointer) = foreign();
+    std::fs::write(w.dir.join("browser.key"), [6u8; 32]).unwrap();
+    let local = Arc::new(Local::new(w.dir.clone()));
+    local.keep(&manifest).await.unwrap();
+    local.keep(&page).await.unwrap();
+    local.keep(&pointer).await.unwrap();
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..16 {
+        let local = Arc::clone(&local);
+        let address = page.address();
+        tasks.spawn(async move { local.record(address).await.unwrap().unwrap() });
+    }
+    while let Some(got) = tasks.join_next().await {
+        assert_eq!(got.unwrap(), page);
+    }
+    let fresh = key(7);
+    w.restart(2, &fresh);
+    std::fs::write(w.dir.join("browser.key"), [7u8; 32]).unwrap();
+    assert_eq!(local.manifest(root.public()).await.unwrap().unwrap(), manifest);
+    assert_eq!(local.pointers(root.public(), "home").await.unwrap(), vec![pointer]);
+    w.restart(2, &key(8));
+    tokio::task::yield_now().await;
+    let stale = local.record(page.address()).await.unwrap_err().to_string();
+    assert!(stale.ends_with("refused: browser only"), "{stale}");
 }
