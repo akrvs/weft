@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -42,6 +43,7 @@ struct Shared<R: Reads> {
 pub struct Resolver<R: Reads = Store> {
     shared: Arc<Shared<R>>,
     pulls: bool,
+    meter: Option<Arc<AtomicU64>>,
 }
 
 impl Resolver<Store> {
@@ -62,12 +64,24 @@ impl<R: Reads> Resolver<R> {
 
     fn build(home: Home, reads: R, client: OnceCell<Client>) -> Self {
         let shared = Shared { home, reads, client, dns: OnceCell::new() };
-        Self { shared: Arc::new(shared), pulls: true }
+        Self { shared: Arc::new(shared), pulls: true, meter: None }
     }
 
     #[must_use]
     pub fn offline(&self) -> Self {
-        Self { shared: Arc::clone(&self.shared), pulls: false }
+        Self { shared: Arc::clone(&self.shared), pulls: false, meter: self.meter.clone() }
+    }
+
+    #[must_use]
+    pub fn metered(&self, meter: Arc<AtomicU64>) -> Self {
+        Self { shared: Arc::clone(&self.shared), pulls: self.pulls, meter: Some(meter) }
+    }
+
+    fn pulled<T: Pulled>(&self, value: T) -> T {
+        if let Some(meter) = &self.meter {
+            meter.fetch_add(value.size(), Ordering::Relaxed);
+        }
+        value
     }
 
     pub fn pulls(&self) -> bool {
@@ -114,7 +128,7 @@ impl<R: Reads> Resolver<R> {
             else {
                 continue;
             };
-            let data = checked(address, data)?;
+            let data = self.pulled(checked(address, data)?);
             self.reads().keep_blob(address, &data).await?;
             return Ok(Some(data));
         }
@@ -149,7 +163,7 @@ impl<R: Reads> Resolver<R> {
             else {
                 continue;
             };
-            if let Some(record) = head.manifest {
+            if let Some(record) = head.manifest.map(|r| self.pulled(r)) {
                 if record.author() != author {
                     continue;
                 }
@@ -171,7 +185,7 @@ impl<R: Reads> Resolver<R> {
             else {
                 continue;
             };
-            let Some(record) = head.manifest else { continue };
+            let Some(record) = head.manifest.map(|r| self.pulled(r)) else { continue };
             if record.author() != author || verify(&record, None).is_err() {
                 continue;
             }
@@ -193,7 +207,7 @@ impl<R: Reads> Resolver<R> {
         };
         for relay in relays {
             if let Ok(Ok(Some(record))) = timeout(RELAY_TIMEOUT, client.get(relay, address)).await {
-                return Ok((record, relay.to_string()));
+                return Ok((self.pulled(record), relay.to_string()));
             }
         }
         Err(Error::NotFound(address))
@@ -208,7 +222,7 @@ impl<R: Reads> Resolver<R> {
                 else {
                     continue;
                 };
-                let Some(record) = head.pointer else { continue };
+                let Some(record) = head.pointer.map(|r| self.pulled(r)) else { continue };
                 if let Some(candidate) = pointer_named(record, &author, name, manifest.as_ref())
                     && best.as_ref().is_none_or(|(r, p)| {
                         Pointer::compare((&candidate.0, &candidate.1), (r, p)).is_gt()
@@ -305,4 +319,20 @@ fn pointer_named(
     }
     let pointer = Pointer::from_record(&record).ok()?;
     (pointer.name == name).then_some((record, pointer))
+}
+
+trait Pulled {
+    fn size(&self) -> u64;
+}
+
+impl Pulled for Vec<u8> {
+    fn size(&self) -> u64 {
+        self.len() as u64
+    }
+}
+
+impl Pulled for Record {
+    fn size(&self) -> u64 {
+        self.to_bytes().len() as u64
+    }
 }

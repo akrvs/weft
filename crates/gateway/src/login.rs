@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use weft_core::address::Kind;
 use weft_core::cbor::{self, Value};
@@ -62,7 +62,7 @@ struct Session {
 pub struct Logins {
     origin: String,
     path: PathBuf,
-    allow: Option<HashSet<PublicKey>>,
+    allow: RwLock<Option<HashSet<PublicKey>>>,
     pending: Mutex<HashMap<[u8; 32], Pending>>,
     sessions: Mutex<BTreeMap<Token, Session>>,
 }
@@ -165,14 +165,30 @@ impl Logins {
         Ok(Self {
             origin,
             path,
-            allow,
+            allow: RwLock::new(allow),
             pending: Mutex::new(HashMap::new()),
             sessions: Mutex::new(sessions),
         })
     }
 
     pub fn allows(&self, author: &PublicKey) -> bool {
-        self.allow.as_ref().is_none_or(|set| set.contains(author))
+        let allow = self.allow.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        allow.as_ref().is_none_or(|set| set.contains(author))
+    }
+
+    pub fn set_allow(&self, allow: Option<HashSet<PublicKey>>) {
+        *self.allow.write().unwrap_or_else(std::sync::PoisonError::into_inner) = allow;
+    }
+
+    pub fn sweep(&self, now: u64) -> Result<usize, Refusal> {
+        let mut sessions = lock(&self.sessions);
+        let before = sessions.len();
+        sessions.retain(|_, s| now < s.expires);
+        let swept = before - sessions.len();
+        if swept > 0 {
+            save(&self.path, &sessions)?;
+        }
+        Ok(swept)
     }
 
     pub fn origin(&self) -> &str {
@@ -367,6 +383,29 @@ mod tests {
         assert!(logins.cookie(None).contains("Max-Age=0"));
         let secure = Logins::new("https://x".into(), &home("secure"), None, T).unwrap();
         assert!(secure.cookie(Some(&token)).contains("Secure"));
+    }
+
+    #[test]
+    fn sweep_drops_expired_sessions_from_the_file_and_allow_is_replaceable() {
+        let dir = home("sweep");
+        let key = SecretKey::from_seed([1; 32]);
+        let logins = Logins::new(ORIGIN.into(), &dir, None, T).unwrap();
+        let challenge = logins.open(T).unwrap();
+        let (_, token) = logins.satisfy(&proof(&challenge, &key), T + 1, None).unwrap();
+        assert_eq!(logins.sweep(T + 2).unwrap(), 0);
+        assert_eq!(logins.sweep(T + SESSION_TTL + 1).unwrap(), 1);
+        assert_eq!(logins.session(&token, T + 2), None);
+        let reloaded = Logins::new(ORIGIN.into(), &dir, None, T + 2).unwrap();
+        assert_eq!(reloaded.session(&token, T + 3), None, "the sweep reached the file");
+
+        let stranger = SecretKey::from_seed([2; 32]);
+        assert!(logins.allows(&stranger.public()));
+        logins.set_allow(Some(HashSet::from([key.public()])));
+        assert!(!logins.allows(&stranger.public()));
+        assert!(logins.allows(&key.public()));
+        logins.set_allow(None);
+        assert!(logins.allows(&stranger.public()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

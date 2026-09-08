@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
+pub mod budget;
 pub mod html;
 pub mod login;
 
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -26,6 +28,7 @@ use weft_core::{Address, Proof, PublicKey, login as text};
 use weft_resolve::{Error, Links, Page, Resolver, Target};
 use weft_store::Local;
 
+use crate::budget::Budget;
 use crate::login::{Claim, Logins, Refusal, Token, token_from_cookies};
 
 pub const LINKS: Links = Links { record: "/", blob: "/blob/" };
@@ -35,6 +38,7 @@ pub const MAX_BODY: usize = text::MAX_PROOF * 4 / 3 + 1024;
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_PULLS: usize = 4;
 pub const LOGIN_TO_FETCH: &str = "; log in to fetch from relays";
+pub const BUDGET_SPENT: &str = "; pull budget spent, resets at ";
 const CSP: &str = "default-src 'none'; img-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'";
 const PATH: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -55,6 +59,7 @@ type Fail = (StatusCode, String);
 pub struct Gateway {
     pub resolver: Resolver<Local>,
     pub logins: Logins,
+    pub budget: Budget,
     pulls: Semaphore,
 }
 
@@ -66,7 +71,14 @@ impl Gateway {
     ) -> Result<Self, Refusal> {
         let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
         let logins = Logins::new(origin, resolver.home().path(), allow, now)?;
-        Ok(Self { resolver, logins, pulls: Semaphore::new(MAX_PULLS) })
+        let budget = Budget::new(budget::DEFAULT_BYTES, budget::WINDOW);
+        Ok(Self { resolver, logins, budget, pulls: Semaphore::new(MAX_PULLS) })
+    }
+
+    #[must_use]
+    pub fn budget(mut self, bytes: u64) -> Self {
+        self.budget = Budget::new(bytes, budget::WINDOW);
+        self
     }
 
     #[must_use]
@@ -128,15 +140,25 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
 }
 
 async fn read(gateway: &Gateway, token: Option<&Token>, path: &str, query: Option<&str>) -> Reply {
-    let session = match now() {
-        Ok(now) => token.and_then(|t| gateway.logins.session(t, now)),
+    let now = match now() {
+        Ok(now) => now,
         Err(f) => return failed(f),
     };
-    if session.is_none() {
-        return route(&gateway.resolver.offline(), path, query).await;
+    let Some(author) = token.and_then(|t| gateway.logins.session(t, now)) else {
+        return route(&gateway.resolver.offline(), LOGIN_TO_FETCH, path, query).await;
+    };
+    if let Some(reset) = gateway.budget.spent(&author, now) {
+        let hint = format!("{BUDGET_SPENT}{}", html::iso(reset));
+        return route(&gateway.resolver.offline(), &hint, path, query).await;
     }
     match gateway.pulls.try_acquire() {
-        Ok(_permit) => route(&gateway.resolver, path, query).await,
+        Ok(_permit) => {
+            let meter = Arc::new(AtomicU64::new(0));
+            let metered = gateway.resolver.metered(Arc::clone(&meter));
+            let reply = route(&metered, "", path, query).await;
+            gateway.budget.charge(author, now, meter.load(Ordering::Relaxed));
+            reply
+        }
         Err(_) => html_reply(
             StatusCode::TOO_MANY_REQUESTS,
             html::error(429, "too many fetches in flight"),
@@ -144,15 +166,13 @@ async fn read(gateway: &Gateway, token: Option<&Token>, path: &str, query: Optio
     }
 }
 
-fn missing(resolver: &Resolver<Local>, what: &str) -> Reply {
+fn missing(what: &str, hint: &str) -> Reply {
     let mut message = what.to_owned();
-    if !resolver.pulls() {
-        message.push_str(LOGIN_TO_FETCH);
-    }
+    message.push_str(hint);
     html_reply(StatusCode::NOT_FOUND, html::error(404, &message))
 }
 
-async fn route(resolver: &Resolver<Local>, path: &str, query: Option<&str>) -> Reply {
+async fn route(resolver: &Resolver<Local>, hint: &str, path: &str, query: Option<&str>) -> Reply {
     if path.len() > MAX_PATH {
         return html_reply(StatusCode::URI_TOO_LONG, html::error(414, "path too long"));
     }
@@ -165,8 +185,8 @@ async fn route(resolver: &Resolver<Local>, path: &str, query: Option<&str>) -> R
             r
         }
         "/go" => go(query),
-        _ if path.starts_with("/blob/") => blob(resolver, &path[6..]).await,
-        _ => page(resolver, &path[1..]).await,
+        _ if path.starts_with("/blob/") => blob(resolver, hint, &path[6..]).await,
+        _ => page(resolver, hint, &path[1..]).await,
     }
 }
 
@@ -189,13 +209,13 @@ fn go(query: Option<&str>) -> Reply {
     r
 }
 
-async fn blob(resolver: &Resolver<Local>, rest: &str) -> Reply {
+async fn blob(resolver: &Resolver<Local>, hint: &str, rest: &str) -> Reply {
     let Ok(address) = rest.parse::<Address>() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "not a blob address"));
     };
     let data = match resolver.blob(address).await {
         Ok(Some(data)) => data,
-        Ok(None) => return missing(resolver, "blob not found"),
+        Ok(None) => return missing("blob not found", hint),
         Err(e) if down(&e) => {
             return html_reply(StatusCode::SERVICE_UNAVAILABLE, html::error(503, &e.to_string()));
         }
@@ -211,7 +231,7 @@ async fn blob(resolver: &Resolver<Local>, rest: &str) -> Reply {
     r
 }
 
-async fn page(resolver: &Resolver<Local>, rest: &str) -> Reply {
+async fn page(resolver: &Resolver<Local>, hint: &str, rest: &str) -> Reply {
     let Ok(input) = percent_decode_str(rest).decode_utf8() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "path is not utf-8"));
     };
@@ -230,7 +250,7 @@ async fn page(resolver: &Resolver<Local>, rest: &str) -> Reply {
                 _ if down(&e) => StatusCode::SERVICE_UNAVAILABLE,
                 Error::Target(_) => StatusCode::BAD_REQUEST,
                 Error::NotFound(_) | Error::NoPointer(_) => {
-                    return missing(resolver, &e.to_string());
+                    return missing(&e.to_string(), hint);
                 }
                 Error::Dns(_) | Error::Binding(_) => StatusCode::NOT_FOUND,
                 Error::Core(_) | Error::Net(_) | Error::Text | Error::Blob(_) => {

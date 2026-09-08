@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener};
 use weft_core::{
     Address, Body, Challenge, Device, Draft, Manifest, Pointer, Proof, PublicKey, SecretKey,
 };
-use weft_gateway::Gateway;
+use weft_gateway::{Gateway, budget};
 use weft_home::Home;
 use weft_net::{Client, Pricing, Relay};
 use weft_resolve::Resolver;
@@ -95,15 +95,28 @@ fn site() -> Site {
 
 async fn start_with(site: &Site, allow: Option<HashSet<PublicKey>>) -> String {
     let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
-    serve(resolver, allow, weft_gateway::MAX_PULLS).await
+    serve(resolver, allow, weft_gateway::MAX_PULLS, budget::DEFAULT_BYTES).await.0
 }
 
-async fn serve(resolver: Resolver<Local>, allow: Option<HashSet<PublicKey>>, cap: usize) -> String {
+async fn serve(
+    resolver: Resolver<Local>,
+    allow: Option<HashSet<PublicKey>>,
+    cap: usize,
+    budget: u64,
+) -> (String, Arc<Gateway>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap().pull_cap(cap);
-    tokio::spawn(weft_gateway::serve(listener, Arc::new(gateway)));
-    addr.to_string()
+    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap();
+    let gateway = Arc::new(gateway.pull_cap(cap).budget(budget));
+    tokio::spawn(weft_gateway::serve(listener, Arc::clone(&gateway)));
+    (addr.to_string(), gateway)
+}
+
+async fn remote_reader(site: &Site, remote: &Remote) -> Resolver<Local> {
+    let home = Home::new(site.dir.clone());
+    home.add_relay(remote.addr.id).unwrap();
+    let client = Client::from_endpoint(endpoint(Some(&remote.addr)).await);
+    Resolver::with_client(home, Local::new(site.dir.clone()), client)
 }
 
 async fn endpoint(known: Option<&EndpointAddr>) -> Endpoint {
@@ -556,11 +569,8 @@ async fn allow_list_decides_who_logs_in() {
 async fn only_a_session_pulls_from_relays() {
     let site = site();
     let remote = remote(&site.root).await;
-    let home = Home::new(site.dir.clone());
-    home.add_relay(remote.addr.id).unwrap();
-    let client = Client::from_endpoint(endpoint(Some(&remote.addr)).await);
-    let resolver = Resolver::with_client(home, Local::new(site.dir.clone()), client);
-    let addr = serve(resolver, None, weft_gateway::MAX_PULLS).await;
+    let resolver = remote_reader(&site, &remote).await;
+    let addr = serve(resolver, None, weft_gateway::MAX_PULLS, budget::DEFAULT_BYTES).await.0;
     let root = site.root.public().address().to_string();
     let blob_path = format!("/blob/{}", remote.blob);
     let named = format!("/{root}/remote");
@@ -607,7 +617,7 @@ async fn only_a_session_pulls_from_relays() {
 async fn a_full_pull_cap_answers_429() {
     let site = site();
     let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
-    let addr = serve(resolver, None, 0).await;
+    let addr = serve(resolver, None, 0, budget::DEFAULT_BYTES).await.0;
     let page = format!("/{}", site.page);
     assert_eq!(request(&addr, "GET", &page).await.status, 200);
     let cookie = login(&addr, &site.root).await;
@@ -616,6 +626,81 @@ async fn a_full_pull_cap_answers_429() {
     assert!(r.text().contains("too many fetches"));
     let r = send(&addr, "GET", &page, &[("Cookie", "weft_session=bogus")], b"").await;
     assert_eq!(r.status, 200, "a bad cookie is anonymous");
+    site.daemon.abort();
+    let _ = std::fs::remove_dir_all(&site.dir);
+}
+
+#[tokio::test]
+async fn a_spent_budget_reads_offline_until_the_window_ends() {
+    let site = site();
+    let remote = remote(&site.root).await;
+    let resolver = remote_reader(&site, &remote).await;
+    let (addr, gateway) = serve(resolver, None, weft_gateway::MAX_PULLS, 1).await;
+    let root = site.root.public().address().to_string();
+    let blob_path = format!("/blob/{}", remote.blob);
+    let named = format!("/{root}/remote");
+    let cookie = login(&addr, &site.root).await;
+    let now = weft_home::now().unwrap();
+    assert_eq!(gateway.budget.spent(&site.root.public(), now), None);
+
+    let r = send(&addr, "GET", &blob_path, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "the first pull goes through and is charged after");
+    assert_eq!(r.body, remote.data);
+    let reset = gateway.budget.spent(&site.root.public(), now).expect("one byte is spent");
+    assert!(reset >= now + budget::WINDOW - 5);
+
+    let r = send(&addr, "GET", &named, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 404, "{}", r.text());
+    assert!(r.text().contains("pull budget spent, resets at"), "{}", r.text());
+    assert!(!r.text().contains("log in to fetch"));
+    let r = send(&addr, "GET", &format!("/{}", remote.page), &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 404);
+    let r = send(&addr, "GET", &format!("/{}", site.page), &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "local records still serve over budget");
+    let r = send(&addr, "GET", &blob_path, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "what was pulled is local now");
+
+    let other = key(7);
+    let allowed = HashSet::from([site.root.public(), other.public()]);
+    gateway.logins.set_allow(Some(allowed));
+    let cookie = login(&addr, &other).await;
+    let r = send(&addr, "GET", &named, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "another identity has its own budget: {}", r.text());
+
+    remote.router.shutdown().await.unwrap();
+    site.daemon.abort();
+    let _ = std::fs::remove_dir_all(&site.dir);
+    let _ = std::fs::remove_dir_all(&remote.dir);
+}
+
+#[tokio::test]
+async fn a_replaced_allow_list_takes_effect_at_once() {
+    let site = site();
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    let listed = site.root.public();
+    let (addr, gateway) =
+        serve(resolver, Some(HashSet::from([listed])), weft_gateway::MAX_PULLS, 0).await;
+    let now = weft_home::now().unwrap();
+    let stranger = key(9);
+    let sign = |c: &Challenge, key: &SecretKey| Proof {
+        login: c.draft(&key.public(), &key.public(), now).sign(key).unwrap(),
+        manifest: None,
+    };
+    let r = request(&addr, "GET", "/login").await;
+    let location = r.header("location").unwrap().to_owned();
+    let challenge = challenge_in(&request(&addr, "GET", &location).await.text());
+    let r =
+        send(&addr, "POST", "/login", &[], sign(&challenge, &stranger).to_text().as_bytes()).await;
+    assert_eq!(r.status, 403);
+    gateway.logins.set_allow(Some(HashSet::from([listed, stranger.public()])));
+    let r =
+        send(&addr, "POST", "/login", &[], sign(&challenge, &stranger).to_text().as_bytes()).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(gateway.logins.sweep(now).unwrap(), 0);
+    assert_eq!(gateway.logins.sweep(now + weft_gateway::login::SESSION_TTL + 1).unwrap(), 1);
+    let cookie = cookie_of(&r);
+    let r = send(&addr, "GET", &format!("/{}", site.page), &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "a swept session reads anonymously");
     site.daemon.abort();
     let _ = std::fs::remove_dir_all(&site.dir);
 }

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime};
 
 use iroh::endpoint::Connection;
@@ -26,12 +26,17 @@ pub struct Pricing {
     pub banks: HashSet<PublicKey>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Config {
+    pub allow: HashSet<PublicKey>,
+    pub pricing: Pricing,
+}
+
 #[derive(Debug, Clone)]
 pub struct Relay {
     index: Arc<Index>,
     blobs: FsStore,
-    allow: Arc<HashSet<PublicKey>>,
-    pricing: Arc<Pricing>,
+    config: Arc<RwLock<Arc<Config>>>,
     endpoint: Endpoint,
 }
 
@@ -42,6 +47,7 @@ struct Pending {
 }
 
 struct Batch {
+    config: Arc<Config>,
     stored: Vec<Address>,
     rejected: Vec<(u64, String)>,
     pending: Vec<Pending>,
@@ -67,7 +73,17 @@ impl Relay {
         let index = Arc::new(Index::open(&dir.join("index.redb"))?);
         let blobs =
             FsStore::load(dir.join("blobs")).await.map_err(|e| Error::Store(e.to_string()))?;
-        Ok(Self { index, blobs, allow: Arc::new(allow), pricing: Arc::new(pricing), endpoint })
+        let config = Arc::new(RwLock::new(Arc::new(Config { allow, pricing })));
+        Ok(Self { index, blobs, config, endpoint })
+    }
+
+    pub fn config(&self) -> Arc<Config> {
+        Arc::clone(&self.config.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    pub fn reload(&self, allow: HashSet<PublicKey>, pricing: Pricing) {
+        let config = Arc::new(Config { allow, pricing });
+        *self.config.write().unwrap_or_else(PoisonError::into_inner) = config;
     }
 
     pub fn spawn(self) -> Router {
@@ -87,7 +103,7 @@ impl Relay {
     }
 
     pub fn sweep(&self, now: u64) -> Result<Swept> {
-        self.index.sweep(now, &self.allow)
+        self.index.sweep(now, &self.config().allow)
     }
 
     pub fn sweeper(&self, every: Duration) -> tokio::task::JoinHandle<()> {
@@ -117,15 +133,17 @@ impl Relay {
                 }
             }
             Request::Price => {
-                let mut banks: Vec<_> = self.pricing.banks.iter().copied().collect();
+                let config = self.config();
+                let mut banks: Vec<_> = config.pricing.banks.iter().copied().collect();
                 banks.sort();
-                Response::Price { rate: self.pricing.rate, banks }
+                Response::Price { rate: config.pricing.rate, banks }
             }
         }
     }
 
     async fn put(&self, records: Vec<Vec<u8>>, from: EndpointId) -> Response {
         let mut batch = Batch {
+            config: self.config(),
             stored: Vec::new(),
             rejected: Vec::new(),
             pending: Vec::new(),
@@ -208,7 +226,7 @@ impl Relay {
         batch: &mut Batch,
     ) -> Result<()> {
         let size = self.prepare(&record, from, &batch.manifests).await?;
-        if self.allow.contains(record.author()) {
+        if batch.config.allow.contains(record.author()) {
             batch.stored.push(self.index.put(&record)?);
             return Ok(());
         }
@@ -237,14 +255,14 @@ impl Relay {
         if receipt.relay != self.key()? {
             return Err(Error::Refused("receipt is for another relay".to_owned()));
         }
-        if self.allow.contains(record.author()) {
+        if batch.config.allow.contains(record.author()) {
             batch.stored.push(self.index.put(record)?);
             return Ok(());
         }
-        if self.pricing.banks.is_empty() {
+        if batch.config.pricing.banks.is_empty() {
             return Err(Error::Refused("relay takes no payment".to_owned()));
         }
-        if !self.pricing.banks.contains(&receipt.voucher.bank) {
+        if !batch.config.pricing.banks.contains(&receipt.voucher.bank) {
             return Err(Error::Refused("unknown bank".to_owned()));
         }
         let voucher = receipt.voucher.id();
@@ -272,7 +290,7 @@ impl Relay {
                     .await?
                     .ok_or_else(|| Error::Refused(format!("{address} is not in the batch")))?,
             };
-            total = cost(size, days, self.pricing.rate)
+            total = cost(size, days, batch.config.pricing.rate)
                 .and_then(|c| total.checked_add(c))
                 .ok_or_else(|| Error::Refused("cost overflows".to_owned()))?;
         }

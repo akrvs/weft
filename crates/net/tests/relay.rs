@@ -30,6 +30,7 @@ fn page(root: &SecretKey, signer: &SecretKey, body: &[u8], created: u64) -> weft
 
 struct Net {
     router: iroh::protocol::Router,
+    relay: Relay,
     addr: EndpointAddr,
     dir: std::path::PathBuf,
 }
@@ -44,9 +45,9 @@ impl Net {
         let ep = endpoint().await;
         let allow: HashSet<_> = allow.iter().map(|k| k.public()).collect();
         let relay = Relay::open(ep.clone(), &dir, allow, Pricing::default()).await.unwrap();
-        let router = relay.spawn();
+        let router = relay.clone().spawn();
         let addr = router.endpoint().addr();
-        Self { router, addr, dir }
+        Self { router, relay, addr, dir }
     }
 
     async fn stop(self) {
@@ -185,4 +186,35 @@ async fn blob_round_trip() {
     b.close().await;
     net.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn reload_replaces_the_allow_list_and_pricing_for_the_next_batch() {
+    let root = key(1);
+    let stranger = key(2);
+    let net = Net::start(&[&root]).await;
+    let client = Client::from_endpoint(endpoint().await);
+    let record = page(&stranger, &stranger, b"# Stranger", 1_700_000_000);
+    let outcome = client.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
+    assert_eq!(outcome.stored, vec![]);
+    assert_eq!(outcome.rejected.len(), 1, "{outcome:?}");
+    let price = client.price(net.addr.clone()).await.unwrap();
+    assert_eq!(price.0, 0);
+
+    let allow: HashSet<_> = [root.public(), stranger.public()].into_iter().collect();
+    let banks: HashSet<_> = [key(9).public()].into_iter().collect();
+    net.relay.reload(allow.clone(), Pricing { rate: 3, banks: banks.clone() });
+    assert_eq!(net.relay.config().allow, allow);
+    let outcome = client.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
+    assert_eq!(outcome.stored, vec![record.address()], "{outcome:?}");
+    let price = client.price(net.addr.clone()).await.unwrap();
+    assert_eq!(price.0, 3);
+    assert_eq!(price.1, vec![key(9).public()]);
+    net.relay.reload(HashSet::new(), Pricing::default());
+    let swept = net.relay.sweep(weft_net::relay::now()).unwrap();
+    assert!(swept.records.is_empty(), "stored records outlive a delisting: {swept:?}");
+    let outcome = client.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
+    assert_eq!(outcome.rejected.len(), 1, "a delisted author is refused again: {outcome:?}");
+    client.close().await;
+    net.stop().await;
 }

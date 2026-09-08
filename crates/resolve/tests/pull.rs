@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{RelayMode, presets};
@@ -142,4 +144,31 @@ async fn no_relays_means_a_plain_miss() {
     let resolver = Resolver::new(home, store);
     assert!(resolver.blob(Address::of(b"nowhere")).await.unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_metered_handle_counts_only_pulled_bytes() {
+    let site = publish().await;
+    let (resolver, dir) = reader(&site).await;
+    let meter = Arc::new(AtomicU64::new(0));
+    let metered = resolver.metered(Arc::clone(&meter));
+    assert!(metered.offline().blob(site.blob).await.unwrap().is_none());
+    assert_eq!(meter.load(Ordering::Relaxed), 0, "a miss costs nothing");
+    assert_eq!(metered.blob(site.blob).await.unwrap().unwrap(), site.data);
+    assert_eq!(meter.load(Ordering::Relaxed), site.data.len() as u64);
+    meter.store(0, Ordering::Relaxed);
+    assert_eq!(resolver.open(site.page, &LINKS).await.unwrap().source, site.addr.id.to_string());
+    assert_eq!(meter.load(Ordering::Relaxed), 0, "an unmetered handle never charges");
+    let named = Target::Named { author: site.root.public(), name: "home".into() };
+    let page = metered.resolve(named.clone(), &LINKS).await.unwrap();
+    assert_eq!(page.address, site.page.to_string());
+    let pointer_bytes = meter.swap(0, Ordering::Relaxed);
+    assert!(pointer_bytes > 100, "the pointer pulled from the relay is charged: {pointer_bytes}");
+    assert_eq!(metered.blob(site.blob).await.unwrap().unwrap(), site.data);
+    assert_eq!(metered.open(site.page, &LINKS).await.unwrap().source, "local store");
+    assert_eq!(meter.load(Ordering::Relaxed), 0, "local hits cost nothing");
+    site.router.shutdown().await.unwrap();
+    for d in site.dirs.iter().chain([&dir]) {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

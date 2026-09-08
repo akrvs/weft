@@ -11,6 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, SecretKey};
+use tokio::signal::unix::{SignalKind, signal};
 use weft_core::{Address, PublicKey};
 use weft_net::{Pricing, Relay};
 
@@ -184,6 +185,20 @@ fn pricing(dir: &Path) -> Result<Pricing> {
     Ok(Pricing { rate, banks })
 }
 
+fn reload(dir: &Path, relay: &Relay) {
+    match keys(dir, "allow").and_then(|allow| pricing(dir).map(|pricing| (allow, pricing))) {
+        Ok((allow, pricing)) => {
+            eprintln!("reload: {} allowed authors, rate {}", allow.len(), pricing.rate);
+            relay.reload(allow, pricing);
+        }
+        Err(e) => eprintln!("reload: {e}, keeping the old config"),
+    }
+    match relay.sweep(weft_net::relay::now()) {
+        Ok(swept) => eprintln!("reload: swept {} records", swept.records.len()),
+        Err(e) => eprintln!("reload: sweep {e}"),
+    }
+}
+
 async fn serve(dir: &Path) -> Result<()> {
     let key = secret(dir)?;
     let allow = keys(dir, "allow")?;
@@ -195,10 +210,16 @@ async fn serve(dir: &Path) -> Result<()> {
         .map_err(|e| e.to_string())?;
     println!("{}", relay.id());
     let sweeper = relay.sweeper(Duration::from_secs(60));
-    let router = relay.spawn();
+    let router = relay.clone().spawn();
     router.endpoint().online().await;
     println!("online");
-    tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
+    let mut hangup = signal(SignalKind::hangup()).map_err(|e| e.to_string())?;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            Some(()) = hangup.recv() => reload(dir, &relay),
+        }
+    }
     sweeper.abort();
     router.shutdown().await.map_err(|e| e.to_string())?;
     Ok(())

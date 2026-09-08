@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{SignalKind, signal};
 use weft_core::PublicKey;
 use weft_gateway::login::allowlist;
+use weft_gateway::{Gateway, budget};
 use weft_home::Home;
 use weft_resolve::Resolver;
 use weft_store::Local;
@@ -25,6 +27,37 @@ struct Cli {
     origin: Option<String>,
     #[arg(long, env = "WEFT_GATEWAY_ALLOW")]
     allow: Option<PathBuf>,
+    #[arg(long, env = "WEFT_GATEWAY_PULLS", default_value_t = weft_gateway::MAX_PULLS)]
+    pulls: usize,
+    #[arg(long, env = "WEFT_GATEWAY_BUDGET", default_value_t = budget::DEFAULT_BYTES / MIB)]
+    budget: u64,
+}
+
+const MIB: u64 = 1024 * 1024;
+
+fn reload(gateway: &Gateway, allow: Option<&PathBuf>) {
+    match allowed(allow) {
+        Ok(Some(set)) => {
+            eprintln!("reload: allow list has {} identities", set.len());
+            gateway.logins.set_allow(Some(set));
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("reload: allow {e}, keeping the old list"),
+    }
+    let swept = weft_home::now()
+        .map_err(|e| e.to_string())
+        .and_then(|now| gateway.logins.sweep(now).map_err(|e| e.to_string()));
+    match swept {
+        Ok(n) => eprintln!("reload: swept {n} expired sessions"),
+        Err(e) => eprintln!("reload: sessions {e}"),
+    }
+}
+
+async fn on_hangup(gateway: Arc<Gateway>, allow: Option<PathBuf>) {
+    let Ok(mut hangup) = signal(SignalKind::hangup()) else { return };
+    while hangup.recv().await.is_some() {
+        reload(&gateway, allow.as_ref());
+    }
 }
 
 fn allowed(path: Option<&PathBuf>) -> Result<Option<HashSet<PublicKey>>, String> {
@@ -46,8 +79,8 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let gateway = match weft_gateway::Gateway::new(resolver, origin.clone(), allow) {
-        Ok(g) => Arc::new(g),
+    let gateway = match Gateway::new(resolver, origin.clone(), allow) {
+        Ok(g) => Arc::new(g.pull_cap(cli.pulls).budget(cli.budget.saturating_mul(MIB))),
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
@@ -62,6 +95,8 @@ async fn main() -> ExitCode {
     };
     println!("listening on http://{}", cli.bind);
     println!("login at {origin}/login");
+    println!("pulls {} in flight, budget {} MiB per identity per hour", cli.pulls, cli.budget);
+    tokio::spawn(on_hangup(Arc::clone(&gateway), cli.allow));
     match weft_gateway::serve(listener, gateway).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
