@@ -21,6 +21,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use weft_core::{Address, Proof, PublicKey, login as text};
 use weft_resolve::{Error, Links, Page, Resolver, Target};
 use weft_store::Local;
@@ -32,6 +33,8 @@ pub const MAX_PATH: usize = 1024;
 pub const MAX_BUF: usize = 16 * 1024;
 pub const MAX_BODY: usize = text::MAX_PROOF * 4 / 3 + 1024;
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+pub const MAX_PULLS: usize = 4;
+pub const LOGIN_TO_FETCH: &str = "; log in to fetch from relays";
 const CSP: &str = "default-src 'none'; img-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'";
 const PATH: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -52,6 +55,7 @@ type Fail = (StatusCode, String);
 pub struct Gateway {
     pub resolver: Resolver<Local>,
     pub logins: Logins,
+    pulls: Semaphore,
 }
 
 impl Gateway {
@@ -62,7 +66,13 @@ impl Gateway {
     ) -> Result<Self, Refusal> {
         let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
         let logins = Logins::new(origin, resolver.home().path(), allow, now)?;
-        Ok(Self { resolver, logins })
+        Ok(Self { resolver, logins, pulls: Semaphore::new(MAX_PULLS) })
+    }
+
+    #[must_use]
+    pub fn pull_cap(mut self, pulls: usize) -> Self {
+        self.pulls = Semaphore::new(pulls);
+        self
     }
 }
 
@@ -102,7 +112,7 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
             claim(&gateway.logins, &path[7..])
         }
         (&Method::GET | &Method::HEAD, _) => {
-            route(&gateway.resolver, &path, req.uri().query()).await
+            read(&gateway, token.as_ref(), &path, req.uri().query()).await
         }
         _ => {
             let mut r =
@@ -115,6 +125,31 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
         *reply.body_mut() = Full::default();
     }
     Ok(reply)
+}
+
+async fn read(gateway: &Gateway, token: Option<&Token>, path: &str, query: Option<&str>) -> Reply {
+    let session = match now() {
+        Ok(now) => token.and_then(|t| gateway.logins.session(t, now)),
+        Err(f) => return failed(f),
+    };
+    if session.is_none() {
+        return route(&gateway.resolver.offline(), path, query).await;
+    }
+    match gateway.pulls.try_acquire() {
+        Ok(_permit) => route(&gateway.resolver, path, query).await,
+        Err(_) => html_reply(
+            StatusCode::TOO_MANY_REQUESTS,
+            html::error(429, "too many fetches in flight"),
+        ),
+    }
+}
+
+fn missing(resolver: &Resolver<Local>, what: &str) -> Reply {
+    let mut message = what.to_owned();
+    if !resolver.pulls() {
+        message.push_str(LOGIN_TO_FETCH);
+    }
+    html_reply(StatusCode::NOT_FOUND, html::error(404, &message))
 }
 
 async fn route(resolver: &Resolver<Local>, path: &str, query: Option<&str>) -> Reply {
@@ -160,9 +195,7 @@ async fn blob(resolver: &Resolver<Local>, rest: &str) -> Reply {
     };
     let data = match resolver.blob(address).await {
         Ok(Some(data)) => data,
-        Ok(None) => {
-            return html_reply(StatusCode::NOT_FOUND, html::error(404, "blob not found"));
-        }
+        Ok(None) => return missing(resolver, "blob not found"),
         Err(e) if down(&e) => {
             return html_reply(StatusCode::SERVICE_UNAVAILABLE, html::error(503, &e.to_string()));
         }
@@ -196,9 +229,10 @@ async fn page(resolver: &Resolver<Local>, rest: &str) -> Reply {
             let status = match e {
                 _ if down(&e) => StatusCode::SERVICE_UNAVAILABLE,
                 Error::Target(_) => StatusCode::BAD_REQUEST,
-                Error::NotFound(_) | Error::NoPointer(_) | Error::Dns(_) | Error::Binding(_) => {
-                    StatusCode::NOT_FOUND
+                Error::NotFound(_) | Error::NoPointer(_) => {
+                    return missing(resolver, &e.to_string());
                 }
+                Error::Dns(_) | Error::Binding(_) => StatusCode::NOT_FOUND,
                 Error::Core(_) | Error::Net(_) | Error::Text | Error::Blob(_) => {
                     StatusCode::BAD_GATEWAY
                 }

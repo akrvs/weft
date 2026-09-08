@@ -16,7 +16,6 @@ use crate::{Error, Result};
 pub const SOCKET: &str = "store.sock";
 pub const BROWSER_KEY: &str = "browser.key";
 pub const PAGE: &str = "page";
-pub const PART: &str = "part";
 
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join(SOCKET)
@@ -284,7 +283,7 @@ impl Gate {
         if self.home.blob_path(address).is_file() {
             return Ok(());
         }
-        let part = self.home.blob_path(address).with_extension(PART);
+        let part = self.home.store().part_path(address);
         let mut file = if offset == 0 {
             if let Some(parent) = part.parent() {
                 weft_home::fs::ensure_dir(parent)?;

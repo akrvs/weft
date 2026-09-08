@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use weft_core::{Address, Grant, Manifest, Pointer, PublicKey, Record, Revoke, verify};
 
@@ -11,6 +12,8 @@ use crate::fs;
 pub const EXT: &str = "weft";
 pub const RECORDS: &str = "records";
 pub const BLOBS: &str = "blobs";
+pub const PART: &str = "part";
+pub const PART_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Default)]
 struct Cache {
@@ -86,6 +89,38 @@ impl Store {
         self.dir.join(BLOBS).join(address.to_string())
     }
 
+    pub fn part_path(&self, address: &Address) -> PathBuf {
+        self.blob_path(address).with_extension(PART)
+    }
+
+    pub fn sweep_parts(&self, older_than: Option<Duration>) -> Result<usize> {
+        let dir = self.dir.join(BLOBS);
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let now = SystemTime::now();
+        let mut swept = 0;
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some(PART) {
+                continue;
+            }
+            let stale = match older_than {
+                None => true,
+                Some(age) => {
+                    let modified = entry.metadata()?.modified()?;
+                    now.duration_since(modified).is_ok_and(|since| since > age)
+                }
+            };
+            if stale {
+                std::fs::remove_file(&path)?;
+                swept += 1;
+            }
+        }
+        Ok(swept)
+    }
+
     pub fn put(&self, record: &Record) -> Result<PathBuf> {
         if record.kind() == weft_core::login::KIND {
             return fail("login records are never stored");
@@ -119,6 +154,7 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
+        self.sweep_parts(Some(PART_TTL))?;
         let mut entries = Vec::new();
         let dir = self.dir.join(RECORDS);
         if dir.is_dir() {

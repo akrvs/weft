@@ -90,6 +90,7 @@ async fn serve(home: Home, device: &str, attach: bool) -> Result<()> {
     if !authorized {
         eprintln!("warning: {device} is not in the current manifest; writes will be refused");
     }
+    home.store().sweep_parts(None)?;
     let path = socket_path(home.path());
     let listener = bind(&path).await?;
     let browser = create_browser_key(home.path())?.public();

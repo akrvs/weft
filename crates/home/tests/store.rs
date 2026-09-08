@@ -69,3 +69,28 @@ fn snapshots_see_every_writer_and_skip_files_that_lie() {
     assert_eq!(a.snapshot().unwrap().records().count(), 1);
     assert!(a.record(note.address()).unwrap().is_none());
 }
+
+#[test]
+fn stale_parts_are_swept_and_blobs_are_not() {
+    let dir = std::env::temp_dir().join(format!("weft-home-{}-parts", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("blobs")).unwrap();
+    let store = Store::new(dir.clone());
+    let old = store.part_path(&Address::of(b"old"));
+    let fresh = store.part_path(&Address::of(b"fresh"));
+    std::fs::write(&old, b"o").unwrap();
+    std::fs::write(&fresh, b"f").unwrap();
+    store.keep_blob(&Address::of(b"blob"), b"blob").unwrap();
+    let ago = std::time::SystemTime::now()
+        - weft_home::store::PART_TTL
+        - std::time::Duration::from_secs(1);
+    std::fs::File::open(&old).unwrap().set_modified(ago).unwrap();
+    assert_eq!(store.snapshot().unwrap().records().count(), 0);
+    assert!(!old.exists());
+    assert!(fresh.exists());
+    assert_eq!(store.sweep_parts(None).unwrap(), 1);
+    assert!(!fresh.exists());
+    assert_eq!(store.blob(&Address::of(b"blob")).unwrap().unwrap(), b"blob");
+    assert_eq!(store.sweep_parts(None).unwrap(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

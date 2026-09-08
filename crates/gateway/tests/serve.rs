@@ -5,6 +5,9 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use iroh::address_lookup::MemoryLookup;
+use iroh::endpoint::{RelayMode, presets};
+use iroh::{Endpoint, EndpointAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixListener};
 use weft_core::{
@@ -12,6 +15,7 @@ use weft_core::{
 };
 use weft_gateway::Gateway;
 use weft_home::Home;
+use weft_net::{Client, Pricing, Relay};
 use weft_resolve::Resolver;
 use weft_store::{Gate, Local};
 
@@ -90,12 +94,95 @@ fn site() -> Site {
 }
 
 async fn start_with(site: &Site, allow: Option<HashSet<PublicKey>>) -> String {
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    serve(resolver, allow, weft_gateway::MAX_PULLS).await
+}
+
+async fn serve(resolver: Resolver<Local>, allow: Option<HashSet<PublicKey>>, cap: usize) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
-    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap();
+    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap().pull_cap(cap);
     tokio::spawn(weft_gateway::serve(listener, Arc::new(gateway)));
     addr.to_string()
+}
+
+async fn endpoint(known: Option<&EndpointAddr>) -> Endpoint {
+    let builder = Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled);
+    let builder = match known {
+        Some(addr) => builder.address_lookup(MemoryLookup::from_endpoint_info([addr.clone()])),
+        None => builder,
+    };
+    builder.bind().await.unwrap()
+}
+
+struct Remote {
+    router: iroh::protocol::Router,
+    addr: EndpointAddr,
+    page: Address,
+    blob: Address,
+    data: Vec<u8>,
+    dir: PathBuf,
+}
+
+async fn remote(root: &SecretKey) -> Remote {
+    let dir = std::env::temp_dir().join(format!(
+        "weft-gateway-relay-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let allow: HashSet<_> = [root.public()].into_iter().collect();
+    let relay = Relay::open(endpoint(None).await, &dir, allow, Pricing::default()).await.unwrap();
+    let router = relay.spawn();
+    let addr = router.endpoint().addr();
+    let publisher = Client::from_endpoint(endpoint(Some(&addr)).await);
+    let data: Vec<u8> = (0..600_000u32).map(|i| (i % 251) as u8).collect();
+    let src = dir.join("big.bin");
+    std::fs::write(&src, &data).unwrap();
+    let blob = publisher.add_blob(&src).await.unwrap();
+    let page = Draft {
+        author: root.public(),
+        signer: root.public(),
+        kind: "page".into(),
+        created: 1_700_000_100,
+        refs: vec![],
+        body: Body::Inline(format!("# Remote\n\n![img](weft:{blob})\n").into_bytes()),
+    }
+    .sign(root)
+    .unwrap();
+    let file = Draft {
+        author: root.public(),
+        signer: root.public(),
+        kind: "file".into(),
+        created: 1_700_000_101,
+        refs: vec![],
+        body: Body::Blob(blob),
+    }
+    .sign(root)
+    .unwrap();
+    let pointer = Pointer { name: "remote".into(), target: page.address(), seq: 1, prev: vec![] }
+        .draft(&root.public(), &root.public(), 1_700_000_102)
+        .sign(root)
+        .unwrap();
+    let outcome = publisher.put(addr.clone(), &[page.clone(), file, pointer]).await.unwrap();
+    assert_eq!(outcome.rejected, vec![], "{outcome:?}");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    publisher.close().await;
+    Remote { router, addr, page: page.address(), blob, data, dir }
+}
+
+async fn login(addr: &str, root: &SecretKey) -> String {
+    let now = weft_home::now().unwrap();
+    let r = request(addr, "GET", "/login").await;
+    let location = r.header("location").unwrap().to_owned();
+    let challenge = challenge_in(&request(addr, "GET", &location).await.text());
+    let proof = Proof {
+        login: challenge.draft(&root.public(), &root.public(), now).sign(root).unwrap(),
+        manifest: None,
+    };
+    let r = send(addr, "POST", "/login", &[], proof.to_text().as_bytes()).await;
+    assert_eq!(r.status, 200);
+    cookie_of(&r)
 }
 
 async fn start(site: &Site) -> String {
@@ -462,5 +549,73 @@ async fn allow_list_decides_who_logs_in() {
         send(&addr, "POST", "/login", &[], sign(&challenge, &site.root).to_text().as_bytes()).await;
     assert_eq!(r.status, 200, "a refused stranger does not burn the nonce");
     assert!(r.text().contains(&listed.address().to_string()));
+    let _ = std::fs::remove_dir_all(&site.dir);
+}
+
+#[tokio::test]
+async fn only_a_session_pulls_from_relays() {
+    let site = site();
+    let remote = remote(&site.root).await;
+    let home = Home::new(site.dir.clone());
+    home.add_relay(remote.addr.id).unwrap();
+    let client = Client::from_endpoint(endpoint(Some(&remote.addr)).await);
+    let resolver = Resolver::with_client(home, Local::new(site.dir.clone()), client);
+    let addr = serve(resolver, None, weft_gateway::MAX_PULLS).await;
+    let root = site.root.public().address().to_string();
+    let blob_path = format!("/blob/{}", remote.blob);
+    let named = format!("/{root}/remote");
+
+    let r = request(&addr, "GET", &blob_path).await;
+    assert_eq!(r.status, 404);
+    assert!(r.text().contains("log in to fetch"), "{}", r.text());
+    let r = request(&addr, "GET", &named).await;
+    assert_eq!(r.status, 404);
+    assert!(r.text().contains("log in to fetch"));
+    let r = request(&addr, "GET", &format!("/{}", remote.page)).await;
+    assert_eq!(r.status, 404);
+    assert!(r.text().contains("log in to fetch"));
+    assert!(!site.dir.join("blobs").join(remote.blob.to_string()).exists());
+    let r = request(&addr, "GET", &format!("/{}", site.page)).await;
+    assert_eq!(r.status, 200, "anonymous reads still serve the store");
+    let r = request(&addr, "GET", &format!("/{}", Address::of(b"nowhere"))).await;
+    assert_eq!(r.status, 404);
+
+    let cookie = login(&addr, &site.root).await;
+    let r = send(&addr, "GET", &named, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.text().contains("Remote"));
+    let r = send(&addr, "GET", &blob_path, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, remote.data);
+    assert_eq!(
+        std::fs::read(site.dir.join("blobs").join(remote.blob.to_string())).unwrap(),
+        remote.data
+    );
+
+    remote.router.shutdown().await.unwrap();
+    let r = request(&addr, "GET", &blob_path).await;
+    assert_eq!(r.status, 200, "pulled once, local for everyone");
+    let r = request(&addr, "GET", &named).await;
+    assert_eq!(r.status, 200);
+
+    site.daemon.abort();
+    let _ = std::fs::remove_dir_all(&site.dir);
+    let _ = std::fs::remove_dir_all(&remote.dir);
+}
+
+#[tokio::test]
+async fn a_full_pull_cap_answers_429() {
+    let site = site();
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    let addr = serve(resolver, None, 0).await;
+    let page = format!("/{}", site.page);
+    assert_eq!(request(&addr, "GET", &page).await.status, 200);
+    let cookie = login(&addr, &site.root).await;
+    let r = send(&addr, "GET", &page, &[("Cookie", &cookie)], b"").await;
+    assert_eq!(r.status, 429);
+    assert!(r.text().contains("too many fetches"));
+    let r = send(&addr, "GET", &page, &[("Cookie", "weft_session=bogus")], b"").await;
+    assert_eq!(r.status, 200, "a bad cookie is anonymous");
+    site.daemon.abort();
     let _ = std::fs::remove_dir_all(&site.dir);
 }

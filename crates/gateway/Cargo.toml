@@ -26,7 +26,9 @@ percent-encoding.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
+iroh.workspace = true
 tokio = { version = "1.53", features = ["full"] }
+weft-net = { path = "../net" }
 
 [lints]
 workspace = true

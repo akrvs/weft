@@ -6308,10 +6308,12 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "iroh",
  "percent-encoding",
  "tokio",
  "weft-core",
  "weft-home",
+ "weft-net",
  "weft-resolve",
  "weft-store",
 ]

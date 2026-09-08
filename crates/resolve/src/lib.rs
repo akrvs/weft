@@ -6,7 +6,7 @@ pub mod render;
 pub mod resolver;
 pub mod target;
 
-pub use dns::{Binding, Dns};
+pub use dns::{Binding, Dns, Negative};
 pub use error::{Error, Result};
 pub use render::{Links, escape, render};
 pub use resolver::{Page, Resolver};

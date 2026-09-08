@@ -9,7 +9,7 @@ use iroh::{Endpoint, EndpointAddr};
 use weft_core::{Address, Body, Draft, Pointer, SecretKey};
 use weft_home::{Home, Store};
 use weft_net::{Client, Pricing, Relay};
-use weft_resolve::{Links, Resolver, Target};
+use weft_resolve::{Error, Links, Resolver, Target};
 
 const LINKS: Links = Links { record: "/", blob: "/blob/" };
 
@@ -105,7 +105,18 @@ async fn a_missing_blob_is_pulled_once_and_kept() {
     let (resolver, dir) = reader(&site).await;
     let blob_file = dir.join("blobs").join(site.blob.to_string());
     assert!(!blob_file.exists());
+    let offline = resolver.offline();
+    assert!(offline.blob(site.blob).await.unwrap().is_none());
+    assert!(
+        matches!(offline.open(site.page, &LINKS).await, Err(Error::NotFound(a)) if a == site.page)
+    );
+    let named = Target::Named { author: site.root.public(), name: "home".into() };
+    assert!(
+        matches!(offline.resolve(named, &LINKS).await, Err(Error::NoPointer(n)) if n == "home")
+    );
+    assert!(!blob_file.exists());
     assert_eq!(resolver.blob(site.blob).await.unwrap().unwrap(), site.data);
+    assert_eq!(offline.blob(site.blob).await.unwrap().unwrap(), site.data);
     assert_eq!(std::fs::read(&blob_file).unwrap(), site.data);
     assert!(resolver.blob(Address::of(b"nowhere")).await.unwrap().is_none());
     let page = resolver

@@ -143,7 +143,10 @@ Arrays in a response hold at most 4096 entries.
   `total` the store hashes it: a match moves it to `<home>/blobs/<address>`,
   anything else is refused and the part removed. A blob already present
   answers `ok` without writing. The hash check is the one door into the
-  blob directory; the command line's own writes go through it too.
+  blob directory; the command line's own writes go through it too. Parts
+  do not outlive their pull: `serve` removes every `.part` before it binds
+  the socket, and every listing removes parts untouched for 120 s, the
+  blob pull timeout.
 
 ## Index
 
