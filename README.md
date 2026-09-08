@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M12-yellow)
+![status](https://img.shields.io/badge/status-M13-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-87%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -35,7 +35,8 @@
 │              login [no account, no password, one signature]     │
 │              gate [the browser signs nothing, the daemon does]  │
 │              reads [the browser opens no record or blob file]   │
-│ status     : M9 — spec frozen · 10 crates · one gate · one door │
+│              fetch [a public gateway is nobody's proxy]         │
+│ status     : M13 — spec frozen · 10 crates · one gate · one door│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -179,12 +180,18 @@ weft-gateway --bind 127.0.0.1:8080           # then open http://127.0.0.1:8080/e
 
 The lookup goes over DNS over HTTPS to Cloudflare, or to `WEFT_DOH=ip,name`,
 is remembered for the record's TTL clamped between a minute and an hour,
-and the resolver's DNSSEC verdict rides along as provenance. The gateway
-serves every form the address bar takes, `/<address>`, `/<author>/<name>`,
-`/<domain>/<name>`, with the signature check in a header bar and in
-`x-weft-*` response headers. Every record and blob comes over the store
-socket; with the daemon stopped every page is a 503. Plain HTTP on
-loopback by default; TLS is the reverse proxy's job.
+and the resolver's DNSSEC verdict rides along as provenance. A domain with
+no `_weft` record, or a malformed one, is remembered too, for the zone's
+negative TTL under the same clamp, so a bad name costs one round trip an
+hour, not one per navigation. The gateway serves every form the address
+bar takes, `/<address>`, `/<author>/<name>`, `/<domain>/<name>`, with the
+signature check in a header bar and in `x-weft-*` response headers. Every
+record and blob comes over the store socket; with the daemon stopped every
+page is a 503. Anonymous readers see what the store holds and nothing
+more; a logged in session may have the gateway pull from its relays, at
+most four pulls in flight, and what one session pulled is local for
+everyone after. Plain HTTP on loopback by default; TLS is the reverse
+proxy's job.
 
 ## [ Store Flag ] — revoke a grant and watch access end
 
@@ -223,7 +230,9 @@ socket, blobs in 512 KiB chunks hashed whole on arrival, and every record
 or blob it fetches from a relay goes back to the daemon, which verifies
 before it keeps. A blob the store lacks is pulled from the relay list, so
 a page published on one machine renders with its images on another whose
-store has never seen them, and renders again with the relay gone. The
+store has never seen them, and renders again with the relay gone. A pull
+that dies leaves a `.part` the daemon sweeps at start and after two idle
+minutes. The
 daemon itself parses each record file once and remembers each
 verification per manifest, while still listing the directory on every
 request so the command line's writes are seen, and drops what the
@@ -312,7 +321,10 @@ stored nowhere; every store and every relay refuses it.
   start.
 - The gateway holds no record or blob path. Every read goes over the
   store socket under the browser key, so the daemon is the one process
-  that opens signed state.
+  that opens signed state. It pulls from a relay only for a request that
+  carries a live session, never for an anonymous one, and never more than
+  four at a time, so a public gateway is not a fetch proxy for its relay
+  list.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
@@ -332,11 +344,11 @@ stored nowhere; every store and every relay refuses it.
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
 crates/home/         weft-home: encrypted keystore · record store · snapshot cache that mirrors the directory · Reads trait · relay list
 crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
-crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a TTL cache · head and blob resolution over any Reads, pulling on miss · Markdown renderer
+crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer
 crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve
 crates/bank/         weft-bank: init · whoami · mint
-crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk · allow list
+crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk · allow list · pulls for sessions only
 crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login
 crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog · store view with daemon log · login dialog
 docs/protocol.md     normative record spec
@@ -365,8 +377,9 @@ cargo deny check
 ## [ Next Ops ]
 
 The roadmap is complete, the store daemon is hardened, every reader is
-behind it, and what the store lacks is pulled from the relays. What
-follows is open: a real payment rail behind the voucher seam, blob
-collection on sweep, `weft:` as a registered URL handler so a site's
-login link opens the browser, gateway host based routing and TLS, browser
+behind it, what the store lacks is pulled from the relays, and the gateway
+pulls only for readers it knows. What follows is open: a real payment
+rail behind the voucher seam, blob collection on sweep, `weft:` as a
+registered URL handler so a site's login link opens the browser, gateway
+host based routing and TLS, config reload for relay and gateway, browser
 visual design. See [`progress/`](progress/).

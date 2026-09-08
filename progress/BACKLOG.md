@@ -12,7 +12,6 @@ scheduled.
 | Revocation with an effective time | M1 | Distinguish a lost key from a compromised one |
 | Offline preset for CLI network commands | M2 | Loopback path exists only in the library tests |
 | CLI exits with a panic on a closed stdout pipe | M3 | `weft whoami \| head -1` |
-| Negative DNS cache | M12 | A missing or malformed `_weft` record hits DoH on every navigation |
 | Live `_weft` record | M4 | No domain carries one yet; the positive DoH path and the AD bit on a real answer are unverified |
 | Gateway host based routing and TLS | M4 | A publisher CNAME to the gateway, TLS in process |
 | Grants over fetched records | M5 | Only the root's own records are visible through a grant |
@@ -29,6 +28,6 @@ scheduled.
 | Gateway sessions cap on disk | M11 | The file holds at most 1024 sessions; a full table refuses new logins until a sweep |
 | Store cache cap | M10 | The cache mirrors the directory; a store larger than memory has no hard cap |
 | Passphrase field after a failed start | M10 | The start form keeps the typed passphrase after the daemon refuses it |
-| Stale blob parts | M12 | A pull that dies mid way leaves `blobs/<address>.part` until the next pull of that blob |
-| Gateway as fetch proxy | M12 | A public gateway pulls any blob a reader names from its relay list, no rate limit |
 | Blob download progress | M12 | The browser shows nothing while a large blob pulls |
+| Per session pull budget | M13 | A logged in reader may pull without limit beyond the gateway wide in-flight cap of 4; no bytes per session accounting |
+| Gateway pull cap flag | M13 | `Gateway::pull_cap` exists for tests; the binary has no `--pulls` flag |
