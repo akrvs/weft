@@ -68,6 +68,7 @@ answered with `error` and the connection is closed.
 | `pointers` | `author`: bytes(32); `name`: text | browser only, name 1 to 64 bytes |
 | `blob` | `address`: bytes(32); `offset`: uint | browser only, offset at most 1 GiB |
 | `keep` | `record`: bytes | browser only, at most 131072 bytes |
+| `keep-blob` | `address`: bytes(32); `total`: uint; `offset`: uint; `chunk`: bytes | browser only, total and offset at most 1 GiB, chunk at most 524288 bytes |
 
 ## Responses
 
@@ -117,8 +118,8 @@ Arrays in a response hold at most 4096 entries.
   given, a pointer for it with the next `seq` and the current head as
   `prev`, stores both, and returns them. The store never pushes to a
   relay; the browser does.
-- `record`, `manifest`, `pointers`, `blob`, and `keep` are the browser's
-  reads for rendering and answer `refused: browser only` for any other
+- `record`, `manifest`, `pointers`, `blob`, `keep`, and `keep-blob` are
+  the browser's reads for rendering and answer `refused: browser only` for any other
   key. They cover every author the store holds, not only the root.
   `record` answers `get` with the record at that address or `missing`.
   `manifest` answers `get` with the newest valid manifest record by that
@@ -134,6 +135,15 @@ Arrays in a response hold at most 4096 entries.
   verifies it first: a manifest against nothing, anything else against
   the newest local manifest for its author. What does not verify is
   refused, and a `login` record is refused as always.
+- `keep-blob` stores a blob the browser pulled from a relay, one chunk
+  per request, each answered `ok`. `offset` 0 starts
+  `<home>/blobs/<address>.part` afresh; any other offset must equal the
+  part's length, and `offset + len(chunk)` may not pass `total`. An empty
+  chunk is refused unless it completes the blob. When the part reaches
+  `total` the store hashes it: a match moves it to `<home>/blobs/<address>`,
+  anything else is refused and the part removed. A blob already present
+  answers `ok` without writing. The hash check is the one door into the
+  blob directory; the command line's own writes go through it too.
 
 ## Index
 

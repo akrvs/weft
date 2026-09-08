@@ -82,4 +82,8 @@ impl Reads for Local {
     async fn keep(&self, record: &Record) -> weft_home::Result<()> {
         Ok(self.call(async |c| c.keep(record).await).await?)
     }
+
+    async fn keep_blob(&self, address: Address, data: &[u8]) -> weft_home::Result<()> {
+        Ok(self.call(async |c| c.keep_blob(address, data).await).await?)
+    }
 }

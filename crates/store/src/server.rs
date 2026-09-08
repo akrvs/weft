@@ -107,6 +107,9 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
             None => Response::Missing,
         }),
         Request::Keep { record } => gate.keep(app, &record).map(|()| Response::Ok),
+        Request::KeepBlob { address, total, offset, chunk } => {
+            gate.keep_blob(app, &address, total, offset, &chunk).map(|()| Response::Ok)
+        }
     };
     result.unwrap_or_else(|e| Response::Error { why: e.to_string() })
 }

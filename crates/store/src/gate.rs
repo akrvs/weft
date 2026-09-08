@@ -1,4 +1,6 @@
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use weft_core::{
@@ -14,6 +16,7 @@ use crate::{Error, Result};
 pub const SOCKET: &str = "store.sock";
 pub const BROWSER_KEY: &str = "browser.key";
 pub const PAGE: &str = "page";
+pub const PART: &str = "part";
 
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join(SOCKET)
@@ -259,6 +262,56 @@ impl Gate {
         let mut chunk = vec![0u8; want];
         file.read_exact(&mut chunk)?;
         Ok(Some((total, chunk)))
+    }
+
+    pub fn keep_blob(
+        &self,
+        app: &PublicKey,
+        address: &Address,
+        total: u64,
+        offset: u64,
+        chunk: &[u8],
+    ) -> Result<()> {
+        self.privileged(app)?;
+        let len = u64::try_from(chunk.len()).map_err(|_| Error::Wire("chunk too large"))?;
+        let end = offset
+            .checked_add(len)
+            .filter(|end| *end <= total)
+            .ok_or(Error::Refused("chunk past the end"))?;
+        if chunk.is_empty() && end < total {
+            return Err(Error::Refused("empty chunk"));
+        }
+        if self.home.blob_path(address).is_file() {
+            return Ok(());
+        }
+        let part = self.home.blob_path(address).with_extension(PART);
+        let mut file = if offset == 0 {
+            if let Some(parent) = part.parent() {
+                weft_home::fs::ensure_dir(parent)?;
+            }
+            OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?
+        } else {
+            let file = match OpenOptions::new().append(true).open(&part) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(Error::Refused("no blob in progress"));
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if file.metadata()?.len() != offset {
+                return Err(Error::Refused("offset is not the part length"));
+            }
+            file
+        };
+        file.write_all(chunk)?;
+        if end < total {
+            return Ok(());
+        }
+        drop(file);
+        let data = std::fs::read(&part)?;
+        let kept = self.home.keep_blob(address, &data);
+        let _ = std::fs::remove_file(&part);
+        Ok(kept?)
     }
 
     pub fn keep(&self, app: &PublicKey, record: &[u8]) -> Result<()> {

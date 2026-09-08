@@ -96,6 +96,9 @@ impl Store {
     }
 
     pub fn keep_blob(&self, address: &Address, data: &[u8]) -> Result<()> {
+        if Address::of(data) != *address {
+            return fail("blob does not hash to its address");
+        }
         let path = self.blob_path(address);
         if path.is_file() {
             return Ok(());
@@ -230,6 +233,7 @@ pub trait Reads: Send + Sync {
     ) -> impl Future<Output = Result<Vec<Record>>> + Send;
     fn blob(&self, address: Address) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
     fn keep(&self, record: &Record) -> impl Future<Output = Result<()>> + Send;
+    fn keep_blob(&self, address: Address, data: &[u8]) -> impl Future<Output = Result<()>> + Send;
 }
 
 impl Reads for Store {
@@ -261,6 +265,10 @@ impl Reads for Store {
 
     fn keep(&self, record: &Record) -> impl Future<Output = Result<()>> + Send {
         ready(self.put(record).map(drop))
+    }
+
+    fn keep_blob(&self, address: Address, data: &[u8]) -> impl Future<Output = Result<()>> + Send {
+        ready(Store::keep_blob(self, &address, data))
     }
 }
 

@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use hickory_resolver::config::{CLOUDFLARE, NameServerConfig, ResolverOpts};
@@ -18,6 +19,9 @@ use crate::error::{Error, Result};
 pub const LABEL: &str = "_weft";
 pub const PREFIX: &[u8] = b"weft=";
 pub const TIMEOUT: Duration = Duration::from_secs(5);
+pub const MIN_TTL: Duration = Duration::from_secs(60);
+pub const MAX_TTL: Duration = Duration::from_secs(3600);
+pub const MAX_ENTRIES: usize = 1024;
 const PAYLOAD: u16 = 1232;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +48,44 @@ pub fn parse<'a>(records: impl IntoIterator<Item = &'a [u8]>, authentic: bool) -
     Ok(Binding { author: PublicKey::from_bytes(address.bytes())?, authentic })
 }
 
+#[derive(Debug, Default)]
+struct Cache {
+    entries: HashMap<String, (Binding, Instant)>,
+}
+
+impl Cache {
+    fn get(&mut self, host: &str, now: Instant) -> Option<Binding> {
+        match self.entries.get(host) {
+            Some((binding, until)) if *until > now => Some(binding.clone()),
+            Some(_) => {
+                self.entries.remove(host);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn put(&mut self, host: &str, binding: Binding, ttl: u32, now: Instant) {
+        self.entries.retain(|_, (_, until)| *until > now);
+        if self.entries.len() >= MAX_ENTRIES && !self.entries.contains_key(host) {
+            let soonest = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, until))| *until)
+                .map(|(host, _)| host.clone());
+            if let Some(host) = soonest {
+                self.entries.remove(&host);
+            }
+        }
+        let ttl = Duration::from_secs(u64::from(ttl)).clamp(MIN_TTL, MAX_TTL);
+        self.entries.insert(host.to_owned(), (binding, now + ttl));
+    }
+}
+
 #[derive(Clone)]
 pub struct Dns {
     pool: NameServerPool<TokioRuntimeProvider>,
+    cache: Arc<Mutex<Cache>>,
 }
 
 impl core::fmt::Debug for Dns {
@@ -72,10 +111,20 @@ impl Dns {
         options.attempts = 1;
         let tls = TlsConfig::new().map_err(|e| Error::Dns(e.to_string()))?;
         let cx = Arc::new(PoolContext::new(options, tls));
-        Ok(Self { pool: NameServerPool::from_config(servers, cx, TokioRuntimeProvider::default()) })
+        Ok(Self {
+            pool: NameServerPool::from_config(servers, cx, TokioRuntimeProvider::default()),
+            cache: Arc::default(),
+        })
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn lookup(&self, host: &str) -> Result<Binding> {
+        if let Some(binding) = self.cache().get(host, Instant::now()) {
+            return Ok(binding);
+        }
         let name =
             Name::from_ascii(format!("{LABEL}.{host}.")).map_err(|e| Error::Dns(e.to_string()))?;
         let mut message = Message::query();
@@ -99,10 +148,10 @@ impl Dns {
         if response.metadata.response_code != ResponseCode::NoError {
             return Err(Error::Dns(format!("{host}: {}", response.metadata.response_code)));
         }
-        let strings: Vec<Vec<u8>> = response
-            .answers
+        let txt: Vec<_> =
+            response.answers.iter().filter(|r| r.record_type() == RecordType::TXT).collect();
+        let strings: Vec<Vec<u8>> = txt
             .iter()
-            .filter(|r| r.record_type() == RecordType::TXT)
             .filter_map(|r| match &r.data {
                 RData::TXT(txt) => {
                     Some(txt.txt_data.iter().flat_map(|s| s.iter().copied()).collect())
@@ -110,7 +159,10 @@ impl Dns {
                 _ => None,
             })
             .collect();
-        parse(strings.iter().map(Vec::as_slice), response.metadata.authentic_data)
+        let binding = parse(strings.iter().map(Vec::as_slice), response.metadata.authentic_data)?;
+        let ttl = txt.iter().map(|r| r.ttl).min().unwrap_or(0);
+        self.cache().put(host, binding.clone(), ttl, Instant::now());
+        Ok(binding)
     }
 }
 
@@ -125,6 +177,47 @@ mod tests {
 
     fn record(s: &str) -> Vec<u8> {
         s.as_bytes().to_vec()
+    }
+
+    fn binding(n: u8) -> Binding {
+        Binding { author: weft_core::SecretKey::from_seed([n; 32]).public(), authentic: n % 2 == 0 }
+    }
+
+    #[test]
+    fn cache_honours_a_clamped_ttl() {
+        let mut cache = Cache::default();
+        let t0 = Instant::now();
+        assert!(cache.get("a.example", t0).is_none());
+        cache.put("a.example", binding(1), 1, t0);
+        assert_eq!(cache.get("a.example", t0 + Duration::from_secs(59)), Some(binding(1)));
+        assert!(cache.get("a.example", t0 + Duration::from_secs(61)).is_none());
+        assert!(cache.get("a.example", t0).is_none());
+        cache.put("b.example", binding(2), 300, t0);
+        assert_eq!(cache.get("b.example", t0 + Duration::from_secs(299)), Some(binding(2)));
+        assert!(cache.get("b.example", t0 + Duration::from_secs(301)).is_none());
+        cache.put("c.example", binding(3), u32::MAX, t0);
+        assert_eq!(cache.get("c.example", t0 + Duration::from_secs(3599)), Some(binding(3)));
+        assert!(cache.get("c.example", t0 + Duration::from_secs(3601)).is_none());
+        cache.put("d.example", binding(4), 120, t0);
+        cache.put("d.example", binding(5), 120, t0 + Duration::from_secs(100));
+        assert_eq!(cache.get("d.example", t0 + Duration::from_secs(219)), Some(binding(5)));
+    }
+
+    #[test]
+    fn cache_evicts_the_soonest_expiry_when_full() {
+        let mut cache = Cache::default();
+        let t0 = Instant::now();
+        for i in 0..MAX_ENTRIES {
+            cache.put(&format!("h{i}.example"), binding(1), 60 + u32::try_from(i).unwrap(), t0);
+        }
+        assert_eq!(cache.entries.len(), MAX_ENTRIES);
+        cache.put("late.example", binding(2), 3600, t0);
+        assert_eq!(cache.entries.len(), MAX_ENTRIES);
+        assert!(cache.get("h0.example", t0).is_none());
+        assert_eq!(cache.get("h1.example", t0), Some(binding(1)));
+        assert_eq!(cache.get("late.example", t0), Some(binding(2)));
+        cache.put("fresh.example", binding(3), 60, t0 + Duration::from_secs(4000));
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

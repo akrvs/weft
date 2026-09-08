@@ -6357,6 +6357,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "hickory-resolver",
+ "iroh",
  "pulldown-cmark",
  "serde",
  "tokio",

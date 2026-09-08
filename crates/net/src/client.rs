@@ -66,6 +66,18 @@ impl Client {
         self.blobs.blobs().export(hash, abs).await.map_err(net)
     }
 
+    pub async fn pull_blob(
+        &self,
+        relay: impl Into<EndpointAddr>,
+        address: &Address,
+    ) -> Result<Vec<u8>> {
+        let relay: EndpointAddr = relay.into();
+        let hash = Hash::from_bytes(*address.bytes());
+        self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id)).await.map_err(net)?;
+        let bytes = self.blobs.blobs().get_bytes(hash).await.map_err(net)?;
+        Ok(bytes.to_vec())
+    }
+
     async fn call(&self, relay: impl Into<EndpointAddr>, request: &Request) -> Result<Response> {
         let conn = self.endpoint().connect(relay, wire::ALPN).await.map_err(net)?;
         let (mut send, mut recv) = conn.open_bi().await.map_err(net)?;

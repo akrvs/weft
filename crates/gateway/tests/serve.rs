@@ -209,7 +209,8 @@ async fn rejects_what_it_should() {
     );
     assert_eq!(request(&addr, "GET", "/blob/junk").await.status, 400);
     let forged = Address::of(b"forged");
-    Home::new(site.dir.clone()).keep_blob(&forged, b"not the bytes it names").unwrap();
+    std::fs::write(site.dir.join("blobs").join(forged.to_string()), b"not the bytes it names")
+        .unwrap();
     assert_eq!(request(&addr, "GET", &format!("/blob/{forged}")).await.status, 502);
     assert_eq!(request(&addr, "GET", "/notanaddress").await.status, 400);
     assert_eq!(request(&addr, "GET", "/../etc/passwd").await.status, 400);

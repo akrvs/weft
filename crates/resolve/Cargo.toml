@@ -16,5 +16,9 @@ pulldown-cmark.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+iroh.workspace = true
+tokio = { version = "1.53", features = ["full"] }
+
 [lints]
 workspace = true

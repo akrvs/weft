@@ -3,7 +3,7 @@ use std::path::Path;
 use tokio::net::UnixStream;
 use weft_core::{Address, Challenge, Proof, PublicKey, Record, SecretKey};
 
-use crate::wire::{self, DOMAIN, MAX_BLOB, Request, Response};
+use crate::wire::{self, DOMAIN, MAX_BLOB, MAX_CHUNK, Request, Response};
 use crate::{Error, Result};
 
 #[derive(Debug)]
@@ -152,7 +152,29 @@ impl Client {
     }
 
     pub async fn keep(&mut self, record: &Record) -> Result<()> {
-        match self.call(&Request::Keep { record: record.to_bytes() }).await? {
+        self.ok(&Request::Keep { record: record.to_bytes() }).await
+    }
+
+    pub async fn keep_blob(&mut self, address: Address, data: &[u8]) -> Result<()> {
+        let total = u64::try_from(data.len()).map_err(|_| Error::Wire("blob too large"))?;
+        if total > MAX_BLOB {
+            return Err(Error::Wire("blob too large"));
+        }
+        let mut offset = 0;
+        loop {
+            let chunk = &data[offset..data.len().min(offset + MAX_CHUNK)];
+            let at = u64::try_from(offset).map_err(|_| Error::Wire("blob too large"))?;
+            self.ok(&Request::KeepBlob { address, total, offset: at, chunk: chunk.to_vec() })
+                .await?;
+            offset += chunk.len();
+            if offset >= data.len() {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn ok(&mut self, request: &Request) -> Result<()> {
+        match self.call(request).await? {
             Response::Ok => Ok(()),
             _ => Err(Error::Wire("expected ok")),
         }

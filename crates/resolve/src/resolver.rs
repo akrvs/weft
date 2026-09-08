@@ -13,6 +13,7 @@ use crate::render::{Links, render};
 use crate::target::Target;
 
 pub const RELAY_TIMEOUT: Duration = Duration::from_secs(5);
+pub const BLOB_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DOH_ENV: &str = "WEFT_DOH";
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +49,10 @@ impl<R: Reads> Resolver<R> {
         Self { home, reads, client: OnceCell::new(), dns: OnceCell::new() }
     }
 
+    pub fn with_client(home: Home, reads: R, client: Client) -> Self {
+        Self { home, reads, client: OnceCell::new_with(Some(client)), dns: OnceCell::new() }
+    }
+
     pub fn home(&self) -> &Home {
         &self.home
     }
@@ -67,11 +72,24 @@ impl<R: Reads> Resolver<R> {
     }
 
     pub async fn blob(&self, address: Address) -> Result<Option<Vec<u8>>> {
-        let Some(data) = self.reads.blob(address).await? else { return Ok(None) };
-        if Address::of(&data) != address {
-            return Err(Error::Blob(address));
+        if let Some(data) = self.reads.blob(address).await? {
+            return Ok(Some(checked(address, data)?));
         }
-        Ok(Some(data))
+        let relays = self.home.relays()?;
+        if relays.is_empty() {
+            return Ok(None);
+        }
+        let client = self.client().await?;
+        for relay in relays {
+            let Ok(Ok(data)) = timeout(BLOB_TIMEOUT, client.pull_blob(relay, &address)).await
+            else {
+                continue;
+            };
+            let data = checked(address, data)?;
+            self.reads.keep_blob(address, &data).await?;
+            return Ok(Some(data));
+        }
+        Ok(None)
     }
 
     pub async fn local_manifest_record(&self, author: &PublicKey) -> Result<Option<Record>> {
@@ -242,6 +260,10 @@ impl<R: Reads> Resolver<R> {
             blob,
         })
     }
+}
+
+fn checked(address: Address, data: Vec<u8>) -> Result<Vec<u8>> {
+    if Address::of(&data) == address { Ok(data) } else { Err(Error::Blob(address)) }
 }
 
 fn pointer_named(

@@ -699,6 +699,7 @@ async fn reads_are_browser_only() {
     refused(c.pointers(root.public(), "home").await, "browser only");
     refused(c.blob(Address::of(b"x")).await, "browser only");
     refused(c.keep(&manifest).await, "browser only");
+    refused(c.keep_blob(Address::of(b"x"), b"x").await, "browser only");
     assert!(w.all().iter().all(|r| r.address() != manifest.address()));
 }
 
@@ -762,8 +763,9 @@ async fn local_reads_over_the_socket_and_reports_a_missing_daemon() {
     assert_eq!(local.pointers(root.public(), "home").await.unwrap(), vec![pointer]);
     let data = b"blob bytes".to_vec();
     let address = Address::of(&data);
-    Home::new(w.dir.clone()).keep_blob(&address, &data).unwrap();
+    local.keep_blob(address, &data).await.unwrap();
     assert_eq!(local.blob(address).await.unwrap().unwrap(), data);
+    assert!(local.keep_blob(Address::of(b"liar"), b"truth").await.is_err());
     let dead = std::env::temp_dir().join(format!("weft-store-{}-dead", std::process::id()));
     let _ = std::fs::remove_dir_all(&dead);
     std::fs::create_dir_all(&dead).unwrap();
@@ -800,4 +802,69 @@ async fn local_pools_connections_and_follows_a_restart() {
     tokio::task::yield_now().await;
     let stale = local.record(page.address()).await.unwrap_err().to_string();
     assert!(stale.ends_with("refused: browser only"), "{stale}");
+}
+
+fn part_of(w: &World, address: &Address) -> PathBuf {
+    w.dir.join("blobs").join(format!("{address}.part"))
+}
+
+#[tokio::test]
+async fn kept_blobs_arrive_in_chunks_and_hash_or_vanish() {
+    let w = World::start("keep-blob", 2);
+    let data: Vec<u8> = (0..2 * MAX_CHUNK + 7).map(|i| u8::try_from(i % 241).unwrap()).collect();
+    let address = Address::of(&data);
+    let mut b = w.browser().await;
+    b.keep_blob(address, &data).await.unwrap();
+    assert!(!part_of(&w, &address).exists());
+    assert_eq!(b.blob(address).await.unwrap().unwrap(), data);
+    assert_eq!(Home::new(w.dir.clone()).store().blob(&address).unwrap().unwrap(), data);
+    b.keep_blob(address, &data).await.unwrap();
+    let empty = Address::of(b"");
+    b.keep_blob(empty, b"").await.unwrap();
+    assert_eq!(b.blob(empty).await.unwrap().unwrap(), Vec::<u8>::new());
+    let liar = Address::of(b"liar");
+    assert!(matches!(b.keep_blob(liar, b"truth").await, Err(Error::Remote(_))));
+    assert!(!part_of(&w, &liar).exists());
+    assert!(b.blob(liar).await.unwrap().is_none());
+    let mut wrong = data.clone();
+    wrong[MAX_CHUNK + 3] ^= 1;
+    let forged = Address::of(&wrong);
+    assert!(matches!(b.keep_blob(forged, &data).await, Err(Error::Remote(_))));
+    assert!(!part_of(&w, &forged).exists());
+    assert!(b.blob(forged).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn keep_blob_offsets_follow_the_part() {
+    let w = World::start("keep-blob-offsets", 2);
+    let data: Vec<u8> = (0..MAX_CHUNK + 5).map(|i| u8::try_from(i % 239).unwrap()).collect();
+    let address = Address::of(&data);
+    let total = data.len() as u64;
+    let head = data[..MAX_CHUNK].to_vec();
+    let tail = data[MAX_CHUNK..].to_vec();
+    let first = Request::KeepBlob { address, total, offset: 0, chunk: head.clone() };
+    let at = |offset: u64, chunk: &[u8]| Request::KeepBlob {
+        address,
+        total,
+        offset,
+        chunk: chunk.to_vec(),
+    };
+    let skipped = raw(&w, &w.browser, &at(MAX_CHUNK as u64, &tail)).await;
+    assert!(matches!(skipped, Response::Error { ref why } if why.contains("no blob in progress")));
+    assert_eq!(raw(&w, &w.browser, &first).await, Response::Ok);
+    assert_eq!(std::fs::metadata(part_of(&w, &address)).unwrap().len(), MAX_CHUNK as u64);
+    let early = raw(&w, &w.browser, &at(3, &tail)).await;
+    assert!(matches!(early, Response::Error { ref why } if why.contains("part length")));
+    let past = raw(&w, &w.browser, &at(MAX_CHUNK as u64, &data[..10])).await;
+    assert!(matches!(past, Response::Error { ref why } if why.contains("past the end")));
+    let hollow = raw(&w, &w.browser, &at(MAX_CHUNK as u64, &[])).await;
+    assert!(matches!(hollow, Response::Error { ref why } if why.contains("empty chunk")));
+    assert_eq!(raw(&w, &w.browser, &first).await, Response::Ok);
+    assert_eq!(std::fs::metadata(part_of(&w, &address)).unwrap().len(), MAX_CHUNK as u64);
+    assert_eq!(raw(&w, &w.browser, &at(MAX_CHUNK as u64, &tail)).await, Response::Ok);
+    assert!(!part_of(&w, &address).exists());
+    assert_eq!(w.browser().await.blob(address).await.unwrap().unwrap(), data);
+    let oversize = Request::KeepBlob { address, total: MAX_BLOB + 1, offset: 0, chunk: vec![] };
+    let decoded = Request::decode(&oversize.encode());
+    assert!(decoded.is_err());
 }

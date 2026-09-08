@@ -30,6 +30,7 @@ pub enum Request {
     Pointers { author: PublicKey, name: String },
     Blob { address: Address, offset: u64 },
     Keep { record: Vec<u8> },
+    KeepBlob { address: Address, total: u64, offset: u64, chunk: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +124,14 @@ fn sized<'a>(m: &'a [(String, Value)], name: &'static str, max: usize) -> Result
     Ok(b)
 }
 
+fn bounded(m: &[(String, Value)], name: &'static str) -> Result<u64> {
+    let n = cbor::field(m, name)?.as_uint().ok_or(CoreError::Field(name))?;
+    if n > MAX_BLOB {
+        return Err(Error::Core(CoreError::Limit(name)));
+    }
+    Ok(n)
+}
+
 fn decode_map(buf: &[u8], what: &'static str) -> Result<Vec<(String, Value)>> {
     let value = cbor::decode(buf)?;
     Ok(value.as_map().ok_or(Error::Wire(what))?.to_vec())
@@ -191,6 +200,13 @@ impl Request {
             Self::Keep { record } => {
                 vec![("record".to_owned(), bytes(record)), ("t".to_owned(), text("keep"))]
             }
+            Self::KeepBlob { address, total, offset, chunk } => vec![
+                ("address".to_owned(), bytes(address.bytes())),
+                ("chunk".to_owned(), bytes(chunk)),
+                ("offset".to_owned(), Value::Uint(*offset)),
+                ("t".to_owned(), text("keep-blob")),
+                ("total".to_owned(), Value::Uint(*total)),
+            ],
         };
         Value::Map(m).encode()
     }
@@ -275,16 +291,20 @@ impl Request {
             }
             "blob" => {
                 cbor::only(&m, &["address", "offset", "t"])?;
-                let offset =
-                    cbor::field(&m, "offset")?.as_uint().ok_or(CoreError::Field("offset"))?;
-                if offset > MAX_BLOB {
-                    return Err(Error::Core(CoreError::Limit("offset")));
-                }
-                Ok(Self::Blob { address: address(&m, "address")?, offset })
+                Ok(Self::Blob { address: address(&m, "address")?, offset: bounded(&m, "offset")? })
             }
             "keep" => {
                 cbor::only(&m, &["record", "t"])?;
                 Ok(Self::Keep { record: sized(&m, "record", MAX_RECORD)?.to_vec() })
+            }
+            "keep-blob" => {
+                cbor::only(&m, &["address", "chunk", "offset", "t", "total"])?;
+                Ok(Self::KeepBlob {
+                    address: address(&m, "address")?,
+                    total: bounded(&m, "total")?,
+                    offset: bounded(&m, "offset")?,
+                    chunk: sized(&m, "chunk", MAX_CHUNK)?.to_vec(),
+                })
             }
             _ => Err(Error::Wire("unknown request type")),
         }
@@ -401,11 +421,10 @@ impl Response {
             }
             "blob" => {
                 cbor::only(&m, &["chunk", "t", "total"])?;
-                let total = cbor::field(&m, "total")?.as_uint().ok_or(CoreError::Field("total"))?;
-                if total > MAX_BLOB {
-                    return Err(Error::Core(CoreError::Limit("total")));
-                }
-                Ok(Self::Blob { total, chunk: sized(&m, "chunk", MAX_CHUNK)?.to_vec() })
+                Ok(Self::Blob {
+                    total: bounded(&m, "total")?,
+                    chunk: sized(&m, "chunk", MAX_CHUNK)?.to_vec(),
+                })
             }
             "missing" => {
                 cbor::only(&m, &["t"])?;

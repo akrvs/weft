@@ -161,10 +161,7 @@ async fn blob(resolver: &Resolver<Local>, rest: &str) -> Reply {
     let data = match resolver.blob(address).await {
         Ok(Some(data)) => data,
         Ok(None) => {
-            return html_reply(
-                StatusCode::NOT_FOUND,
-                html::error(404, "blob not in the local store"),
-            );
+            return html_reply(StatusCode::NOT_FOUND, html::error(404, "blob not found"));
         }
         Err(e) if down(&e) => {
             return html_reply(StatusCode::SERVICE_UNAVAILABLE, html::error(503, &e.to_string()));
