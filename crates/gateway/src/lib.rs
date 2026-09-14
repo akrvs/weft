@@ -71,13 +71,14 @@ impl Gateway {
     ) -> Result<Self, Refusal> {
         let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
         let logins = Logins::new(origin, resolver.home().path(), allow, now)?;
-        let budget = Budget::new(budget::DEFAULT_BYTES, budget::WINDOW);
+        let path = resolver.home().path().join(budget::FILE);
+        let budget = Budget::open(path, budget::DEFAULT_BYTES, budget::WINDOW, now)?;
         Ok(Self { resolver, logins, budget, pulls: Semaphore::new(MAX_PULLS) })
     }
 
     #[must_use]
     pub fn budget(mut self, bytes: u64) -> Self {
-        self.budget = Budget::new(bytes, budget::WINDOW);
+        self.budget.set_bytes(bytes);
         self
     }
 
@@ -156,7 +157,9 @@ async fn read(gateway: &Gateway, token: Option<&Token>, path: &str, query: Optio
             let meter = Arc::new(AtomicU64::new(0));
             let metered = gateway.resolver.metered(Arc::clone(&meter));
             let reply = route(&metered, "", path, query).await;
-            gateway.budget.charge(author, now, meter.load(Ordering::Relaxed));
+            if let Err(e) = gateway.budget.charge(author, now, meter.load(Ordering::Relaxed)) {
+                eprintln!("budget: {e}");
+            }
             reply
         }
         Err(_) => html_reply(
