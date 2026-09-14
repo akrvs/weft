@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M15-yellow)
+![status](https://img.shields.io/badge/status-M16-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-99%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-103%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -38,7 +38,7 @@
 │              fetch [a public gateway is nobody's proxy]         │
 │              ops [a signal reloads, a budget bounds the pulls]  │
 │              hygiene [what nothing holds up leaves the relay]   │
-│ status     : M15 — spec frozen · 10 crates · one gate · one door│
+│ status     : M16 — spec frozen · 10 crates · one gate · one door│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -333,7 +333,8 @@ stored nowhere; every store and every relay refuses it.
   four at a time, and never past a byte budget per identity per hour, so
   a public gateway is not a fetch proxy for its relay list. Over budget a
   reader still gets every local record; a miss says when the window
-  resets.
+  resets. The windows live in `$WEFT_HOME/gateway/budget`, mode 0600, so
+  a restart does not open them afresh.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active
@@ -391,5 +392,4 @@ pulls only for readers it knows and only so much, both daemons reload on
 a signal, and the relay keeps nothing it is not paid or told to keep.
 What follows is open: a real payment rail behind the voucher seam,
 `weft:` as a registered URL handler so a site's login link opens the
-browser, gateway host based routing and TLS, a pull budget that survives
-a restart, browser visual design. See [`progress/`](progress/).
+browser, gateway host based routing and TLS, browser visual design. See [`progress/`](progress/).

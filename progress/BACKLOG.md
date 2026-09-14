@@ -25,6 +25,4 @@ scheduled.
 | Store cache cap | M10 | The cache mirrors the directory; a store larger than memory has no hard cap |
 | Passphrase field after a failed start | M10 | The start form keeps the typed passphrase after the daemon refuses it |
 | Blob download progress | M12 | The browser shows nothing while a large blob pulls |
-| Pull budget survives a restart | M14 | Budget counters live in memory; a gateway restart opens every window afresh |
-| Fake name server for negative DNS | M13, M14 | The negative DoH path is verified only end to end against Cloudflare |
-| Relay sweep scans every record | M15 | The sweep and the blob protect set decode every stored record once a minute; an authors table would make both a lookup |
+| Budget table cap | M16 | The gateway keeps at most 1024 spent windows and evicts the oldest when a new identity pulls; a public gateway with more active sessions than that can forget a spent window |

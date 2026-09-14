@@ -75,23 +75,26 @@ fetch only the manifest.
 
 ## Storage
 
-Records and indexes live in a redb database with five tables: records by
+Records and indexes live in a redb database with seven tables: records by
 address, heads by author and name, newest manifest by author, pins by
-address holding `until` and the paying author, spent voucher ids. Blobs
-live in an iroh-blobs file store beside it.
+address holding `until` and the paying author, spent voucher ids, record
+addresses by author, and the blob each blob record names. The last two
+are derived from the records table on every write; an index written
+without them is rebuilt once when the relay opens it. Blobs live in an
+iroh-blobs file store beside it.
 
 ## Sweep
 
 At start, every 60 seconds, and after a reload the relay walks its
-records under one rule. A record stays if its author is allowlisted, if
+authors table under one rule, decoding no record. A record stays if its author is allowlisted, if
 it holds a pin that has not passed, or if it is the current manifest of
 an author who still holds a pin. Everything else goes, with its pin
 entry, the heads that pointed at it, and the manifest entry that named
 it. Spent voucher ids are kept forever.
 
 Blobs are collected by the blob store's own garbage collector on the same
-interval. Before each run the relay marks every blob a stored record
-references; anything unmarked is deleted. A failure to read the index
+interval. Before each run the relay marks every blob in its blobs table;
+anything unmarked is deleted. A failure to read the index
 skips that run.
 
 ## Reload
