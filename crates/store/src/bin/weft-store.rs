@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::io::{BufRead, Read};
+use std::io::{BufRead, IsTerminal, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tokio::net::{UnixListener, UnixStream};
-use weft_home::{Home, home};
+use weft_home::{Home, home, store};
 use weft_store::{Error, Gate, Result, create_browser_key, socket_path};
 use zeroize::Zeroizing;
 
@@ -28,14 +28,19 @@ enum Command {
         device: String,
         #[arg(long)]
         attach: bool,
+        #[arg(long, default_value_t = store::DEFAULT_CACHE / MIB)]
+        cache: u64,
     },
 }
+
+const MIB: u64 = 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let home = Home::new(cli.home.unwrap_or_else(Home::default_dir));
-    let Command::Serve { device, attach } = cli.command;
+    let Command::Serve { device, attach, cache } = cli.command;
+    let home =
+        Home::with_cache(cli.home.unwrap_or_else(Home::default_dir), cache.saturating_mul(MIB));
     match serve(home, &device, attach).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -78,7 +83,11 @@ async fn stdin_closed() {
 
 async fn serve(home: Home, device: &str, attach: bool) -> Result<()> {
     let root = home.root()?;
-    let pass = if attach { passphrase_line()? } else { home::passphrase(false)? };
+    let pass = if attach || !std::io::stdin().is_terminal() {
+        passphrase_line()?
+    } else {
+        home::passphrase(false)?
+    };
     let key = home.open(device, &pass)?;
     drop(pass);
     let snap = home.store().snapshot()?;

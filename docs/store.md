@@ -156,17 +156,27 @@ whose content does not hash to its name is ignored. Verification
 outcomes are remembered per record and manifest, so a record is checked
 once per manifest. Each listing drops cached records whose file is gone
 and outcomes for manifests no longer on disk, so the cache never
-outgrows the directory. Other writers to the same directory, such as the
-command line, are seen on the next request.
+outgrows the directory. It also never outgrows `--cache <MiB>`, 256 by
+default, 0 unlimited: the cache counts encoded record bytes and drops the
+least recently read record past the cap. A read past the cap comes from
+disk. Every listing still walks the directory, so a store larger than the
+cap re-reads the records it dropped on each request. Other writers to the
+same directory, such as the command line, are seen on the next request.
 
 ## Attach
 
-`weft-store serve --device <label> --attach` reads the passphrase as the
-first line of standard input and exits when standard input closes. The
-browser starts the daemon this way with a pipe it holds until it exits,
-so the daemon lives exactly as long as the browser. Without `--attach`
-the daemon prompts on the terminal and runs until it is stopped. The
-browser drains the daemon's standard error into a ring of the last 16 KiB
-and shows it in the store dialog; a failed start reports that text. The
-browser's `Local` reads keep up to four idle connections to the daemon
-and open more as requests overlap.
+`weft-store serve --device <label>` reads the passphrase from the
+terminal, or as the first line of standard input when that is not a
+terminal, and runs until it is stopped. With `--attach` it also exits
+when standard input closes. The browser's start form offers both: by
+default it starts the daemon with `--attach` over a pipe it holds until
+it exits, so the daemon lives exactly as long as the browser; with `keep
+running after the browser closes` ticked it starts the daemon in its own
+process group without `--attach`, writes the passphrase, and closes the
+pipe, so the daemon outlives the browser and is stopped from a terminal.
+The daemon writes nothing to standard error after it has bound its
+socket, so the closed pipe costs nothing. The browser drains the daemon's
+standard error into a ring of the last 16 KiB and shows it in the store
+dialog; a failed start reports that text. The browser's `Local` reads
+keep up to four idle connections to the daemon and open more as requests
+overlap.

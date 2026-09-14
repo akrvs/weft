@@ -22,6 +22,10 @@ impl Home {
         Self { store: Store::new(dir.clone()), dir }
     }
 
+    pub fn with_cache(dir: PathBuf, bytes: u64) -> Self {
+        Self { store: Store::with_cache(dir.clone(), bytes), dir }
+    }
+
     pub fn default_dir() -> PathBuf {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)

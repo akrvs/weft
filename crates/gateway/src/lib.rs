@@ -55,6 +55,25 @@ const PATH: &AsciiSet = &CONTROLS
 pub type Reply = Response<Full<Bytes>>;
 type Fail = (StatusCode, String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub pulls: usize,
+    pub budget: u64,
+    pub sessions: usize,
+    pub identities: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            pulls: MAX_PULLS,
+            budget: budget::DEFAULT_BYTES,
+            sessions: login::DEFAULT_SESSIONS,
+            identities: budget::DEFAULT_IDENTITIES,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Gateway {
     pub resolver: Resolver<Local>,
@@ -68,24 +87,13 @@ impl Gateway {
         resolver: Resolver<Local>,
         origin: String,
         allow: Option<HashSet<PublicKey>>,
+        limits: Limits,
     ) -> Result<Self, Refusal> {
         let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
-        let logins = Logins::new(origin, resolver.home().path(), allow, now)?;
+        let logins = Logins::new(origin, resolver.home().path(), allow, limits.sessions, now)?;
         let path = resolver.home().path().join(budget::FILE);
-        let budget = Budget::open(path, budget::DEFAULT_BYTES, budget::WINDOW, now)?;
-        Ok(Self { resolver, logins, budget, pulls: Semaphore::new(MAX_PULLS) })
-    }
-
-    #[must_use]
-    pub fn budget(mut self, bytes: u64) -> Self {
-        self.budget.set_bytes(bytes);
-        self
-    }
-
-    #[must_use]
-    pub fn pull_cap(mut self, pulls: usize) -> Self {
-        self.pulls = Semaphore::new(pulls);
-        self
+        let budget = Budget::open(path, limits.budget, budget::WINDOW, limits.identities, now)?;
+        Ok(Self { resolver, logins, budget, pulls: Semaphore::new(limits.pulls) })
     }
 }
 
@@ -308,7 +316,9 @@ fn refused(refusal: &Refusal) -> Reply {
     let status = match refusal {
         Refusal::Proof(_) | Refusal::Nonce | Refusal::Denied => StatusCode::FORBIDDEN,
         Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
-        Refusal::Origin | Refusal::Random | Refusal::State(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Refusal::Origin | Refusal::Random | Refusal::State(_) | Refusal::Cap(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     html_reply(status, html::error(status.as_u16(), &refusal.to_string()))
 }

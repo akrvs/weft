@@ -8,7 +8,8 @@ use weft_core::{Address, Challenge, Manifest, Proof, PublicKey, login};
 
 pub const PENDING_TTL: u64 = 300;
 pub const SESSION_TTL: u64 = 86_400;
-pub const MAX_ENTRIES: usize = 1024;
+pub const PENDING_MAX: usize = 1024;
+pub const DEFAULT_SESSIONS: usize = 4096;
 pub const COOKIE: &str = "weft_session";
 pub const SESSIONS: &str = "gateway/sessions";
 
@@ -20,6 +21,7 @@ pub enum Refusal {
     Proof(weft_core::Error),
     Nonce,
     Full,
+    Cap(usize),
     Random,
     Denied,
     State(String),
@@ -32,6 +34,7 @@ impl core::fmt::Display for Refusal {
             Self::Proof(e) => write!(f, "proof rejected: {e}"),
             Self::Nonce => f.write_str("challenge unknown, used, or expired"),
             Self::Full => f.write_str("too many logins in flight"),
+            Self::Cap(n) => write!(f, "cap {n} is over the file limit {}", cbor::MAX_ITEMS),
             Self::Random => f.write_str("no randomness"),
             Self::Denied => f.write_str("identity is not on the allow list"),
             Self::State(e) => f.write_str(e),
@@ -62,6 +65,7 @@ struct Session {
 pub struct Logins {
     origin: String,
     path: PathBuf,
+    cap: usize,
     allow: RwLock<Option<HashSet<PublicKey>>>,
     pending: Mutex<HashMap<[u8; 32], Pending>>,
     sessions: Mutex<BTreeMap<Token, Session>>,
@@ -95,8 +99,29 @@ pub fn allowlist(text: &str) -> Result<HashSet<PublicKey>, Refusal> {
         .collect()
 }
 
-fn load(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
-    parse(path, now).map_err(|e| Refusal::State(format!("{}: {e}", path.display())))
+pub fn checked_cap(cap: usize) -> Result<usize, Refusal> {
+    if u64::try_from(cap).is_ok_and(|n| n <= cbor::MAX_ITEMS) {
+        Ok(cap)
+    } else {
+        Err(Refusal::Cap(cap))
+    }
+}
+
+fn load(path: &Path, cap: usize, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
+    let mut sessions =
+        parse(path, now).map_err(|e| Refusal::State(format!("{}: {e}", path.display())))?;
+    trim(&mut sessions, cap);
+    Ok(sessions)
+}
+
+fn trim(sessions: &mut BTreeMap<Token, Session>, cap: usize) {
+    while sessions.len() > cap {
+        let soonest = sessions.iter().min_by_key(|(_, s)| s.expires).map(|(t, _)| *t);
+        match soonest {
+            Some(t) => sessions.remove(&t),
+            None => break,
+        };
+    }
 }
 
 fn parse(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
@@ -107,9 +132,6 @@ fn parse(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
     };
     let value = cbor::decode(&bytes).map_err(state)?;
     let items = value.as_array().ok_or_else(|| state("not an array"))?;
-    if items.len() > MAX_ENTRIES {
-        return Err(state("too many sessions"));
-    }
     let mut sessions = BTreeMap::new();
     for item in items {
         let map = item.as_map().ok_or_else(|| state("session is not a map"))?;
@@ -155,16 +177,19 @@ impl Logins {
         origin: String,
         home: &Path,
         allow: Option<HashSet<PublicKey>>,
+        cap: usize,
         now: u64,
     ) -> Result<Self, Refusal> {
         if !login::valid_service(&origin) {
             return Err(Refusal::Origin);
         }
+        let cap = checked_cap(cap)?;
         let path = home.join(SESSIONS);
-        let sessions = load(&path, now)?;
+        let sessions = load(&path, cap, now)?;
         Ok(Self {
             origin,
             path,
+            cap,
             allow: RwLock::new(allow),
             pending: Mutex::new(HashMap::new()),
             sessions: Mutex::new(sessions),
@@ -204,7 +229,7 @@ impl Logins {
         let expires = now.saturating_add(PENDING_TTL);
         let mut pending = lock(&self.pending);
         pending.retain(|_, p| now < p.expires);
-        if pending.len() >= MAX_ENTRIES {
+        if pending.len() >= PENDING_MAX {
             return Err(Refusal::Full);
         }
         pending.insert(nonce, Pending { expires, token: None });
@@ -229,9 +254,7 @@ impl Logins {
         }
         let mut sessions = lock(&self.sessions);
         sessions.retain(|_, s| now < s.expires);
-        if sessions.len() >= MAX_ENTRIES {
-            return Err(Refusal::Full);
-        }
+        trim(&mut sessions, self.cap.saturating_sub(1));
         let expires = now.saturating_add(SESSION_TTL);
         sessions.insert(token, Session { author: login.author, expires });
         if let Err(e) = save(&self.path, &sessions) {
@@ -310,7 +333,41 @@ mod tests {
     }
 
     fn logins(name: &str) -> Logins {
-        Logins::new(ORIGIN.into(), &home(name), None, T).unwrap()
+        Logins::new(ORIGIN.into(), &home(name), None, DEFAULT_SESSIONS, T).unwrap()
+    }
+
+    fn capped(name: &str, cap: usize, now: u64) -> Result<Logins, Refusal> {
+        Logins::new(ORIGIN.into(), &home(name), None, cap, now)
+    }
+
+    #[test]
+    fn a_full_sessions_table_evicts_the_soonest_expiry_and_a_load_keeps_the_newest() {
+        let dir = home("evict");
+        let logins = Logins::new(ORIGIN.into(), &dir, None, 2, T).unwrap();
+        let keys: Vec<_> = (1..=3u8).map(|n| SecretKey::from_seed([n; 32])).collect();
+        let tokens: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let at = T + u64::try_from(i).unwrap();
+                let challenge = logins.open(at).unwrap();
+                logins.satisfy(&proof(&challenge, key), at, None).unwrap().1
+            })
+            .collect();
+        assert_eq!(logins.session(&tokens[0], T + 3), None, "the first login made room");
+        assert_eq!(logins.session(&tokens[1], T + 3), Some(keys[1].public()));
+        assert_eq!(logins.session(&tokens[2], T + 3), Some(keys[2].public()));
+        let lowered = Logins::new(ORIGIN.into(), &dir, None, 1, T + 3).unwrap();
+        assert_eq!(lowered.session(&tokens[1], T + 4), None, "a lower cap keeps the newest");
+        assert_eq!(lowered.session(&tokens[2], T + 4), Some(keys[2].public()));
+        let one = Logins::new(ORIGIN.into(), &dir, None, 1, T + 4).unwrap();
+        let challenge = one.open(T + 5).unwrap();
+        let (_, fresh) = one.satisfy(&proof(&challenge, &keys[0]), T + 5, None).unwrap();
+        assert_eq!(one.session(&tokens[2], T + 6), None);
+        assert_eq!(one.session(&fresh, T + 6), Some(keys[0].public()));
+        assert!(matches!(capped("over", 4097, T), Err(Refusal::Cap(4097))));
+        assert!(capped("edge", 4096, T).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn proof(challenge: &Challenge, key: &SecretKey) -> Proof {
@@ -321,10 +378,14 @@ mod tests {
     #[test]
     fn origin_must_be_a_service_name() {
         let dir = home("origin");
-        assert!(Logins::new("HTTP://x".into(), &dir, None, T).is_err());
-        assert!(Logins::new(String::new(), &dir, None, T).is_err());
-        assert!(Logins::new(ORIGIN.into(), &dir, None, T).is_ok());
-        assert!(Logins::new("https://example.com".into(), &dir, None, T).unwrap().secure());
+        assert!(Logins::new("HTTP://x".into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
+        assert!(Logins::new(String::new(), &dir, None, DEFAULT_SESSIONS, T).is_err());
+        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_ok());
+        assert!(
+            Logins::new("https://example.com".into(), &dir, None, DEFAULT_SESSIONS, T)
+                .unwrap()
+                .secure()
+        );
     }
 
     #[test]
@@ -361,7 +422,7 @@ mod tests {
     #[test]
     fn pending_is_capped_and_swept() {
         let logins = logins("capped");
-        for _ in 0..MAX_ENTRIES {
+        for _ in 0..PENDING_MAX {
             logins.open(T).unwrap();
         }
         assert_eq!(logins.open(T).err(), Some(Refusal::Full));
@@ -381,7 +442,8 @@ mod tests {
         assert_eq!(token_from_cookies("weft_session=!!!"), None);
         assert_eq!(token_from_cookies("weft_session=AAAA"), None);
         assert!(logins.cookie(None).contains("Max-Age=0"));
-        let secure = Logins::new("https://x".into(), &home("secure"), None, T).unwrap();
+        let secure =
+            Logins::new("https://x".into(), &home("secure"), None, DEFAULT_SESSIONS, T).unwrap();
         assert!(secure.cookie(Some(&token)).contains("Secure"));
     }
 
@@ -389,13 +451,13 @@ mod tests {
     fn sweep_drops_expired_sessions_from_the_file_and_allow_is_replaceable() {
         let dir = home("sweep");
         let key = SecretKey::from_seed([1; 32]);
-        let logins = Logins::new(ORIGIN.into(), &dir, None, T).unwrap();
+        let logins = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap();
         let challenge = logins.open(T).unwrap();
         let (_, token) = logins.satisfy(&proof(&challenge, &key), T + 1, None).unwrap();
         assert_eq!(logins.sweep(T + 2).unwrap(), 0);
         assert_eq!(logins.sweep(T + SESSION_TTL + 1).unwrap(), 1);
         assert_eq!(logins.session(&token, T + 2), None);
-        let reloaded = Logins::new(ORIGIN.into(), &dir, None, T + 2).unwrap();
+        let reloaded = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 2).unwrap();
         assert_eq!(reloaded.session(&token, T + 3), None, "the sweep reached the file");
 
         let stranger = SecretKey::from_seed([2; 32]);
@@ -412,27 +474,28 @@ mod tests {
     fn sessions_survive_a_restart_and_a_bad_file_refuses() {
         let dir = home("persist");
         let key = SecretKey::from_seed([1; 32]);
-        let first = Logins::new(ORIGIN.into(), &dir, None, T).unwrap();
+        let first = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap();
         let challenge = first.open(T).unwrap();
         let (_, token) = first.satisfy(&proof(&challenge, &key), T + 1, None).unwrap();
         let stale = first.open(T).unwrap();
         let (_, old) = first.satisfy(&proof(&stale, &key), T + 1, None).unwrap();
         drop(first);
 
-        let second = Logins::new(ORIGIN.into(), &dir, None, T + 2).unwrap();
+        let second = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 2).unwrap();
         assert_eq!(second.session(&token, T + 3), Some(key.public()));
         second.logout(&token).unwrap();
-        let third = Logins::new(ORIGIN.into(), &dir, None, T + 4).unwrap();
+        let third = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 4).unwrap();
         assert_eq!(third.session(&token, T + 5), None);
         assert_eq!(third.session(&old, T + 5), Some(key.public()));
-        let later = Logins::new(ORIGIN.into(), &dir, None, T + SESSION_TTL + 2).unwrap();
+        let later =
+            Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + SESSION_TTL + 2).unwrap();
         assert_eq!(later.session(&old, T + SESSION_TTL + 3), None);
 
         let path = dir.join(SESSIONS);
         let good = std::fs::read(&path).unwrap();
         std::fs::write(&path, &good[..good.len() - 1]).unwrap();
         assert!(matches!(
-            Logins::new(ORIGIN.into(), &dir, None, T).unwrap_err(),
+            Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap_err(),
             Refusal::State(_)
         ));
         let extra = Value::Array(vec![Value::Map(vec![
@@ -442,16 +505,16 @@ mod tests {
             ("x".into(), Value::Uint(1)),
         ])]);
         std::fs::write(&path, extra.encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, T).is_err());
+        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
         let short = Value::Array(vec![Value::Map(vec![
             ("author".into(), Value::Bytes(vec![1; 31])),
             ("expires".into(), Value::Uint(T + 10)),
             ("token".into(), Value::Bytes(vec![1; 32])),
         ])]);
         std::fs::write(&path, short.encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, T).is_err());
+        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
         std::fs::write(&path, Value::Array(vec![]).encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, T).is_ok());
+        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -461,7 +524,8 @@ mod tests {
         let stranger = SecretKey::from_seed([2; 32]);
         let text = format!(" {}\n\n", listed.public().address());
         let allow = allowlist(&text).unwrap();
-        let logins = Logins::new(ORIGIN.into(), &home("allow"), Some(allow), T).unwrap();
+        let logins =
+            Logins::new(ORIGIN.into(), &home("allow"), Some(allow), DEFAULT_SESSIONS, T).unwrap();
         assert!(logins.allows(&listed.public()));
         assert!(!logins.allows(&stranger.public()));
         let challenge = logins.open(T).unwrap();

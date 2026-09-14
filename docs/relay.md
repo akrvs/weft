@@ -10,6 +10,14 @@ iroh QUIC connections. ALPN `weft/relay/1` for records, the iroh-blobs
 ALPN for blob transfer on the same endpoint. One request and one response
 per bidirectional stream. A connection may carry many streams in sequence.
 
+Endpoints bind to the public iroh network by default: relay servers for
+hole punching and DNS for address lookup. With `WEFT_NET=local` in the
+environment, both relay and clients bind with iroh relays disabled and
+find each other by mDNS on the local network under the service name
+`weft`, so a relay id alone reaches a relay on the same LAN with no
+internet. Any other value of `WEFT_NET` is refused. The relay list and
+every message are the same in both modes.
+
 ## Framing
 
 ```

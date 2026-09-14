@@ -94,3 +94,54 @@ fn stale_parts_are_swept_and_blobs_are_not() {
     assert_eq!(store.sweep_parts(None).unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_cache_stays_under_its_cap_and_reads_fall_through_to_disk() {
+    let dir = std::env::temp_dir().join(format!("weft-home-{}-cap", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = key(1);
+    let notes: Vec<_> = (0..8u8)
+        .map(|n| {
+            Draft {
+                author: root.public(),
+                signer: root.public(),
+                kind: "note".into(),
+                created: u64::from(n) + 1,
+                refs: vec![],
+                body: Body::Inline(vec![n; 64]),
+            }
+            .sign(&root)
+            .unwrap()
+        })
+        .collect();
+    let one = notes[0].to_bytes().len() as u64;
+    let store = Store::with_cache(dir.clone(), one * 3);
+    for note in &notes {
+        store.put(note).unwrap();
+    }
+    assert_eq!(store.snapshot().unwrap().records().count(), 8);
+    assert!(store.cached_bytes() <= one * 3, "{} cached", store.cached_bytes());
+    for note in &notes {
+        assert_eq!(store.record(note.address()).unwrap().unwrap(), *note);
+        assert!(store.cached_bytes() <= one * 3);
+    }
+    let hot = notes[0].address();
+    store.record(hot).unwrap();
+    store.record(notes[1].address()).unwrap();
+    store.record(hot).unwrap();
+    store.record(notes[2].address()).unwrap();
+    let records = dir.join("records");
+    std::fs::remove_file(records.join(format!("{hot}.weft"))).unwrap();
+    std::fs::remove_file(records.join(format!("{}.weft", notes[1].address()))).unwrap();
+    assert!(store.record(hot).unwrap().is_some(), "a refreshed record outlives an older one");
+    store.record(notes[3].address()).unwrap();
+    assert!(store.record(notes[1].address()).unwrap().is_none(), "the oldest was evicted");
+    assert!(store.record(hot).unwrap().is_some());
+    assert_eq!(store.snapshot().unwrap().records().count(), 6);
+    assert!(store.record(hot).unwrap().is_none());
+    let unlimited = Store::with_cache(dir.clone(), 0);
+    assert_eq!(unlimited.snapshot().unwrap().records().count(), 6);
+    assert_eq!(unlimited.cached_bytes(), one * 6);
+    let _ = std::fs::remove_dir_all(&dir);
+}

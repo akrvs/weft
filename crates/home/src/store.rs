@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,16 +15,82 @@ pub const BLOBS: &str = "blobs";
 pub const PART: &str = "part";
 pub const PART_TTL: Duration = Duration::from_secs(120);
 
-#[derive(Debug, Default)]
+pub const DEFAULT_CACHE: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug)]
+struct Entry {
+    record: Arc<Record>,
+    size: u64,
+    tick: u64,
+}
+
+#[derive(Debug)]
+struct Lru {
+    cap: u64,
+    total: u64,
+    tick: u64,
+    entries: HashMap<Address, Entry>,
+    order: BTreeMap<u64, Address>,
+}
+
+impl Lru {
+    fn new(cap: u64) -> Self {
+        Self { cap, total: 0, tick: 0, entries: HashMap::new(), order: BTreeMap::new() }
+    }
+
+    fn get(&mut self, address: Address) -> Option<Arc<Record>> {
+        let entry = self.entries.get_mut(&address)?;
+        self.order.remove(&entry.tick);
+        self.tick += 1;
+        entry.tick = self.tick;
+        self.order.insert(self.tick, address);
+        Some(Arc::clone(&entry.record))
+    }
+
+    fn insert(&mut self, address: Address, record: Arc<Record>, size: u64) {
+        self.remove(address);
+        self.tick += 1;
+        self.order.insert(self.tick, address);
+        self.entries.insert(address, Entry { record, size, tick: self.tick });
+        self.total += size;
+        while self.cap > 0 && self.total > self.cap {
+            let Some((_, oldest)) = self.order.pop_first() else { break };
+            if let Some(gone) = self.entries.remove(&oldest) {
+                self.total -= gone.size;
+            }
+        }
+    }
+
+    fn remove(&mut self, address: Address) {
+        if let Some(gone) = self.entries.remove(&address) {
+            self.order.remove(&gone.tick);
+            self.total -= gone.size;
+        }
+    }
+
+    fn retain(&mut self, seen: &HashSet<Address>) {
+        let gone: Vec<Address> =
+            self.entries.keys().filter(|a| !seen.contains(a)).copied().collect();
+        for address in gone {
+            self.remove(address);
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Cache {
-    records: Mutex<HashMap<Address, Arc<Record>>>,
+    records: Mutex<Lru>,
     verified: Mutex<HashMap<(Address, Option<Address>), bool>>,
 }
 
 impl Cache {
+    fn new(cap: u64) -> Self {
+        Self { records: Mutex::new(Lru::new(cap)), verified: Mutex::default() }
+    }
+
     fn record(&self, address: Address, path: &Path) -> Result<Option<Arc<Record>>> {
-        if let Some(r) = self.records.lock().map_err(|_| "cache poisoned")?.get(&address) {
-            return Ok(Some(Arc::clone(r)));
+        if let Some(r) = self.records.lock().map_err(|_| "cache poisoned")?.get(address) {
+            return Ok(Some(r));
         }
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
@@ -36,12 +102,20 @@ impl Cache {
             return Ok(None);
         }
         let record = Arc::new(record);
-        self.records.lock().map_err(|_| "cache poisoned")?.insert(address, Arc::clone(&record));
+        self.records.lock().map_err(|_| "cache poisoned")?.insert(
+            address,
+            Arc::clone(&record),
+            bytes.len() as u64,
+        );
         Ok(Some(record))
     }
 
+    fn bytes(&self) -> u64 {
+        self.records.lock().map_or(0, |l| l.total)
+    }
+
     fn retain(&self, seen: &HashSet<Address>, manifests: &HashSet<Address>) -> Result<()> {
-        self.records.lock().map_err(|_| "cache poisoned")?.retain(|a, _| seen.contains(a));
+        self.records.lock().map_err(|_| "cache poisoned")?.retain(seen);
         self.verified
             .lock()
             .map_err(|_| "cache poisoned")?
@@ -78,7 +152,15 @@ pub struct Snapshot {
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, cache: Arc::default() }
+        Self::with_cache(dir, DEFAULT_CACHE)
+    }
+
+    pub fn with_cache(dir: PathBuf, bytes: u64) -> Self {
+        Self { dir, cache: Arc::new(Cache::new(bytes)) }
+    }
+
+    pub fn cached_bytes(&self) -> u64 {
+        self.cache.bytes()
     }
 
     fn record_path(&self, address: &Address) -> PathBuf {

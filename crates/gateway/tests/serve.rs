@@ -14,7 +14,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener};
 use weft_core::{
     Address, Body, Challenge, Device, Draft, Manifest, Pointer, Proof, PublicKey, SecretKey,
 };
-use weft_gateway::{Gateway, budget};
+use weft_gateway::{Gateway, Limits, budget};
 use weft_home::Home;
 use weft_net::{Client, Pricing, Relay};
 use weft_resolve::Resolver;
@@ -96,19 +96,18 @@ fn site() -> Site {
 
 async fn start_with(site: &Site, allow: Option<HashSet<PublicKey>>) -> String {
     let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
-    serve(resolver, allow, weft_gateway::MAX_PULLS, budget::DEFAULT_BYTES).await.0
+    serve(resolver, allow, Limits::default()).await.0
 }
 
 async fn serve(
     resolver: Resolver<Local>,
     allow: Option<HashSet<PublicKey>>,
-    cap: usize,
-    budget: u64,
+    limits: Limits,
 ) -> (String, Arc<Gateway>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let gateway = Gateway::new(resolver, format!("http://{addr}"), allow).unwrap();
-    let gateway = Arc::new(gateway.pull_cap(cap).budget(budget));
+    let gateway =
+        Arc::new(Gateway::new(resolver, format!("http://{addr}"), allow, limits).unwrap());
     tokio::spawn(weft_gateway::serve(listener, Arc::clone(&gateway)));
     (addr.to_string(), gateway)
 }
@@ -574,7 +573,7 @@ async fn only_a_session_pulls_from_relays() {
     let site = site();
     let remote = remote(&site.root).await;
     let resolver = remote_reader(&site, &remote).await;
-    let addr = serve(resolver, None, weft_gateway::MAX_PULLS, budget::DEFAULT_BYTES).await.0;
+    let addr = serve(resolver, None, Limits::default()).await.0;
     let root = site.root.public().address().to_string();
     let blob_path = format!("/blob/{}", remote.blob);
     let named = format!("/{root}/remote");
@@ -621,7 +620,7 @@ async fn only_a_session_pulls_from_relays() {
 async fn a_full_pull_cap_answers_429() {
     let site = site();
     let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
-    let addr = serve(resolver, None, 0, budget::DEFAULT_BYTES).await.0;
+    let addr = serve(resolver, None, Limits { pulls: 0, ..Limits::default() }).await.0;
     let page = format!("/{}", site.page);
     assert_eq!(request(&addr, "GET", &page).await.status, 200);
     let cookie = login(&addr, &site.root).await;
@@ -639,7 +638,7 @@ async fn a_spent_budget_reads_offline_until_the_window_ends() {
     let site = site();
     let remote = remote(&site.root).await;
     let resolver = remote_reader(&site, &remote).await;
-    let (addr, gateway) = serve(resolver, None, weft_gateway::MAX_PULLS, 1).await;
+    let (addr, gateway) = serve(resolver, None, Limits { budget: 1, ..Limits::default() }).await;
     let root = site.root.public().address().to_string();
     let blob_path = format!("/blob/{}", remote.blob);
     let named = format!("/{root}/remote");
@@ -683,7 +682,8 @@ async fn a_replaced_allow_list_takes_effect_at_once() {
     let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
     let listed = site.root.public();
     let (addr, gateway) =
-        serve(resolver, Some(HashSet::from([listed])), weft_gateway::MAX_PULLS, 0).await;
+        serve(resolver, Some(HashSet::from([listed])), Limits { budget: 0, ..Limits::default() })
+            .await;
     let now = weft_home::now().unwrap();
     let stranger = key(9);
     let sign = |c: &Challenge, key: &SecretKey| Proof {

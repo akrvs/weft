@@ -1,7 +1,7 @@
 use crate::{Error, Result};
 
 const MAX_DEPTH: u8 = 8;
-const MAX_ITEMS: u64 = 4096;
+pub const MAX_ITEMS: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {

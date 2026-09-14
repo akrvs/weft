@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use weft_core::PublicKey;
 use weft_gateway::login::allowlist;
-use weft_gateway::{Gateway, budget};
+use weft_gateway::{Gateway, Limits, budget, login};
 use weft_home::Home;
 use weft_resolve::Resolver;
 use weft_store::Local;
@@ -31,6 +31,10 @@ struct Cli {
     pulls: usize,
     #[arg(long, env = "WEFT_GATEWAY_BUDGET", default_value_t = budget::DEFAULT_BYTES / MIB)]
     budget: u64,
+    #[arg(long, env = "WEFT_GATEWAY_SESSIONS", default_value_t = login::DEFAULT_SESSIONS)]
+    sessions: usize,
+    #[arg(long, env = "WEFT_GATEWAY_IDENTITIES", default_value_t = budget::DEFAULT_IDENTITIES)]
+    identities: usize,
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -79,8 +83,14 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let gateway = match Gateway::new(resolver, origin.clone(), allow) {
-        Ok(g) => Arc::new(g.pull_cap(cli.pulls).budget(cli.budget.saturating_mul(MIB))),
+    let limits = Limits {
+        pulls: cli.pulls,
+        budget: cli.budget.saturating_mul(MIB),
+        sessions: cli.sessions,
+        identities: cli.identities,
+    };
+    let gateway = match Gateway::new(resolver, origin.clone(), allow, limits) {
+        Ok(g) => Arc::new(g),
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
@@ -96,6 +106,7 @@ async fn main() -> ExitCode {
     println!("listening on http://{}", cli.bind);
     println!("login at {origin}/login");
     println!("pulls {} in flight, budget {} MiB per identity per hour", cli.pulls, cli.budget);
+    println!("at most {} sessions and {} budget windows", cli.sessions, cli.identities);
     tokio::spawn(on_hangup(Arc::clone(&gateway), cli.allow));
     match weft_gateway::serve(listener, gateway).await {
         Ok(()) => ExitCode::SUCCESS,

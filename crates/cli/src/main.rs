@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+#[macro_use]
+mod say;
 mod net;
 
 use std::path::PathBuf;
@@ -176,14 +178,14 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Whoami => whoami(home),
         Command::Device { command: DeviceCommand::Add { label, expires } } => {
             let meta = home.add_device(&label, &home::passphrase(false)?, expires)?;
-            println!("{}  {}", meta.public.address(), meta.label);
-            println!("publish a new manifest with `weft manifest`");
+            say!("{}  {}", meta.public.address(), meta.label);
+            say!("publish a new manifest with `weft manifest`");
             Ok(())
         }
         Command::Device { command: DeviceCommand::Revoke { label } } => {
             let key = home.revoke(&label)?;
-            println!("revoked {}  {label}", key.address());
-            println!("publish a new manifest with `weft manifest`");
+            say!("revoked {}  {label}", key.address());
+            say!("publish a new manifest with `weft manifest`");
             Ok(())
         }
         Command::Manifest => manifest(home, store),
@@ -199,7 +201,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Relay { command: RelayCommand::Add { id } } => home.add_relay(id),
         Command::Relay { command: RelayCommand::List } => {
             for id in home.relays()? {
-                println!("{id}");
+                say!("{id}");
             }
             Ok(())
         }
@@ -232,7 +234,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             let expires = home::now()?.saturating_add(ttl);
             let challenge = Challenge { service, nonce, expires };
             challenge.check()?;
-            println!("{}", challenge.to_text());
+            say!("{}", challenge.to_text());
             Ok(())
         }
         Command::Login { command: LoginCommand::Sign { challenge, signer } } => {
@@ -242,9 +244,9 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             let proof = Proof::from_text(&proof)?;
             let local = store.snapshot()?.manifest(proof.login.author());
             let login = proof.verify(&service, home::now()?, local.as_ref())?;
-            println!("{}", login.author.address());
-            println!("signer  {}", login.signer.address());
-            println!("expires {}", login.challenge.expires);
+            say!("{}", login.author.address());
+            say!("signer  {}", login.signer.address());
+            say!("expires {}", login.challenge.expires);
             Ok(())
         }
     }
@@ -259,7 +261,7 @@ fn login_sign(home: &Home, store: &Store, challenge: &str, signer: &str) -> Resu
     let manifest = snap.manifest_record(&root);
     verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())?;
     let proof = Proof { login: record, manifest: manifest.cloned() };
-    println!("{}", proof.to_text());
+    say!("{}", proof.to_text());
     Ok(())
 }
 
@@ -317,7 +319,7 @@ fn pay(
     let record = draft_own(home, store, signer, |root, signer, created| {
         receipt.draft(root, signer, created)
     })?;
-    println!("receipt {}  {} cents until {until}", record.address(), receipt.voucher.cents);
+    say!("receipt {}  {} cents until {until}", record.address(), receipt.voucher.cents);
     Ok(net::Paid { relay, receipt: record })
 }
 
@@ -332,7 +334,7 @@ fn receipts(home: &Home, store: &Store) -> Result<()> {
         .collect();
     receipts.sort_by_key(|(r, _)| r.created());
     for (record, receipt) in receipts {
-        println!(
+        say!(
             "{}  {}  {} cents  {} records  until {}",
             record.address(),
             relay_id(&receipt.relay)?,
@@ -366,7 +368,7 @@ fn grant_add(
     grant.check()?;
     let record =
         sign_own(home, store, signer, |root, signer, created| grant.draft(root, signer, created))?;
-    println!("{}", record.address());
+    say!("{}", record.address());
     Ok(())
 }
 
@@ -376,7 +378,7 @@ fn grant_list(home: &Home, store: &Store) -> Result<()> {
     let manifest = snap.manifest(&root);
     for (record, grant) in snap.grants(&root, manifest.as_ref(), home::now()?) {
         let expiry = grant.expires.map_or(String::new(), |e| format!("  expires {e}"));
-        println!(
+        say!(
             "{}  app {}  {}  {}{expiry}",
             record.address(),
             grant.app.address(),
@@ -391,25 +393,25 @@ fn grant_revoke(home: &Home, store: &Store, grant: Address, signer: &str) -> Res
     let revoke = Revoke { grant };
     let record =
         sign_own(home, store, signer, |root, signer, created| revoke.draft(root, signer, created))?;
-    println!("{}", record.address());
+    say!("{}", record.address());
     Ok(())
 }
 
 fn init(home: &Home) -> Result<()> {
     let meta = home.init(&home::passphrase(true)?)?;
-    println!("{}", meta.public.address());
-    println!("home {}", home.path().display());
+    say!("{}", meta.public.address());
+    say!("home {}", home.path().display());
     Ok(())
 }
 
 fn whoami(home: &Home) -> Result<()> {
-    println!("{}  root", home.root()?.address());
+    say!("{}  root", home.root()?.address());
     for d in home.devices()? {
         let expiry = d.expires.map_or(String::new(), |e| format!("  expires {e}"));
-        println!("{}  {}  created {}{expiry}", d.public.address(), d.label, d.created);
+        say!("{}  {}  created {}{expiry}", d.public.address(), d.label, d.created);
     }
     for r in home.revoked()? {
-        println!("{}  revoked", r.address());
+        say!("{}  revoked", r.address());
     }
     Ok(())
 }
@@ -438,8 +440,8 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
     };
     let pointer_record = pointer.draft(&root, &root, created).sign(&key)?;
     let pointer_path = store.put(&pointer_record)?;
-    println!("manifest seq {}  {}", next.seq, path.display());
-    println!("pointer  seq {seq}  {}", pointer_path.display());
+    say!("manifest seq {}  {}", next.seq, path.display());
+    say!("pointer  seq {seq}  {}", pointer_path.display());
     Ok(())
 }
 
@@ -469,7 +471,7 @@ fn sign(
         body,
     };
     let record = draft.sign(&key)?;
-    println!("{}", store.put(&record)?.display());
+    say!("{}", store.put(&record)?.display());
     Ok(())
 }
 
@@ -484,7 +486,7 @@ fn point(home: &Home, store: &Store, name: String, target: Address, signer: &str
     let pointer = Pointer { name, target, seq, prev };
     let record = pointer.draft(&root, &key.public(), home::now()?).sign(&key)?;
     verify(&record, manifest.as_ref())?;
-    println!("{}", store.put(&record)?.display());
+    say!("{}", store.put(&record)?.display());
     Ok(())
 }
 
@@ -500,74 +502,74 @@ fn verify_file(
         None => store.snapshot()?.manifest(record.author()),
     };
     let v = verify(&record, manifest.as_ref())?;
-    println!("ok      {}", v.address);
-    println!("kind    {}", v.kind);
-    println!("author  {}", v.author);
-    println!("signer  {}", v.signer);
+    say!("ok      {}", v.address);
+    say!("kind    {}", v.kind);
+    say!("author  {}", v.author);
+    say!("signer  {}", v.signer);
     Ok(())
 }
 
 fn inspect(record: &Record) -> Result<()> {
-    println!("address {}", record.address());
-    println!("kind    {}", record.kind());
-    println!("author  {}", record.author().address());
-    println!("signer  {}", record.signer().address());
-    println!("created {}", record.created());
+    say!("address {}", record.address());
+    say!("kind    {}", record.kind());
+    say!("author  {}", record.author().address());
+    say!("signer  {}", record.signer().address());
+    say!("created {}", record.created());
     for r in record.refs() {
-        println!("ref     {r}");
+        say!("ref     {r}");
     }
     match record.body() {
-        Body::Inline(b) => println!("body    {} bytes inline", b.len()),
-        Body::Blob(a) => println!("blob    {a}"),
+        Body::Inline(b) => say!("body    {} bytes inline", b.len()),
+        Body::Blob(a) => say!("blob    {a}"),
     }
     match record.kind() {
         weft_core::manifest::KIND => {
             let m = Manifest::from_record(record)?;
-            println!("seq     {}", m.seq);
+            say!("seq     {}", m.seq);
             for d in &m.devices {
-                println!("device  {}  {}", d.key.address(), d.label);
+                say!("device  {}  {}", d.key.address(), d.label);
             }
             for k in &m.revoked {
-                println!("revoked {}", k.address());
+                say!("revoked {}", k.address());
             }
         }
         weft_core::pointer::KIND => {
             let p = Pointer::from_record(record)?;
-            println!("name    {}", p.name);
-            println!("seq     {}", p.seq);
-            println!("target  {}", p.target);
+            say!("name    {}", p.name);
+            say!("seq     {}", p.seq);
+            say!("target  {}", p.target);
         }
         weft_core::grant::KIND => {
             let g = Grant::from_record(record)?;
-            println!("app     {}", g.app.address());
-            println!("access  {}", g.access);
-            println!("kinds   {}", g.kinds.join(","));
+            say!("app     {}", g.app.address());
+            say!("access  {}", g.access);
+            say!("kinds   {}", g.kinds.join(","));
             if let Some(e) = g.expires {
-                println!("expires {e}");
+                say!("expires {e}");
             }
         }
         weft_core::grant::REVOKE => {
-            println!("grant   {}", Revoke::from_record(record)?.grant);
+            say!("grant   {}", Revoke::from_record(record)?.grant);
         }
         weft_core::receipt::KIND => {
             let r = Receipt::from_record(record)?;
-            println!("relay   {}", relay_id(&r.relay)?);
-            println!("until   {}", r.until);
-            println!("cents   {}", r.voucher.cents);
-            println!("bank    {}", r.voucher.bank.address());
-            println!("voucher {}", r.voucher.id());
+            say!("relay   {}", relay_id(&r.relay)?);
+            say!("until   {}", r.until);
+            say!("cents   {}", r.voucher.cents);
+            say!("bank    {}", r.voucher.bank.address());
+            say!("voucher {}", r.voucher.id());
             for a in &r.records {
-                println!("pins    {a}");
+                say!("pins    {a}");
             }
         }
         weft_core::login::KIND => {
             let c = Challenge::from_record(record)?;
-            println!("service {}", c.service);
-            println!("expires {}", c.expires);
+            say!("service {}", c.service);
+            say!("expires {}", c.expires);
         }
         _ => {}
     }
-    println!("sig     {}", record.check_signature().map_or("invalid", |()| "valid"));
+    say!("sig     {}", record.check_signature().map_or("invalid", |()| "valid"));
     Ok(())
 }
 
@@ -578,7 +580,7 @@ async fn dns(domain: &str) -> Result<()> {
     let doh = std::env::var(weft_resolve::resolver::DOH_ENV).ok();
     let dns = weft_resolve::Dns::new(doh.as_deref()).map_err(|e| e.to_string())?;
     let binding = dns.lookup(&host).await.map_err(|e| e.to_string())?;
-    println!(
+    say!(
         "{}  dnssec {}",
         binding.author.address(),
         if binding.authentic { "verified" } else { "unverified" }
@@ -595,13 +597,8 @@ fn resolve(store: &Store, author: Address, name: &str) -> Result<()> {
         return fail(format!("no valid pointer named {name} by {}", author.address()));
     };
     let present = snap.find(pointer.target).is_some();
-    println!("{}", pointer.target);
-    println!(
-        "seq {}  signer {}  pointer {}",
-        pointer.seq,
-        record.signer().address(),
-        record.address()
-    );
-    println!("target {}", if present { "present" } else { "absent" });
+    say!("{}", pointer.target);
+    say!("seq {}  signer {}  pointer {}", pointer.seq, record.signer().address(), record.address());
+    say!("target {}", if present { "present" } else { "absent" });
     Ok(())
 }

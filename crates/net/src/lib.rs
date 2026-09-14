@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod endpoint;
 pub mod error;
 pub mod index;
 pub mod relay;
 pub mod wire;
 
 pub use client::{Client, Head, PutOutcome};
+pub use endpoint::Net;
 pub use error::Error;
 pub use iroh::EndpointId;
 pub use relay::{Config, Pricing, Relay};

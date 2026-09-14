@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_blobs::store::mem::MemStore;
@@ -9,7 +8,7 @@ use weft_core::{Address, PublicKey, Record};
 
 use crate::error::net;
 use crate::wire::{self, Request, Response};
-use crate::{Error, Result};
+use crate::{Error, Net, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PutOutcome {
@@ -31,8 +30,7 @@ pub struct Client {
 
 impl Client {
     pub async fn bind() -> Result<Self> {
-        let endpoint = Endpoint::bind(presets::N0).await.map_err(net)?;
-        Ok(Self::from_endpoint(endpoint))
+        Ok(Self::from_endpoint(Net::from_env()?.bind(None).await?))
     }
 
     pub fn from_endpoint(endpoint: Endpoint) -> Self {

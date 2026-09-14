@@ -148,6 +148,7 @@ const revokeForm = el<HTMLFormElement>("revoke");
 const startForm = el<HTMLFormElement>("start");
 const startDevice = el<HTMLSelectElement>("start-device");
 const startPass = el<HTMLInputElement>("start-pass");
+const startDetach = el<HTMLInputElement>("start-detach");
 const storeResult = el("store-result");
 const storeLog = el("store-log");
 const storeLogTitle = el("store-log-title");
@@ -231,6 +232,7 @@ startForm.addEventListener("submit", async (event) => {
     storeResult.textContent = await invoke<string>("start_store", {
       device: startDevice.value,
       passphrase: startPass.value,
+      detach: startDetach.checked,
     });
     startPass.value = "";
     await showStore();

@@ -9,11 +9,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use iroh::endpoint::presets;
-use iroh::{Endpoint, SecretKey};
+use iroh::SecretKey;
 use tokio::signal::unix::{SignalKind, signal};
 use weft_core::{Address, PublicKey};
-use weft_net::{Pricing, Relay};
+use weft_net::{Net, Pricing, Relay};
 
 #[derive(Parser, Debug)]
 #[command(name = "weft-relay", version, about = "A cache with a contract")]
@@ -203,8 +202,8 @@ async fn serve(dir: &Path) -> Result<()> {
     let key = secret(dir)?;
     let allow = keys(dir, "allow")?;
     let pricing = pricing(dir)?;
-    let endpoint =
-        Endpoint::builder(presets::N0).secret_key(key).bind().await.map_err(|e| e.to_string())?;
+    let net = Net::from_env().map_err(|e| e.to_string())?;
+    let endpoint = net.bind(Some(key)).await.map_err(|e| e.to_string())?;
     let every = Duration::from_secs(60);
     let relay = Relay::open(endpoint, &dir.join("data"), allow, pricing, every)
         .await
@@ -212,7 +211,7 @@ async fn serve(dir: &Path) -> Result<()> {
     println!("{}", relay.id());
     let sweeper = relay.sweeper(every);
     let router = relay.clone().spawn();
-    router.endpoint().online().await;
+    net.online(router.endpoint()).await;
     println!("online");
     let mut hangup = signal(SignalKind::hangup()).map_err(|e| e.to_string())?;
     loop {

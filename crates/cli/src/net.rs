@@ -29,9 +29,9 @@ pub async fn price(home: &Home) -> Result<()> {
     let client = client().await?;
     for relay in relays {
         let (rate, banks) = client.price(relay).await.map_err(|e| e.to_string())?;
-        println!("{relay}  {rate} cents per KiB per day");
+        say!("{relay}  {rate} cents per KiB per day");
         for bank in banks {
-            println!("  bank {}", bank.address());
+            say!("  bank {}", bank.address());
         }
     }
     client.close().await;
@@ -90,15 +90,11 @@ pub async fn push(
     for relay in relays {
         for batch in records.chunks(weft_net::wire::MAX_BATCH) {
             let outcome = client.put(relay, batch).await.map_err(|e| e.to_string())?;
-            println!(
-                "{relay}  stored {}  rejected {}",
-                outcome.stored.len(),
-                outcome.rejected.len()
-            );
+            say!("{relay}  stored {}  rejected {}", outcome.stored.len(), outcome.rejected.len());
             for (i, why) in outcome.rejected {
                 let address =
                     usize::try_from(i).ok().and_then(|i| batch.get(i)).map(Record::address);
-                println!("  {}  {why}", address.map_or(String::new(), |a| a.to_string()));
+                say!("  {}  {why}", address.map_or(String::new(), |a| a.to_string()));
             }
             stored.extend(outcome.stored);
         }
@@ -145,18 +141,18 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
     };
     let verified = verify(&record, manifest.as_ref())?;
     let path = store.put(&record)?;
-    println!("{}", path.display());
-    println!("kind {}  author {}  signer {}", verified.kind, verified.author, verified.signer);
+    say!("{}", path.display());
+    say!("kind {}  author {}  signer {}", verified.kind, verified.author, verified.signer);
     if let Body::Blob(blob) = record.body() {
         let target = out.map_or_else(|| home.blob_path(blob), Path::to_path_buf);
         if let Some(parent) = target.parent() {
             fs::ensure_dir(parent)?;
         }
         let size = client.fetch_blob(relay, blob, &target).await.map_err(|e| e.to_string())?;
-        println!("blob {}  {size} bytes", target.display());
+        say!("blob {}  {size} bytes", target.display());
     } else if let (Some(out), Body::Inline(data)) = (out, record.body()) {
         fs::write(out, data)?;
-        println!("body {}", out.display());
+        say!("body {}", out.display());
     }
     client.close().await;
     Ok(())
@@ -197,12 +193,7 @@ pub async fn resolve(home: &Home, store: &Store, author: Address, name: &str) ->
         return fail(format!("no valid pointer named {name} on any relay"));
     };
     store.put(&record)?;
-    println!("{}", pointer.target);
-    println!(
-        "seq {}  signer {}  pointer {}",
-        pointer.seq,
-        record.signer().address(),
-        record.address()
-    );
+    say!("{}", pointer.target);
+    say!("seq {}  signer {}  pointer {}", pointer.seq, record.signer().address(), record.address());
     Ok(())
 }

@@ -10,6 +10,7 @@ publish.workspace = true
 weft-core = { path = "../core" }
 iroh.workspace = true
 iroh-blobs.workspace = true
+iroh-mdns-address-lookup.workspace = true
 redb.workspace = true
 tokio.workspace = true
 

@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -244,7 +245,12 @@ fn daemon_log(app: State<'_, App>) -> String {
 }
 
 #[tauri::command]
-async fn start_store(app: State<'_, App>, device: String, passphrase: String) -> Result<String> {
+async fn start_store(
+    app: State<'_, App>,
+    device: String,
+    passphrase: String,
+    detach: bool,
+) -> Result<String> {
     let passphrase = Zeroizing::new(passphrase);
     if passphrase.is_empty() || passphrase.contains(['\r', '\n']) {
         return Err("passphrase must be one non-empty line".to_owned());
@@ -259,11 +265,14 @@ async fn start_store(app: State<'_, App>, device: String, passphrase: String) ->
         }
     }
     let home = app.resolver.home().path();
-    let mut child = Command::new(store_binary())
-        .arg("serve")
-        .arg("--device")
-        .arg(&device)
-        .arg("--attach")
+    let mut command = Command::new(store_binary());
+    command.arg("serve").arg("--device").arg(&device);
+    if detach {
+        command.process_group(0);
+    } else {
+        command.arg("--attach");
+    }
+    let mut child = command
         .env("WEFT_HOME", home)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
@@ -279,6 +288,9 @@ async fn start_store(app: State<'_, App>, device: String, passphrase: String) ->
         line.push(b'\n');
         std::io::Write::write_all(stdin, &line).map_err(|e| err(&e))?;
         std::io::Write::flush(stdin).map_err(|e| err(&e))?;
+    }
+    if detach {
+        drop(child.stdin.take());
     }
     let socket = socket_path(home);
     let deadline = std::time::Instant::now() + START_TIMEOUT;
@@ -300,7 +312,11 @@ async fn start_store(app: State<'_, App>, device: String, passphrase: String) ->
         tokio::time::sleep(START_POLL).await;
     }
     *app.daemon.lock().map_err(|e| err(&e))? = Some(child);
-    Ok(format!("store started with device {device}; it stops when the browser closes"))
+    Ok(if detach {
+        format!("store started with device {device}; it keeps running after the browser closes")
+    } else {
+        format!("store started with device {device}; it stops when the browser closes")
+    })
 }
 
 fn frame(chrome: &Webview) -> Result<()> {

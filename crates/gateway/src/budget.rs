@@ -5,11 +5,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use weft_core::PublicKey;
 use weft_core::cbor::{self, Value};
 
-use crate::login::Refusal;
+use crate::login::{Refusal, checked_cap};
 
 pub const DEFAULT_BYTES: u64 = 64 * 1024 * 1024;
 pub const WINDOW: u64 = 3600;
-pub const MAX_ENTRIES: usize = 1024;
+pub const DEFAULT_IDENTITIES: usize = 4096;
 pub const FILE: &str = "gateway/budget";
 
 #[derive(Debug, Clone, Copy)]
@@ -24,6 +24,7 @@ type Table = BTreeMap<[u8; 32], Spend>;
 pub struct Budget {
     bytes: u64,
     window: u64,
+    cap: usize,
     path: PathBuf,
     spent: Mutex<Table>,
 }
@@ -40,9 +41,6 @@ fn parse(path: &Path, now: u64, window: u64) -> Result<Table, Refusal> {
     };
     let value = cbor::decode(&bytes).map_err(state)?;
     let items = value.as_array().ok_or_else(|| state("not an array"))?;
-    if items.len() > MAX_ENTRIES {
-        return Err(state("too many identities"));
-    }
     let mut table = Table::new();
     for item in items {
         let map = item.as_map().ok_or_else(|| state("spend is not a map"))?;
@@ -70,6 +68,16 @@ fn parse(path: &Path, now: u64, window: u64) -> Result<Table, Refusal> {
     Ok(table)
 }
 
+fn trim(table: &mut Table, cap: usize) {
+    while table.len() > cap {
+        let oldest = table.iter().min_by_key(|(_, s)| s.since).map(|(k, _)| *k);
+        match oldest {
+            Some(k) => table.remove(&k),
+            None => break,
+        };
+    }
+}
+
 fn save(path: &Path, table: &Table) -> Result<(), Refusal> {
     let items = table
         .iter()
@@ -85,10 +93,18 @@ fn save(path: &Path, table: &Table) -> Result<(), Refusal> {
 }
 
 impl Budget {
-    pub fn open(path: PathBuf, bytes: u64, window: u64, now: u64) -> Result<Self, Refusal> {
-        let spent =
+    pub fn open(
+        path: PathBuf,
+        bytes: u64,
+        window: u64,
+        cap: usize,
+        now: u64,
+    ) -> Result<Self, Refusal> {
+        let cap = checked_cap(cap)?;
+        let mut spent =
             parse(&path, now, window).map_err(|e| state(format!("{}: {e}", path.display())))?;
-        Ok(Self { bytes, window, path, spent: Mutex::new(spent) })
+        trim(&mut spent, cap);
+        Ok(Self { bytes, window, cap, path, spent: Mutex::new(spent) })
     }
 
     pub fn bytes(&self) -> u64 {
@@ -120,11 +136,8 @@ impl Budget {
         let mut table = self.lock();
         let window = self.window;
         table.retain(|_, s| now < s.since.saturating_add(window));
-        if !table.contains_key(author.bytes()) && table.len() >= MAX_ENTRIES {
-            let oldest = table.iter().min_by_key(|(_, s)| s.since).map(|(k, _)| *k);
-            if let Some(k) = oldest {
-                table.remove(&k);
-            }
+        if !table.contains_key(author.bytes()) {
+            trim(&mut table, self.cap.saturating_sub(1));
         }
         let spend = table.entry(*author.bytes()).or_insert(Spend { since: now, bytes: 0 });
         spend.bytes = spend.bytes.saturating_add(bytes);
@@ -149,7 +162,7 @@ mod tests {
     }
 
     fn open(path: &Path, bytes: u64, now: u64) -> Budget {
-        Budget::open(path.to_path_buf(), bytes, 60, now).unwrap()
+        Budget::open(path.to_path_buf(), bytes, 60, 3, now).unwrap()
     }
 
     #[test]
@@ -207,7 +220,10 @@ mod tests {
         budget.charge(who(1), 0, 1).unwrap();
         let good = std::fs::read(&path).unwrap();
         std::fs::write(&path, &good[..good.len() - 1]).unwrap();
-        assert!(matches!(Budget::open(path.clone(), 100, 60, 0).unwrap_err(), Refusal::State(_)));
+        assert!(matches!(
+            Budget::open(path.clone(), 100, 60, 3, 0).unwrap_err(),
+            Refusal::State(_)
+        ));
         let extra = Value::Array(vec![Value::Map(vec![
             ("author".into(), Value::Bytes(who(1).bytes().to_vec())),
             ("bytes".into(), Value::Uint(1)),
@@ -215,16 +231,23 @@ mod tests {
             ("since".into(), Value::Uint(0)),
         ])]);
         std::fs::write(&path, extra.encode()).unwrap();
-        assert!(matches!(Budget::open(path.clone(), 100, 60, 0).unwrap_err(), Refusal::State(_)));
+        assert!(matches!(
+            Budget::open(path.clone(), 100, 60, 3, 0).unwrap_err(),
+            Refusal::State(_)
+        ));
         std::fs::write(&path, good).unwrap();
         let budget = open(&path, 100, 0);
-        for n in 0..MAX_ENTRIES {
+        for n in 0..3 {
             let mut seed = [0u8; 32];
             seed[..8].copy_from_slice(&u64::try_from(n).unwrap().saturating_add(100).to_be_bytes());
             budget.charge(SecretKey::from_seed(seed).public(), 1, 1).unwrap();
         }
-        assert_eq!(budget.lock().len(), MAX_ENTRIES);
+        assert_eq!(budget.lock().len(), 3);
         assert!(!budget.lock().contains_key(who(1).bytes()), "the oldest window made room");
+        drop(budget);
+        let lowered = Budget::open(path.clone(), 100, 60, 1, 2).unwrap();
+        assert_eq!(lowered.lock().len(), 1, "a lower cap keeps the newest window");
+        assert!(matches!(Budget::open(path.clone(), 100, 60, 4097, 2), Err(Refusal::Cap(4097))));
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 }

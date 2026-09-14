@@ -6,8 +6,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening, M11 gateway behind the gate, M12 reads that fetch, M13 fetch hardening, M14 gateway and relay operations, M15 relay hygiene, M16 loose ends |
-| Next | roadmap complete; M17 is open, pull it from `BACKLOG.md` |
+| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening, M11 gateway behind the gate, M12 reads that fetch, M13 fetch hardening, M14 gateway and relay operations, M15 relay hygiene, M16 loose ends, M17 operational loose ends |
+| Next | roadmap complete; M18 is open, pull it from `BACKLOG.md` |
 | Repo | private, github.com/akrvs/weft, CI on push to main, license deferred |
 
 ## Crates
@@ -15,93 +15,93 @@ Read first, rewritten at every close, never appended, under 120 lines.
 | Crate | Path | One line |
 |---|---|---|
 | weft-core | crates/core | Address, canonical CBOR, identity, record, manifest, pointer, grant, revoke, receipt, voucher, login challenge and proof, one `verify` |
-| weft-home | crates/home | Encrypted keystore, record store with a shared cache that mirrors the directory, the one blob writer, part sweep, `Snapshot`, `Reads` trait, relay list, home directory layout |
-| weft-net | crates/net | Relay wire protocol, client, relay handler with `Config` behind a lock, `reload`, pricing, pins, one rule sweep over the `authors` table, blob GC through the store's protect callback over the `blobs` table, redb index, `EndpointId` re-export |
+| weft-home | crates/home | Encrypted keystore, record store with a shared LRU cache under a byte cap that mirrors the directory, the one blob writer, part sweep, `Snapshot`, `Reads` trait, relay list, home directory layout |
+| weft-net | crates/net | `Net` from `WEFT_NET`, relay wire protocol, client, relay handler with `Config` behind a lock, `reload`, pricing, pins, one rule sweep over the `authors` table, blob GC through the store's protect callback over the `blobs` table, redb index, `EndpointId` re-export |
 | weft-resolve | crates/resolve | Target grammar, DNS registry over DoH with a positive and negative TTL cache, `Resolver<R: Reads>` for records, heads, blobs, pulling from relays on a miss unless `offline`, `metered` counts pulled bytes, Markdown renderer |
-| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, pooled `Local` reads, browser key per run, `weft-store` and `weft-app` binaries |
-| weft-relay | crates/relay | Relay binary: init, allow, deny, rate, bank, price, serve; SIGHUP rereads allow, banks, rate and sweeps |
+| weft-store | crates/store | Store gate over a Unix socket: wire, `Gate`, server, client, pooled `Local` reads, browser key per run, `weft-store` with `--attach` and `--cache`, `weft-app` |
+| weft-relay | crates/relay | Relay binary: init, allow, deny, rate, bank, price, serve through `Net`; SIGHUP rereads allow, banks, rate and sweeps |
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers |
-| weft-gateway | crates/gateway | HTTP gateway binary over hyper and `Resolver<Local>`: any target the address bar takes, provenance headers, `/login` sessions on disk, allow list, pulls for sessions only under a cap and a per identity byte budget kept on disk; SIGHUP rereads the allow list and sweeps sessions |
-| weft | crates/cli | Commands over home, net, and resolve: grants, price, paid push that keeps the receipt only after accept, receipts, login |
-| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: every record and blob over the socket, store view with daemon log, start form from a failed navigation, login consent |
+| weft-gateway | crates/gateway | HTTP gateway binary over hyper and `Resolver<Local>`: any target the address bar takes, provenance headers, `/login` sessions on disk, allow list, pulls for sessions only under `Limits`: pulls, budget, sessions, identities; SIGHUP rereads the allow list and sweeps sessions |
+| weft | crates/cli | Commands over home, net, and resolve: grants, price, paid push that keeps the receipt only after accept, receipts, login; prints through `say!`, quiet on a closed pipe |
+| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: every record and blob over the socket, store view with daemon log, start form from a failed navigation with an attached or detached daemon, login consent |
 
 ## Frozen decisions
 
 - Ed25519 strict, blake3, RFC 8949 deterministic CBOR subset, no unknown fields. Manifests and the
-  pointer named `manifest` are root signed only, device keys sign the rest, revocation is
-  retroactive. Pointers carry a Lamport `seq` per author and name and cite prior heads; head order
-  is highest `seq`, then `created`, then lowest address.
+  pointer named `manifest` are root signed only, device keys sign the rest, revocation retroactive.
+  Pointers carry a Lamport `seq` per author and name and cite prior heads; head order is highest
+  `seq`, then `created`, then lowest address.
+- Endpoints bind through one `Net`: `WEFT_NET` unset is `presets::N0`, `local` is
+  `presets::Minimal`, no iroh relay, mDNS lookup as `weft`; anything else is an error.
 - Relay is a cache with a contract: allowlisted authors push, payers pin, anyone reads, the relay
   never signs. Blobs are pulled after acceptance. `allow`, `banks`, `rate` are one `Config` read at
   start and on SIGHUP; a batch keeps the config it started with; a bad file keeps the old one. The
   sweep, every 60 s and after a reload, keeps a record only if its author is allowlisted, it holds a
-  live pin, or it is the manifest of an author with one; stale heads and manifest entries go with
-  it. The `iroh-blobs` GC collects blobs the `blobs` table does not name on the same interval.
-  `authors` and `blobs` are derived from `records`, rebuilt once at open when missing; the sweep and
-  the protect set decode no record. Pages are CommonMark without raw HTML, rendered in Rust to a
-  fixed element set. Links `weft:` or `https:` only, images `weft:` only, rendered by the browser as
-  `weft://blob/<address>`. Tauri 2, vanilla TypeScript, strict CSP.
+  live pin, or it is the manifest of an author with one; stale heads and manifest entries go too.
+  The `iroh-blobs` GC collects blobs the `blobs` table does not name on the same interval. `authors`
+  and `blobs` derive from `records`, rebuilt once at open when missing; sweep and protect set decode
+  no record. Pages are CommonMark without raw HTML, rendered in Rust to a fixed element set; links
+  `weft:` or `https:`, images `weft:` only, shown as `weft://blob/<address>`. Tauri 2, strict CSP.
 - Address bar grammar lives in `Target`: raw address, `author/name`, `domain`, `domain/name`; a bare
-  domain opens `home`; domains are lowercase ASCII labels with a dot. DNS registry: `_weft.<domain>`
-  TXT `weft=<key address>`, exactly one, over DoH to Cloudflare unless `WEFT_DOH=ip,name`. DNSSEC
-  reported only. Cache per process, 1024 hosts, TTL clamped 60 s to 3600 s: a binding for the lowest
+  domain opens `home`; domains are lowercase ASCII labels with a dot. DNS: `_weft.<domain>` TXT
+  `weft=<key address>`, exactly one, over DoH to Cloudflare unless `WEFT_DOH=ip,name`, DNSSEC
+  reported only. Cache per process, 1024 hosts, TTL clamped 60 s to 3600 s, a binding for the lowest
   TXT TTL, a miss for the SOA negative TTL. NXDomain, an empty answer, two records, and a malformed
   value are misses; other codes and transport failures are errors, never cached.
-- Gateway: plain HTTP on an explicit bind, default loopback, GET and HEAD only except POST `/login`
-  and `/logout`, no script, TLS is a reverse proxy's job. Reads go over the store socket through
-  `Local`; a stopped daemon answers 503, never the directory. Anonymous requests use
-  `Resolver::offline` and answer 404 `...; log in to fetch from relays`. A session pulls under a
-  `Semaphore` of `--pulls` (4), past it 429, and a `Budget` of `--budget` MiB (64, 0 unlimited) per
-  root per fixed hour, counted from relay bytes after the route; over budget it reads offline and a
-  miss says `; pull budget spent, resets at <time>`. Budget windows live in `<home>/gateway/budget`,
-  rewritten after every charge, at most 1024 identities, oldest evicted; sessions in
-  `<home>/gateway/sessions`, rewritten on every login and logout, at most 1024. Both canonical CBOR,
-  mode 0600, loaded at start, a bad file refuses to start. `--allow <path>`: one root address per
-  line, read at start and on SIGHUP, which also sweeps expired sessions to disk.
-- Grants: `grant` body `app`, sorted `kinds` of 1 to 16, `access` 1 read 2 write 3 both, optional
-  `expires`; `revoke` cites the grant in body and `refs`. Device signed allowed. Reserved kinds
-  never grantable. Active means valid, unexpired, not revoked, checked at every request.
+- Gateway: plain HTTP on an explicit bind, default loopback, GET and HEAD plus POST `/login` and
+  `/logout`, no script, TLS is a reverse proxy's job. Reads go over the store socket through
+  `Local`; a stopped daemon answers 503, never the directory. Anonymous requests read `offline`, a
+  miss is 404 `...; log in to fetch from relays`. A session pulls under `--pulls` (4), past it 429, a
+  `--budget` MiB (64, 0 unlimited) per root per fixed hour of relay bytes; over it reads go offline
+  and a miss says `; pull budget spent, resets at <time>`. `<home>/gateway/budget` holds at most
+  `--identities` windows, oldest evicted; `<home>/gateway/sessions` at most `--sessions`, soonest
+  expiry evicted; both default 4096, never above `cbor::MAX_ITEMS`, canonical CBOR mode 0600,
+  rewritten on every change, over the cap the newest load, a bad file refuses to start. Pending
+  challenges cap at 1024 and refuse. `--allow`: one root address per line, reread on SIGHUP with a
+  session sweep.
+- Grants: body `app`, sorted `kinds` 1 to 16, `access` 1 read 2 write 3 both, optional `expires`;
+  `revoke` cites the grant in body and `refs`. Device signed allowed; reserved kinds never
+  grantable. Active means valid, unexpired, not revoked, checked at every request.
 - The store is a daemon on `<home>/store.sock` mode 0600, relay framing, nonce handshake under
   `weft/store/1`, idle connections closed at 60 s. Writes are signed by the daemon's device key and
   verified against the manifest. Grant reads cover the root only. The browser and the gateway are
   its privileged clients through `<home>/browser.key`, 32 seed bytes mode 0600, written fresh by
-  every `serve` once it holds the socket; `Local` reads it at connect and pools 4 idle connections.
-  That key skips grants and alone may use the browser only requests in `docs/store.md`. Neither
-  client signs or opens `records/` or `blobs/`; the browser pushes to relays itself. `serve
-  --attach` reads the passphrase from stdin, exits on EOF; the browser shows a 16 KiB ring.
+  every `serve`; `Local` reads it at connect and pools 4 idle connections. That key skips grants and
+  alone may use the browser only requests in `docs/store.md`. Neither client signs or opens
+  `records/` or `blobs/`; the browser pushes to relays itself. `serve` reads the passphrase from a
+  non terminal stdin; `--attach` also exits on EOF. The browser starts it attached over a held pipe
+  or detached in its own process group. `--cache <MiB>` (256, 0 unlimited) bounds the record cache.
 - Blobs cross the socket by `offset` in chunks of at most 512 KiB, total at most 1 GiB, hashed whole
   by the resolver, which reads only through `weft_home::Reads` and verifies every candidate.
-  `Store`'s cache is memory only and pruned to the directory on every snapshot. `Resolver::relays`
-  is the one place the relay list is read and the client bound; `offline()` turns it off. Reads pull
-  on a miss: records and heads from each relay in turn under 5 s, blobs under `PART_TTL` 120 s, then
-  `keep` or `keep-blob` to the daemon, which never talks to a relay. `keep-blob` appends to
-  `<home>/blobs/<address>.part`: offset 0 starts over, any other offset must equal the part length,
-  at `total` the daemon hashes and adopts or removes it. `serve` removes every part before it binds,
-  snapshots remove parts idle past `PART_TTL`, `Store::keep_blob` alone writes `blobs/`.
-- Payments: voucher `bank`, `to`, `cents`, `nonce`, `sig` under `weft/voucher/1`, 256 bytes max,
-  spent once. `receipt` reserved: `relay`, sorted `records` 1 to 64 also in `refs`, `until`,
-  `voucher`. Pays only for its author. `ceil(bytes/1024) * days * rate`, 366 days max.
-- Login: record of kind `login`, body the challenge (`service` origin, `nonce` bytes(32), `expires`
-  after `created`), `refs` empty, never stored or relayed, grantable. Proof is `login` plus an
-  optional `manifest`, at most 64 KiB, base64url in `weft:login?c=`. Highest `seq` manifest wins.
+  `Resolver::relays` alone reads the relay list and binds the client; `offline()` turns it off.
+  Reads pull on a miss, each relay in turn under 5 s, blobs under `PART_TTL` 120 s, then `keep` or
+  `keep-blob` to the daemon, which never talks to a relay and alone writes `blobs/`; parts in
+  `blobs/<address>.part` per `docs/store.md`, swept at bind and past `PART_TTL`.
+- Payments: voucher `bank`, `to`, `cents`, `nonce`, `sig` under `weft/voucher/1`, 256 bytes, spent
+  once. `receipt`: `relay`, sorted `records` 1 to 64 also in `refs`, `until`, `voucher`; pays only
+  for its author; `ceil(bytes/1024) * days * rate`, 366 days max.
+- Login: kind `login`, body the challenge (`service`, `nonce` bytes(32), `expires` after `created`),
+  `refs` empty, never stored or relayed, grantable. Proof is `login` plus an optional `manifest`,
+  at most 64 KiB, base64url in `weft:login?c=`. Highest `seq` manifest wins.
 
 ## Gotchas that cost time
 
 - Tauri ignores child web view positions on Linux; see `frame` and `pack`. WebKit routes only
-  `weft://blob/<address>` to the scheme handler.
-- iroh `presets::N0` needs internet. Tests use `presets::Minimal` with `RelayMode::Disabled` over
-  loopback and seed the client with `iroh::address_lookup::MemoryLookup`. CLI network commands need
-  a relay. A socket path over 107 bytes fails with `SUN_LEN`; use `/tmp/w<n>` for homes.
+  `weft://blob/<address>` to the scheme handler. reqwest `rustls-no-provider` panics without a
+  provider; the browser installs `ring`.
+- iroh `presets::N0` needs internet; `Endpoint::online` never returns with relays disabled. Tests
+  use `presets::Minimal`, `RelayMode::Disabled`, and `MemoryLookup` over loopback. A socket path
+  over 107 bytes fails with `SUN_LEN`; use `/tmp/w<n>`. rpassword reads `/dev/tty`, never a pipe.
+  `cbor::MAX_ITEMS` 4096 bounds every array on disk.
 - hickory's `Resolver` never asks for the AD bit; `weft-resolve::Dns` builds it and `Dns::udp` under
   `cfg(test)` points it at a loopback UDP fake that must echo the query. hickory 0.26 reports
-  NXDomain and an empty answer as `NoRecordsFound` carrying `negative_ttl`. reqwest
-  `rustls-no-provider` panics without a provider; the browser installs `ring`.
-- Idle connections close after 60 s; `Local` retries once, a bare `Client` does not. `echo pass |
-  weft-store serve --attach &` dies at once on EOF. `weft login sign` takes the `c=` value alone;
-  `curl -X POST --data-binary` sends a form content type, post a bare proof as `text/plain`.
+  NXDomain and an empty answer as `NoRecordsFound` carrying `negative_ttl`.
+- `Local` retries an idle close once, a bare `Client` does not. `println!` panics on EPIPE and
+  `panic = "abort"` dumps core; the CLI prints through `say!`. `weft login sign` takes the `c=`
+  value alone; post a bare proof as `text/plain`, not `--data-binary`'s form.
 - Relay `put` order: manifests, records, receipts; unpaid records wait for a receipt in the batch.
-  `iroh-blobs` 0.103 keeps `delete` and `gc_run_once` private; blobs drop only through `Options.gc`
-  on `FsStore::load_with_opts`, which sleeps a whole interval before its first run.
+  `iroh-blobs` 0.103 drops blobs only through `Options.gc` on `FsStore::load_with_opts`, which
+  sleeps a whole interval before its first run.
 
 ## Verify before commit
 
