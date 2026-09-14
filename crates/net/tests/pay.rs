@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
@@ -10,6 +11,8 @@ use weft_core::{
 };
 use weft_net::relay::{cost, now};
 use weft_net::{Client, Pricing, Relay};
+
+const HOUR: Duration = Duration::from_secs(3600);
 
 async fn endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap()
@@ -51,7 +54,8 @@ impl Net {
         let ep = endpoint().await;
         let allow: HashSet<_> = allow.iter().map(|k| k.public()).collect();
         let banks: HashSet<_> = banks.iter().map(|k| k.public()).collect();
-        let relay = Relay::open(ep.clone(), &dir, allow, Pricing { rate, banks }).await.unwrap();
+        let relay =
+            Relay::open(ep.clone(), &dir, allow, Pricing { rate, banks }, HOUR).await.unwrap();
         let router = relay.clone().spawn();
         let addr = router.endpoint().addr();
         Self { relay, router, addr, dir }
@@ -177,6 +181,9 @@ async fn stranger_pays_to_pin_and_sweep_drops_it() {
     let extend = receipt(&root, &root, net.key(), &[&page_record], later, extension);
     let outcome = c.put(net.addr.clone(), &[extend]).await.unwrap();
     assert!(outcome.rejected.is_empty(), "{outcome:?}");
+
+    let swept = net.relay.sweep(now()).unwrap();
+    assert!(swept.records.is_empty(), "pinned records and their manifest stay: {swept:?}");
 
     let swept = net.relay.sweep(until + 1).unwrap();
     assert_eq!(swept.records.len(), 2, "{swept:?}");

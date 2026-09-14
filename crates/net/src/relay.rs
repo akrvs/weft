@@ -8,6 +8,8 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointId};
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::store::fs::options::Options;
+use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use iroh_blobs::{BlobsProtocol, Hash};
 use weft_core::{Address, Body, Manifest, PublicKey, Receipt, Record, receipt, verify};
 
@@ -68,11 +70,31 @@ impl Relay {
         dir: &Path,
         allow: HashSet<PublicKey>,
         pricing: Pricing,
+        every: Duration,
     ) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|e| Error::Store(e.to_string()))?;
         let index = Arc::new(Index::open(&dir.join("index.redb"))?);
-        let blobs =
-            FsStore::load(dir.join("blobs")).await.map_err(|e| Error::Store(e.to_string()))?;
+        let live = Arc::clone(&index);
+        let root = dir.join("blobs");
+        let mut options = Options::new(&root);
+        options.gc = Some(GcConfig {
+            interval: every,
+            add_protected: Some(Arc::new(move |protected| {
+                let live = Arc::clone(&live);
+                Box::pin(async move {
+                    match live.blobs() {
+                        Ok(blobs) => {
+                            protected.extend(blobs.into_iter().map(Hash::from_bytes));
+                            ProtectOutcome::Continue
+                        }
+                        Err(_) => ProtectOutcome::Abort,
+                    }
+                })
+            })),
+        });
+        let blobs = FsStore::load_with_opts(root.join("blobs.db"), options)
+            .await
+            .map_err(|e| Error::Store(e.to_string()))?;
         let config = Arc::new(RwLock::new(Arc::new(Config { allow, pricing })));
         Ok(Self { index, blobs, config, endpoint })
     }
@@ -104,6 +126,10 @@ impl Relay {
 
     pub fn sweep(&self, now: u64) -> Result<Swept> {
         self.index.sweep(now, &self.config().allow)
+    }
+
+    pub async fn has_blob(&self, address: &Address) -> Result<bool> {
+        self.blobs.blobs().has(Hash::from_bytes(*address.bytes())).await.map_err(net)
     }
 
     pub fn sweeper(&self, every: Duration) -> tokio::task::JoinHandle<()> {

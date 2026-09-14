@@ -205,11 +205,12 @@ async fn serve(dir: &Path) -> Result<()> {
     let pricing = pricing(dir)?;
     let endpoint =
         Endpoint::builder(presets::N0).secret_key(key).bind().await.map_err(|e| e.to_string())?;
-    let relay = Relay::open(endpoint, &dir.join("data"), allow, pricing)
+    let every = Duration::from_secs(60);
+    let relay = Relay::open(endpoint, &dir.join("data"), allow, pricing, every)
         .await
         .map_err(|e| e.to_string())?;
     println!("{}", relay.id());
-    let sweeper = relay.sweeper(Duration::from_secs(60));
+    let sweeper = relay.sweeper(every);
     let router = relay.clone().spawn();
     router.endpoint().online().await;
     println!("online");

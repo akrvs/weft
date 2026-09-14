@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::cast_possible_truncation)]
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
@@ -37,6 +38,10 @@ struct Net {
 
 impl Net {
     async fn start(allow: &[&SecretKey]) -> Self {
+        Self::start_collecting(allow, Duration::from_secs(3600)).await
+    }
+
+    async fn start_collecting(allow: &[&SecretKey], every: Duration) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "weft-relay-test-{}-{}",
             std::process::id(),
@@ -44,7 +49,7 @@ impl Net {
         ));
         let ep = endpoint().await;
         let allow: HashSet<_> = allow.iter().map(|k| k.public()).collect();
-        let relay = Relay::open(ep.clone(), &dir, allow, Pricing::default()).await.unwrap();
+        let relay = Relay::open(ep.clone(), &dir, allow, Pricing::default(), every).await.unwrap();
         let router = relay.clone().spawn();
         let addr = router.endpoint().addr();
         Self { router, relay, addr, dir }
@@ -212,9 +217,58 @@ async fn reload_replaces_the_allow_list_and_pricing_for_the_next_batch() {
     assert_eq!(price.1, vec![key(9).public()]);
     net.relay.reload(HashSet::new(), Pricing::default());
     let swept = net.relay.sweep(weft_net::relay::now()).unwrap();
-    assert!(swept.records.is_empty(), "stored records outlive a delisting: {swept:?}");
+    assert_eq!(swept.records, vec![record.address()], "a delisted author's free records go");
+    assert!(client.get(net.addr.clone(), record.address()).await.unwrap().is_none());
     let outcome = client.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
     assert_eq!(outcome.rejected.len(), 1, "a delisted author is refused again: {outcome:?}");
     client.close().await;
     net.stop().await;
+}
+
+#[tokio::test]
+async fn blob_collection_spares_referenced_blobs_and_takes_swept_ones() {
+    let root = key(1);
+    let every = Duration::from_millis(200);
+    let net = Net::start_collecting(&[&root], every).await;
+    let a = Client::from_endpoint(endpoint().await);
+    let dir =
+        std::env::temp_dir().join(format!("weft-gc-test-{}-{}", std::process::id(), rand_suffix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("big.bin");
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(&src, &data).unwrap();
+    let blob = a.add_blob(&src).await.unwrap();
+    let record = Draft {
+        author: root.public(),
+        signer: root.public(),
+        kind: "file".into(),
+        created: 1,
+        refs: vec![],
+        body: Body::Blob(blob),
+    }
+    .sign(&root)
+    .unwrap();
+    let outcome = a.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
+    assert_eq!(outcome.stored, vec![record.address()], "{outcome:?}");
+    assert!(net.relay.has_blob(&blob).await.unwrap());
+
+    tokio::time::sleep(every * 3).await;
+    assert!(net.relay.has_blob(&blob).await.unwrap(), "a referenced blob survives collection");
+
+    net.relay.reload(HashSet::new(), Pricing::default());
+    let swept = net.relay.sweep(weft_net::relay::now()).unwrap();
+    assert_eq!(swept.records, vec![record.address()]);
+    let mut gone = false;
+    for _ in 0..25 {
+        tokio::time::sleep(every).await;
+        if !net.relay.has_blob(&blob).await.unwrap() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "a swept record's blob is collected");
+
+    a.close().await;
+    net.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
 }

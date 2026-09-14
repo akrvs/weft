@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable, Table, TableDefinition, WriteTransaction};
-use weft_core::{Address, Manifest, Pointer, PublicKey, Record};
+use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record};
 
 use crate::Result;
 
@@ -28,7 +28,6 @@ pub struct Settlement {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Swept {
     pub records: Vec<Address>,
-    pub blobs: Vec<Address>,
 }
 
 fn head_key(author: &PublicKey, name: &str) -> Vec<u8> {
@@ -124,6 +123,21 @@ impl Index {
         Ok(())
     }
 
+    pub fn blobs(&self) -> Result<HashSet<[u8; 32]>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(RECORDS)?;
+        let mut blobs = HashSet::new();
+        for entry in table.iter()? {
+            let (_, v) = entry?;
+            if let Ok(record) = Record::from_bytes(v.value())
+                && let Body::Blob(blob) = record.body()
+            {
+                blobs.insert(*blob.bytes());
+            }
+        }
+        Ok(blobs)
+    }
+
     pub fn sweep(&self, now: u64, keep: &HashSet<PublicKey>) -> Result<Swept> {
         let tx = self.db.begin_write()?;
         let swept = sweep(&tx, now, keep)?;
@@ -181,50 +195,64 @@ fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<S
     let mut heads = tx.open_table(HEADS)?;
     let mut manifests = tx.open_table(MANIFESTS)?;
     let mut pins = tx.open_table(PINS)?;
+    let keep: HashSet<&[u8; 32]> = keep.iter().map(PublicKey::bytes).collect();
     let mut expired = Vec::new();
-    let mut alive: HashSet<[u8; 32]> = HashSet::new();
+    let mut pinned: HashSet<[u8; 32]> = HashSet::new();
+    let mut paying: HashSet<[u8; 32]> = HashSet::new();
     for entry in pins.iter()? {
         let (k, v) = entry?;
         let (until, author) = v.value();
         if until < now {
             expired.push(*k.value());
         } else {
-            alive.insert(*author);
+            pinned.insert(*k.value());
+            paying.insert(*author);
+        }
+    }
+    for address in &expired {
+        pins.remove(address)?;
+    }
+    let mut dropped = Vec::new();
+    for entry in store.iter()? {
+        let (k, v) = entry?;
+        let address = *k.value();
+        if pinned.contains(&address) {
+            continue;
+        }
+        let author = Record::from_bytes(v.value()).ok().map(|r| *r.author().bytes());
+        let stays = author.is_some_and(|author| {
+            keep.contains(&author)
+                || (paying.contains(&author)
+                    && manifests.get(&author).ok().flatten().is_some_and(|m| *m.value() == address))
+        });
+        if !stays {
+            dropped.push(address);
         }
     }
     let mut swept = Swept::default();
-    for address in &expired {
-        if let Some(record) = stored(&store, &Address::hash(*address))?
-            && let weft_core::Body::Blob(blob) = record.body()
-        {
-            swept.blobs.push(*blob);
-        }
+    for address in &dropped {
         store.remove(address)?;
-        pins.remove(address)?;
         swept.records.push(Address::hash(*address));
     }
-    let mut stale_heads = Vec::new();
+    let mut stale = Vec::new();
     for entry in heads.iter()? {
         let (k, v) = entry?;
         if store.get(v.value())?.is_none() {
-            stale_heads.push(k.value().to_vec());
+            stale.push(k.value().to_vec());
         }
     }
-    for key in stale_heads {
+    for key in stale {
         heads.remove(key.as_slice())?;
     }
     let mut orphaned = Vec::new();
     for entry in manifests.iter()? {
         let (author, address) = entry?;
-        let author = *author.value();
-        if !alive.contains(&author) && !keep.iter().any(|k| k.bytes() == &author) {
-            orphaned.push((author, *address.value()));
+        if store.get(address.value())?.is_none() {
+            orphaned.push(*author.value());
         }
     }
-    for (author, address) in orphaned {
+    for author in orphaned {
         manifests.remove(&author)?;
-        store.remove(&address)?;
-        swept.records.push(Address::hash(address));
     }
     Ok(swept)
 }

@@ -43,7 +43,7 @@ pub async fn push(
     store: &Store,
     addresses: &[Address],
     paid: Option<Paid>,
-) -> Result<()> {
+) -> Result<Vec<Address>> {
     let relays = match &paid {
         Some(p) => vec![p.relay],
         None => relays(home)?,
@@ -86,6 +86,7 @@ pub async fn push(
             }
         }
     }
+    let mut stored = Vec::new();
     for relay in relays {
         for batch in records.chunks(weft_net::wire::MAX_BATCH) {
             let outcome = client.put(relay, batch).await.map_err(|e| e.to_string())?;
@@ -99,10 +100,11 @@ pub async fn push(
                     usize::try_from(i).ok().and_then(|i| batch.get(i)).map(Record::address);
                 println!("  {}  {why}", address.map_or(String::new(), |a| a.to_string()));
             }
+            stored.extend(outcome.stored);
         }
     }
     client.close().await;
-    Ok(())
+    Ok(stored)
 }
 
 async fn newest_manifest(

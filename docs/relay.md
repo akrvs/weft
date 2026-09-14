@@ -82,11 +82,17 @@ live in an iroh-blobs file store beside it.
 
 ## Sweep
 
-At start and every 60 seconds the relay drops records whose pin has
-passed, heads that point at a dropped record, and manifests of authors
-who are not allowlisted and have no pin left. Allowlisted authors are
-never swept. Spent voucher ids are kept forever. Blobs of swept records
-stay in the blob store until a later milestone collects them.
+At start, every 60 seconds, and after a reload the relay walks its
+records under one rule. A record stays if its author is allowlisted, if
+it holds a pin that has not passed, or if it is the current manifest of
+an author who still holds a pin. Everything else goes, with its pin
+entry, the heads that pointed at it, and the manifest entry that named
+it. Spent voucher ids are kept forever.
+
+Blobs are collected by the blob store's own garbage collector on the same
+interval. Before each run the relay marks every blob a stored record
+references; anything unmarked is deleted. A failure to read the index
+skips that run.
 
 ## Reload
 
@@ -94,6 +100,6 @@ stay in the blob store until a later milestone collects them.
 reload replaces all three at once, then sweeps. A batch in flight keeps
 the rules it started with; the next batch sees the new ones. A file that
 fails to parse is reported on stderr and the running config stays. A
-delisted author is refused on the next push; records the relay already
-holds for that author stay until a pin they never had would have passed,
-which is never.
+delisted author is refused on the next push and the sweep drops what the
+relay held for them free of charge; records a receipt pinned stay until
+the pin passes.

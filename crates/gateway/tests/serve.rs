@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{RelayMode, presets};
@@ -119,6 +120,8 @@ async fn remote_reader(site: &Site, remote: &Remote) -> Resolver<Local> {
     Resolver::with_client(home, Local::new(site.dir.clone()), client)
 }
 
+const HOUR: Duration = Duration::from_secs(3600);
+
 async fn endpoint(known: Option<&EndpointAddr>) -> Endpoint {
     let builder = Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled);
     let builder = match known {
@@ -145,7 +148,8 @@ async fn remote(root: &SecretKey) -> Remote {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let allow: HashSet<_> = [root.public()].into_iter().collect();
-    let relay = Relay::open(endpoint(None).await, &dir, allow, Pricing::default()).await.unwrap();
+    let relay =
+        Relay::open(endpoint(None).await, &dir, allow, Pricing::default(), HOUR).await.unwrap();
     let router = relay.spawn();
     let addr = router.endpoint().addr();
     let publisher = Client::from_endpoint(endpoint(Some(&addr)).await);

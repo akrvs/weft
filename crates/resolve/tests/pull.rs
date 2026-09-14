@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{RelayMode, presets};
@@ -28,6 +29,8 @@ fn temp(name: &str) -> PathBuf {
     dir
 }
 
+const HOUR: Duration = Duration::from_secs(3600);
+
 async fn endpoint(known: Option<&EndpointAddr>) -> Endpoint {
     let builder = Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled);
     let builder = match known {
@@ -51,8 +54,9 @@ async fn publish() -> Site {
     let root = key(1);
     let relay_dir = temp("relay");
     let allow: HashSet<_> = [root.public()].into_iter().collect();
-    let relay =
-        Relay::open(endpoint(None).await, &relay_dir, allow, Pricing::default()).await.unwrap();
+    let relay = Relay::open(endpoint(None).await, &relay_dir, allow, Pricing::default(), HOUR)
+        .await
+        .unwrap();
     let router = relay.spawn();
     let addr = router.endpoint().addr();
     let publisher = Client::from_endpoint(endpoint(Some(&addr)).await);

@@ -204,11 +204,17 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             Ok(())
         }
         Command::Push { addresses, pay: None, .. } => {
-            net::push(home, store, &addresses, None).await
+            net::push(home, store, &addresses, None).await.map(drop)
         }
         Command::Push { addresses, pay: Some(voucher), days, signer } => {
             let paid = pay(home, store, &addresses, &voucher, days, &signer)?;
-            net::push(home, store, &addresses, Some(paid)).await
+            let receipt = paid.receipt.clone();
+            let stored = net::push(home, store, &addresses, Some(paid)).await?;
+            if !stored.contains(&receipt.address()) {
+                return fail("receipt refused, nothing kept");
+            }
+            store.put(&receipt)?;
+            Ok(())
         }
         Command::Price => net::price(home).await,
         Command::Receipts => receipts(home, store),
@@ -257,7 +263,7 @@ fn login_sign(home: &Home, store: &Store, challenge: &str, signer: &str) -> Resu
     Ok(())
 }
 
-fn sign_own(
+fn draft_own(
     home: &Home,
     store: &Store,
     signer: &str,
@@ -268,6 +274,16 @@ fn sign_own(
     let record = draft(&root, &key.public(), home::now()?).sign(&key)?;
     let manifest = store.snapshot()?.manifest(&root);
     verify(&record, manifest.as_ref())?;
+    Ok(record)
+}
+
+fn sign_own(
+    home: &Home,
+    store: &Store,
+    signer: &str,
+    draft: impl FnOnce(&weft_core::PublicKey, &weft_core::PublicKey, u64) -> Draft,
+) -> Result<Record> {
+    let record = draft_own(home, store, signer, draft)?;
     store.put(&record)?;
     Ok(record)
 }
@@ -298,7 +314,7 @@ fn pay(
     let until = home::now()?.saturating_add(days.saturating_mul(86_400));
     let receipt = Receipt { relay: voucher.to, records, until, voucher };
     receipt.check()?;
-    let record = sign_own(home, store, signer, |root, signer, created| {
+    let record = draft_own(home, store, signer, |root, signer, created| {
         receipt.draft(root, signer, created)
     })?;
     println!("receipt {}  {} cents until {until}", record.address(), receipt.voucher.cents);
