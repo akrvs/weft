@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M17-yellow)
+![status](https://img.shields.io/badge/status-M18-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-111%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-127%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -39,7 +39,8 @@
 │              ops [a signal reloads, a budget bounds the pulls]  │
 │              hygiene [what nothing holds up leaves the relay]   │
 │              lan [a relay on the same wire, no internet]        │
-│ status     : M17 — spec frozen · 10 crates · one gate · one door│
+│              ends [nothing left behind but the browser]         │
+│ status     : M18 — spec frozen · 10 crates · one gate · one door│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -130,7 +131,7 @@ Push from the laptop, resolve and fetch from the desktop. The only thing
 they share is the relay endpoint id.
 
 ```bash
-weft relay add <endpoint id>
+weft relay add <endpoint id>                # or <id>@<host:port>,... to dial it directly
 weft push                                   # records first, blobs pulled by the relay
 weft resolve <root> home --relay            # head pointer, verified against the newest manifest
 weft fetch <address> --out page.html        # record verified, blob hash checked by iroh-blobs
@@ -145,6 +146,7 @@ the relay id is still the only thing they share:
 WEFT_NET=local weft-relay serve             # no iroh relay, no DNS, found by mDNS as _weft._udp
 WEFT_NET=local weft push                    # same id, same commands
 WEFT_NET=local weft resolve <root> home --relay
+weft relay add <id>@192.168.7.2:4433        # across subnets mDNS stops; paste the entry serve printed
 weft whoami | head -1                       # a closed pipe ends the command quietly, exit 0
 ```
 
@@ -166,14 +168,17 @@ device key and pushes it to your relays.
 Revocation still wins everywhere:
 
 ```bash
-weft device revoke laptop
-weft manifest                               # seq 2, revoked list grows
+weft device revoke laptop                   # stolen: everything it ever signed stops verifying
+weft device retire phone                    # lost: expires now, what it signed before stays valid
+weft manifest                               # seq 2, revoked list grows, the phone's expiry is set
 weft push
 ```
 
 Every reader that asks the relay gets the newer manifest, the browser and
-`verify` answer `signer revoked`, and the relay refuses anything else that
-key signs.
+`verify` answer `signer revoked` for the laptop and `outside its validity
+window` for anything the phone signs from now on, and the relay refuses
+both. Retiring trusts the dates on the phone's earlier records; revoking
+trusts nothing.
 
 ## [ Bridge Flag ] — same page in Firefox and in Weft
 
@@ -221,6 +226,7 @@ WEFT_APP_PASSPHRASE='...' weft-app key        # an application key, prints its a
 weft grant add <app> --kind note --read --write --as laptop
 weft-app write note today.md                  # the daemon signs it as you, with the laptop key
 weft-app read note                            # every note you hold, verified
+weft grant list                               # each grant with the app's page title beside its address
 weft grant revoke <grant> --as laptop         # or the revoke button in the browser's store view
 weft-app read note                            # refused: no active grant
 weft-browser                                  # compose, revoke, log in: no passphrase, the daemon signs
@@ -231,9 +237,12 @@ read or write, and an optional expiry. A revoke is a signed record citing
 it. The daemon checks the grants active at the moment of every request, so
 revoking one ends access on the next request of an open connection. Writes
 go through the daemon's device key and the local manifest, reads cover
-only your own verified records, and `manifest`, `pointer`, `grant`, and
-`revoke` can never be granted. The browser's store view lists your kinds
-and your active grants with a revoke form.
+every verified record the store holds of a granted kind, yours and the
+ones fetched while reading, and `manifest`, `pointer`, `grant`, and
+`revoke` can never be granted. An application is shown by the title of
+its own `home` page when the store holds one, its address otherwise. The
+browser's store view lists your kinds and your active grants with a
+revoke form.
 
 The browser and the gateway are the daemon's privileged clients.
 `weft-store serve` writes a fresh `browser.key` next to the socket on
@@ -250,21 +259,25 @@ before it keeps. A blob the store lacks is pulled from the relay list, so
 a page published on one machine renders with its images on another whose
 store has never seen them, and renders again with the relay gone. A pull
 that dies leaves a `.part` the daemon sweeps at start and after two idle
-minutes. The
-daemon itself parses each record file once and remembers each
-verification per manifest, while still listing the directory on every
-request so the command line's writes are seen, and drops what the
-listing no longer shows. With no daemon running the browser says so and
-opens the start form; the navigation that failed runs again once the
-daemon is up, and the daemon's log is one click away in the store dialog:
+minutes. The daemon keeps an index of every record's address, author,
+kind, and name from one walk of the directory, reuses it while the
+directory's modification time stands still, and loads only the records a
+request asks for, so a store far larger than its cache answers a read by
+opening one file and the command line's writes are still seen on the
+next request. With no daemon running the browser says so and opens the
+start form; the navigation that failed runs again once the daemon is up,
+and the daemon's log and a stop button are one click away in the store
+dialog:
 
 ```bash
 weft-browser                                  # cold, no daemon
 # <root>/home                                 # weft-store is not running, the start form opens
 # laptop > passphrase > start store           # spawns weft-store serve --device laptop --attach, page renders
-# store                                       # kinds, grants, daemon log
+# store                                       # kinds, grants, the tail of $WEFT_HOME/store.log, stop store
 # close the browser                           # the daemon exits with it and removes its socket
 # [x] keep running after the browser closes   # or spawn it detached: no --attach, its own process group
+weft-store stop                               # asks a running daemon to exit, from any terminal
+tail $WEFT_HOME/store.log                     # start, every refused request, the stop; rotates at 1 MiB
 ```
 
 ## [ Pay Flag ] — a few cents to host a stranger's page
@@ -284,11 +297,12 @@ weft-relay deny <root> && kill -HUP $(pidof weft-relay) # their free records go,
 
 A voucher is a bank signed note naming the relay it can be redeemed at, a
 few cents, and a nonce. A receipt is a record you sign naming the relay,
-the records you want kept, a date, and the voucher. The relay checks the
-bank, the spend, the date, and the price, then stores and pins. Every
-minute it drops every record that is neither allowlisted, pinned, nor the
-manifest of someone still paying, and collects the blobs nothing names
-any more. A voucher spends once, a receipt the relay refuses is never
+the records you want kept, yours or anyone's, a date, and the voucher.
+The relay checks the bank, the spend, the date, and the price, then
+stores and pins, along with the manifests of the authors you sponsored.
+Every minute it drops every record that is neither allowlisted, pinned,
+nor the manifest of an author with a pinned record, and collects the
+blobs nothing names any more. A voucher spends once, a receipt the relay refuses is never
 kept, and the relay still never signs. The rail is a faucet, on purpose:
 the seam for real money is one function.
 ## [ Login Flag ] — no account, no password, one signature
@@ -367,22 +381,23 @@ stored nowhere; every store and every relay refuses it.
   bounded per chunk and in total and hashed whole, and a record or blob
   kept on the browser's behalf is verified by the daemon first. The daemon the
   browser starts takes its passphrase on a pipe, never on a command line,
-  and cannot outlive the browser.
+  exits with the browser unless told to stay, and then stops only for the
+  browser key, from the store dialog or `weft-store stop`.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
 
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
-crates/home/         weft-home: encrypted keystore · record store · snapshot cache that mirrors the directory under a byte cap · Reads trait · relay list
-crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer
-crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach and --cache · client · pooled Local reads · weft-app sample
-crates/relay/        weft-relay: init · allow · rate · bank · price · serve · SIGHUP reload
+crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait · addressed relay list
+crates/net/          weft-net: wire · client · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
+crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer · page titles
+crates/store/        weft-store: store wire · gate over every held record · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
+crates/relay/        weft-relay: init · allow · rate · bank · price · serve, printing its entry · SIGHUP reload
 crates/bank/         weft-bank: init · whoami · mint
-crates/gateway/      weft-gateway: hyper server over the store socket · provenance bar · x-weft headers · sessions on disk under a cap · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
-crates/cli/          weft: commands over home, net, and resolve · grants · price · paid push · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog, attached or detached · store view with daemon log · login dialog
+crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
+crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · paid push · receipts · login · quiet on a closed pipe
+crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog, attached or detached · store view with log tail, stop, and app titles · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -408,10 +423,13 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete, the store daemon is hardened, every reader is
-behind it, what the store lacks is pulled from the relays, the gateway
-pulls only for readers it knows and only so much, both daemons reload on
-a signal, the relay keeps nothing it is not paid or told to keep, and a
-LAN with no internet still carries the whole thing. What follows is open: a real payment rail behind the voucher seam,
-`weft:` as a registered URL handler so a site's login link opens the
-browser, gateway host based routing and TLS, browser visual design. See [`progress/`](progress/).
+The roadmap is complete and the backlog holds nothing but the browser: a
+lost key retires while a stolen one is revoked, anyone may pay to pin
+anyone's page, grants reach fetched records, an app is named by its own
+page, the store answers from an index, a detached daemon logs and stops
+on request, a relay is reached across subnets by address, and the gateway
+routes by host with its tables in redb. M19 is the browser: visual design,
+compose preview and pointer management, history and bookmarks, a view for
+blobs that are not images, blob download progress, price and pay, the
+passphrase field after a failed start, and `weft:` as a registered URL
+handler. See [`progress/`](progress/).
