@@ -69,6 +69,7 @@ answered with `error` and the connection is closed.
 | `blob` | `address`: bytes(32); `offset`: uint | browser only, offset at most 1 GiB |
 | `keep` | `record`: bytes | browser only, at most 131072 bytes |
 | `keep-blob` | `address`: bytes(32); `total`: uint; `offset`: uint; `chunk`: bytes | browser only, total and offset at most 1 GiB, chunk at most 524288 bytes |
+| `stop` | | browser only |
 
 ## Responses
 
@@ -94,10 +95,12 @@ Arrays in a response hold at most 4096 entries.
   grants active now for the authenticated key: valid, unexpired, and not
   cited by a valid revoke. Revoking a grant ends access on the next
   request of an open connection.
-- `list` and `get` cover only records whose author is the store's root
-  and which verify against the newest local manifest. `get` refuses a
-  record whose kind the key may not read, and answers the same way for a
-  record that does not exist.
+- `list` and `get` cover every record the store holds, the root's own and
+  those fetched while reading, that verifies against its author's newest
+  local manifest. A grant to read a kind therefore also reveals which
+  foreign records of that kind the store holds. `get` refuses a record
+  whose kind the key may not read, and answers the same way for a record
+  that does not exist.
 - `put` signs a record as the store's root with the store's device key,
   verifies it against the local manifest, and stores it. A device the
   manifest does not authorize cannot write.
@@ -150,18 +153,22 @@ Arrays in a response hold at most 4096 entries.
 
 ## Index
 
-The store lists its record directory on every request and parses only
-files it has not seen, keyed by the address in the file name. A file
-whose content does not hash to its name is ignored. Verification
-outcomes are remembered per record and manifest, so a record is checked
-once per manifest. Each listing drops cached records whose file is gone
-and outcomes for manifests no longer on disk, so the cache never
-outgrows the directory. It also never outgrows `--cache <MiB>`, 256 by
-default, 0 unlimited: the cache counts encoded record bytes and drops the
-least recently read record past the cap. A read past the cap comes from
-disk. Every listing still walks the directory, so a store larger than the
-cap re-reads the records it dropped on each request. Other writers to the
-same directory, such as the command line, are seen on the next request.
+The store keeps an in memory index of every record file's address,
+author, kind, and pointer name, built by one walk of the record directory
+that parses each file once, keyed by the address in the file name. A file
+whose content does not hash to its name is ignored. The index is reused
+while the directory's modification time is unchanged and was already a
+second old when the walk began, so a request on a quiet store opens no
+file it does not return; any write or removal, by the daemon or by the
+command line in the same directory, changes that time and the next
+request walks again. A request loads only the records it asks for, so a
+store far larger than `--cache <MiB>`, 256 by default, 0 unlimited,
+answers a read by opening one file. The cache counts encoded record bytes
+and drops the least recently read record past the cap; a read past the
+cap comes from disk. Verification outcomes are remembered per record and
+manifest, so a record is checked once per manifest. Each walk drops
+cached records whose file is gone and outcomes for manifests no longer on
+disk, so the cache never outgrows the directory.
 
 ## Attach
 
@@ -173,10 +180,15 @@ default it starts the daemon with `--attach` over a pipe it holds until
 it exits, so the daemon lives exactly as long as the browser; with `keep
 running after the browser closes` ticked it starts the daemon in its own
 process group without `--attach`, writes the passphrase, and closes the
-pipe, so the daemon outlives the browser and is stopped from a terminal.
-The daemon writes nothing to standard error after it has bound its
-socket, so the closed pipe costs nothing. The browser drains the daemon's
-standard error into a ring of the last 16 KiB and shows it in the store
-dialog; a failed start reports that text. The browser's `Local` reads
-keep up to four idle connections to the daemon and open more as requests
-overlap.
+pipe, so the daemon outlives the browser. Either daemon stops on the
+browser only `stop` request: the store dialog's `stop store` button and
+`weft-store stop`, which signs in with `<home>/browser.key`, send it; the
+daemon answers `ok`, closes the socket, and exits. After it has bound its
+socket the daemon writes nothing to standard error; every later line, the
+start, each refused request with the key that sent it, and the stop, goes
+to `<home>/store.log`, mode 0600, moved to `store.log.1` once it passes
+1 MiB. The store dialog shows the last 16 KiB of that file. A start that
+fails before the socket is bound still reports on standard error, which
+the browser drains into a ring of the last 16 KiB and shows beneath the
+log. The browser's `Local` reads keep up to four idle connections to the
+daemon and open more as requests overlap.

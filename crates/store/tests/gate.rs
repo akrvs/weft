@@ -730,6 +730,81 @@ async fn keep_verifies_before_storing() {
 }
 
 #[tokio::test]
+async fn grants_cover_fetched_records_that_verify() {
+    let w = World::start("fetched-grants", 2);
+    let (root, manifest, page, _) = foreign();
+    let mut b = w.browser().await;
+    b.keep(&manifest).await.unwrap();
+    b.keep(&page).await.unwrap();
+    let mut c = w.client().await;
+    refused(c.list("page").await, "no active grant");
+    refused(c.get(page.address()).await, "no active grant");
+    w.grant(&["page"], Access::ReadWrite, None);
+    assert_eq!(c.list("page").await.unwrap(), vec![page.address()]);
+    assert_eq!(c.get(page.address()).await.unwrap(), page);
+    let mine = c.put("page", b"# mine".to_vec(), vec![]).await.unwrap();
+    assert_eq!(c.get(mine).await.unwrap().author(), &w.root.public());
+    assert_eq!(c.list("page").await.unwrap().len(), 2);
+
+    let revoking = Manifest {
+        seq: 2,
+        prev: Some(manifest.address()),
+        devices: vec![],
+        revoked: vec![key(8).public()],
+    }
+    .draft(&root.public(), T0 + 5)
+    .sign(&root)
+    .unwrap();
+    b.keep(&revoking).await.unwrap();
+    assert_eq!(c.list("page").await.unwrap(), vec![mine], "a revoked signer's page is gone");
+    refused(c.get(page.address()).await, "no such record");
+}
+
+#[tokio::test]
+async fn stop_is_browser_only_and_ends_the_server_with_a_log_line() {
+    let w = World::start("stop", 2);
+    let mut c = w.client().await;
+    refused(c.stop().await, "browser only");
+    let log = std::fs::read_to_string(w.dir.join("store.log")).unwrap();
+    assert!(log.contains("refused") && log.contains("browser only"), "{log}");
+    let mut b = w.browser().await;
+    b.stop().await.unwrap();
+    let server = w.server.lock().unwrap().abort_handle();
+    for _ in 0..50 {
+        if server.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(server.is_finished(), "serve returns after a stop");
+    let log = std::fs::read_to_string(w.dir.join("store.log")).unwrap();
+    assert!(log.contains("stop requested by") && log.contains("stopped on request"), "{log}");
+    assert_eq!(
+        std::fs::metadata(w.dir.join("store.log")).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn the_log_rotates_past_its_cap() {
+    let dir = std::env::temp_dir().join(format!("weft-store-{}-log", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = weft_store::log::Log::new(&dir);
+    let line = "x".repeat(1023);
+    for _ in 0..1030 {
+        log.line(&line);
+    }
+    assert!(dir.join("store.log.1").is_file(), "the full log moved aside");
+    assert!(std::fs::metadata(log.path()).unwrap().len() < weft_store::log::MAX_BYTES);
+    let tail = weft_store::log::tail(&dir);
+    assert!(tail.len() <= 16 * 1024, "{}", tail.len());
+    assert!(tail.starts_with(|c: char| c.is_ascii_digit()), "the tail starts on a line");
+    assert!(tail.ends_with('\n'));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn blobs_cross_in_chunks() {
     let w = World::start("blob-chunks", 2);
     let data: Vec<u8> = (0..MAX_CHUNK + 1000).map(|i| u8::try_from(i % 251).unwrap()).collect();

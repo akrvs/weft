@@ -31,6 +31,7 @@ pub enum Request {
     Blob { address: Address, offset: u64 },
     Keep { record: Vec<u8> },
     KeepBlob { address: Address, total: u64, offset: u64, chunk: Vec<u8> },
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +165,7 @@ impl Request {
             }
             Self::Kinds => vec![("t".to_owned(), text("kinds"))],
             Self::Grants => vec![("t".to_owned(), text("grants"))],
+            Self::Stop => vec![("t".to_owned(), text("stop"))],
             Self::Revoke { grant } => {
                 vec![("grant".to_owned(), bytes(grant.bytes())), ("t".to_owned(), text("revoke"))]
             }
@@ -260,6 +262,10 @@ impl Request {
             "grants" => {
                 cbor::only(&m, &["t"])?;
                 Ok(Self::Grants)
+            }
+            "stop" => {
+                cbor::only(&m, &["t"])?;
+                Ok(Self::Stop)
             }
             "revoke" => {
                 cbor::only(&m, &["grant", "t"])?;

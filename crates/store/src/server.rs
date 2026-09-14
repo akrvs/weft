@@ -22,6 +22,10 @@ pub async fn serve(gate: Arc<Gate>, listener: UnixListener) -> Result<()> {
                 });
             }
             Some(_) = connections.join_next() => {}
+            () = gate.halted() => {
+                gate.log("stopped on request");
+                return Ok(());
+            }
         }
     }
 }
@@ -60,10 +64,30 @@ async fn handle(gate: &Gate, mut stream: UnixStream) -> Result<()> {
     reply(&mut stream, &Response::Ok).await?;
     loop {
         let response = match next(&mut stream).await {
+            Ok(Some(Request::Stop)) => {
+                let allowed = gate.stop(&app);
+                let response = match &allowed {
+                    Ok(()) => Response::Ok,
+                    Err(e) => {
+                        gate.log(&format!("refused {}: {e}", app.address()));
+                        Response::Error { why: e.to_string() }
+                    }
+                };
+                reply(&mut stream, &response).await?;
+                if allowed.is_ok() {
+                    gate.log(&format!("stop requested by {}", app.address()));
+                    gate.halt();
+                    return Ok(());
+                }
+                continue;
+            }
             Ok(Some(request)) => answer(gate, &app, request),
             Ok(None) => return Ok(()),
             Err(e) => return refuse(&mut stream, &e).await,
         };
+        if let Response::Error { why } = &response {
+            gate.log(&format!("refused {}: {why}", app.address()));
+        }
         reply(&mut stream, &response).await?;
     }
 }
@@ -110,6 +134,7 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
         Request::KeepBlob { address, total, offset, chunk } => {
             gate.keep_blob(app, &address, total, offset, &chunk).map(|()| Response::Ok)
         }
+        Request::Stop => gate.stop(app).map(|()| Response::Ok),
     };
     result.unwrap_or_else(|e| Response::Error { why: e.to_string() })
 }

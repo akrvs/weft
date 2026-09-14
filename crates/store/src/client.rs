@@ -92,6 +92,13 @@ impl Client {
             _ => Err(Error::Wire("expected publish")),
         }
     }
+
+    pub async fn stop(&mut self) -> Result<()> {
+        match self.call(&Request::Stop).await? {
+            Response::Ok => Ok(()),
+            _ => Err(Error::Wire("expected ok")),
+        }
+    }
 }
 
 impl Client {

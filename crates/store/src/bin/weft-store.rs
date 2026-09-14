@@ -9,7 +9,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tokio::net::{UnixListener, UnixStream};
 use weft_home::{Home, home, store};
-use weft_store::{Error, Gate, Result, create_browser_key, socket_path};
+use weft_store::{Client, Error, Gate, Result, browser_key, create_browser_key, socket_path};
 use zeroize::Zeroizing;
 
 #[derive(Parser, Debug)]
@@ -31,6 +31,7 @@ enum Command {
         #[arg(long, default_value_t = store::DEFAULT_CACHE / MIB)]
         cache: u64,
     },
+    Stop,
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -38,16 +39,28 @@ const MIB: u64 = 1024 * 1024;
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let Command::Serve { device, attach, cache } = cli.command;
-    let home =
-        Home::with_cache(cli.home.unwrap_or_else(Home::default_dir), cache.saturating_mul(MIB));
-    match serve(home, &device, attach).await {
+    let dir = cli.home.unwrap_or_else(Home::default_dir);
+    let outcome = match cli.command {
+        Command::Serve { device, attach, cache } => {
+            serve(Home::with_cache(dir, cache.saturating_mul(MIB)), &device, attach).await
+        }
+        Command::Stop => stop(&dir).await,
+    };
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn stop(home: &std::path::Path) -> Result<()> {
+    let key = browser_key(home)?;
+    let mut client = Client::connect(&socket_path(home), &key).await?;
+    client.stop().await?;
+    println!("stopped");
+    Ok(())
 }
 
 async fn bind(path: &std::path::Path) -> Result<UnixListener> {
@@ -108,6 +121,11 @@ async fn serve(home: Home, device: &str, attach: bool) -> Result<()> {
     println!("signer   {}  {device}", key.public().address());
     println!("browser  {}", browser.address());
     let gate = Arc::new(Gate::new(home, root, key, browser));
+    gate.log(&format!(
+        "serving {} as {device}{}",
+        path.display(),
+        if attach { " attached" } else { "" }
+    ));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         r = weft_store::serve(gate, listener) => r?,

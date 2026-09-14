@@ -152,6 +152,7 @@ const startDetach = el<HTMLInputElement>("start-detach");
 const storeResult = el("store-result");
 const storeLog = el("store-log");
 const storeLogTitle = el("store-log-title");
+const storeStop = el<HTMLButtonElement>("store-stop");
 const NOT_RUNNING = "weft-store is not running";
 let retry = "";
 
@@ -218,12 +219,23 @@ async function showStore(): Promise<void> {
     }
     if (view.grants.length === 0) grants.append(row(["no active grants"]));
     startForm.hidden = true;
+    storeStop.hidden = false;
   } catch (e) {
     storeResult.textContent = String(e);
+    storeStop.hidden = true;
     if (String(e).includes(NOT_RUNNING)) await offerStart();
   }
   await showLog();
 }
+
+storeStop.addEventListener("click", async () => {
+  try {
+    storeResult.textContent = await invoke<string>("stop_store");
+  } catch (e) {
+    storeResult.textContent = String(e);
+  }
+  await showStore();
+});
 
 startForm.addEventListener("submit", async (event) => {
   event.preventDefault();

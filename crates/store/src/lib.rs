@@ -4,6 +4,7 @@ pub mod client;
 pub mod error;
 pub mod gate;
 pub mod local;
+pub mod log;
 pub mod server;
 pub mod wire;
 

@@ -4,6 +4,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio::sync::Notify;
 use weft_core::{
     Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, PublicKey, Record, Revoke,
     SecretKey, grant, login, manifest, verify,
@@ -11,6 +12,7 @@ use weft_core::{
 use weft_home::{Home, Snapshot, Store};
 use zeroize::Zeroizing;
 
+use crate::log::Log;
 use crate::wire::MAX_CHUNK;
 use crate::{Error, Result};
 
@@ -48,6 +50,8 @@ pub struct Gate {
     root: PublicKey,
     key: SecretKey,
     browser: PublicKey,
+    log: Log,
+    halt: Notify,
 }
 
 struct View {
@@ -68,11 +72,28 @@ impl View {
 
 impl Gate {
     pub fn new(home: Home, root: PublicKey, key: SecretKey, browser: PublicKey) -> Self {
-        Self { home, root, key, browser }
+        let log = Log::new(home.path());
+        Self { home, root, key, browser, log, halt: Notify::new() }
     }
 
     pub fn home(&self) -> &Home {
         &self.home
+    }
+
+    pub fn log(&self, text: &str) {
+        self.log.line(text);
+    }
+
+    pub fn stop(&self, app: &PublicKey) -> Result<()> {
+        self.privileged(app)
+    }
+
+    pub fn halt(&self) {
+        self.halt.notify_one();
+    }
+
+    pub async fn halted(&self) {
+        self.halt.notified().await;
     }
 
     pub fn signer(&self) -> PublicKey {

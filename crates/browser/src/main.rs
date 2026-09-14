@@ -241,7 +241,20 @@ fn log_text(log: &Arc<Mutex<VecDeque<u8>>>) -> String {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn daemon_log(app: State<'_, App>) -> String {
-    log_text(&app.log)
+    let file = weft_store::log::tail(app.resolver.home().path());
+    let ring = log_text(&app.log);
+    format!("{file}{ring}").trim().to_owned()
+}
+
+#[tauri::command]
+async fn stop_store(app: State<'_, App>) -> Result<String> {
+    let home = app.resolver.home().path().to_path_buf();
+    let key = weft_store::browser_key(&home).map_err(|e| err(&e))?;
+    let mut client = weft_store::Client::connect(&weft_store::socket_path(&home), &key)
+        .await
+        .map_err(|e| err(&e))?;
+    client.stop().await.map_err(|e| err(&e))?;
+    Ok("stopped".to_owned())
 }
 
 #[tauri::command]
@@ -436,6 +449,7 @@ fn main() {
             login_prompt,
             login,
             start_store,
+            stop_store,
             daemon_log
         ])
         .setup(|app| {
