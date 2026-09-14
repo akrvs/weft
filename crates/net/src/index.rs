@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, ReadableTable, Table, TableDefinition, WriteTransaction};
+use redb::{
+    Database, MultimapTable, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
+    ReadableTable, ReadableTableMetadata, Table, TableDefinition, WriteTransaction,
+};
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record};
 
 use crate::Result;
@@ -11,6 +14,9 @@ const HEADS: TableDefinition<&[u8], &[u8; 32]> = TableDefinition::new("heads");
 const MANIFESTS: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("manifests");
 const PINS: TableDefinition<&[u8; 32], (u64, &[u8; 32])> = TableDefinition::new("pins");
 const SPENT: TableDefinition<&[u8; 32], ()> = TableDefinition::new("spent");
+const AUTHORS: MultimapTableDefinition<&[u8; 32], &[u8; 32]> =
+    MultimapTableDefinition::new("authors");
+const BLOBS: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("blobs");
 
 #[derive(Debug)]
 pub struct Index {
@@ -37,15 +43,40 @@ fn head_key(author: &PublicKey, name: &str) -> Vec<u8> {
     k
 }
 
+fn after(author: &[u8; 32]) -> Option<[u8; 32]> {
+    let mut next = *author;
+    for byte in next.iter_mut().rev() {
+        if *byte == u8::MAX {
+            *byte = 0;
+        } else {
+            *byte = byte.saturating_add(1);
+            return Some(next);
+        }
+    }
+    None
+}
+
 impl Index {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path)?;
         let tx = db.begin_write()?;
-        tx.open_table(RECORDS)?;
-        tx.open_table(HEADS)?;
-        tx.open_table(MANIFESTS)?;
-        tx.open_table(PINS)?;
-        tx.open_table(SPENT)?;
+        {
+            let store = tx.open_table(RECORDS)?;
+            tx.open_table(HEADS)?;
+            tx.open_table(MANIFESTS)?;
+            tx.open_table(PINS)?;
+            tx.open_table(SPENT)?;
+            let mut authors = tx.open_multimap_table(AUTHORS)?;
+            let mut blobs = tx.open_table(BLOBS)?;
+            if authors.is_empty()? && !store.is_empty()? {
+                for entry in store.iter()? {
+                    let (k, v) = entry?;
+                    if let Ok(record) = Record::from_bytes(v.value()) {
+                        index(&mut authors, &mut blobs, k.value(), &record)?;
+                    }
+                }
+            }
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -104,11 +135,9 @@ impl Index {
     pub fn commit(&self, records: &[&Record], settlement: Option<&Settlement>) -> Result<()> {
         let tx = self.db.begin_write()?;
         {
-            let mut store = tx.open_table(RECORDS)?;
-            let mut heads = tx.open_table(HEADS)?;
-            let mut manifests = tx.open_table(MANIFESTS)?;
+            let mut tables = Tables::open(&tx)?;
             for record in records {
-                insert(&mut store, &mut heads, &mut manifests, record)?;
+                tables.insert(record)?;
             }
             if let Some(s) = settlement {
                 let mut pins = tx.open_table(PINS)?;
@@ -125,15 +154,11 @@ impl Index {
 
     pub fn blobs(&self) -> Result<HashSet<[u8; 32]>> {
         let tx = self.db.begin_read()?;
-        let table = tx.open_table(RECORDS)?;
+        let table = tx.open_table(BLOBS)?;
         let mut blobs = HashSet::new();
         for entry in table.iter()? {
             let (_, v) = entry?;
-            if let Ok(record) = Record::from_bytes(v.value())
-                && let Body::Blob(blob) = record.body()
-            {
-                blobs.insert(*blob.bytes());
-            }
+            blobs.insert(*v.value());
         }
         Ok(blobs)
     }
@@ -149,51 +174,100 @@ impl Index {
 type Records<'a> = Table<'a, &'static [u8; 32], &'static [u8]>;
 type Heads<'a> = Table<'a, &'static [u8], &'static [u8; 32]>;
 type Manifests<'a> = Table<'a, &'static [u8; 32], &'static [u8; 32]>;
+type Authors<'a> = MultimapTable<'a, &'static [u8; 32], &'static [u8; 32]>;
+type Blobs<'a> = Table<'a, &'static [u8; 32], &'static [u8; 32]>;
+
+struct Tables<'a> {
+    store: Records<'a>,
+    heads: Heads<'a>,
+    manifests: Manifests<'a>,
+    authors: Authors<'a>,
+    blobs: Blobs<'a>,
+}
 
 fn stored(table: &Records<'_>, address: &Address) -> Result<Option<Record>> {
     Ok(table.get(address.bytes())?.and_then(|v| Record::from_bytes(v.value()).ok()))
 }
 
-fn insert(
-    store: &mut Records<'_>,
-    heads: &mut Heads<'_>,
-    manifests: &mut Manifests<'_>,
+fn index(
+    authors: &mut Authors<'_>,
+    blobs: &mut Blobs<'_>,
+    address: &[u8; 32],
     record: &Record,
 ) -> Result<()> {
-    let address = record.address();
-    store.insert(address.bytes(), record.to_bytes().as_slice())?;
-    if let Ok(m) = Manifest::from_record(record) {
-        let current = manifests.get(record.author().bytes())?.map(|v| Address::hash(*v.value()));
-        let current_seq = match current {
-            Some(a) => {
-                stored(store, &a)?.and_then(|r| Manifest::from_record(&r).ok()).map(|m| m.seq)
-            }
-            None => None,
-        };
-        if current_seq.is_none_or(|seq| m.seq > seq) {
-            manifests.insert(record.author().bytes(), address.bytes())?;
-        }
-    }
-    if let Ok(p) = Pointer::from_record(record) {
-        let key = head_key(record.author(), &p.name);
-        let current = heads.get(key.as_slice())?.map(|v| Address::hash(*v.value()));
-        let current = match current {
-            Some(a) => {
-                stored(store, &a)?.and_then(|r| Pointer::from_record(&r).ok().map(|q| (r, q)))
-            }
-            None => None,
-        };
-        if current.as_ref().is_none_or(|(r, q)| Pointer::compare((record, &p), (r, q)).is_gt()) {
-            heads.insert(key.as_slice(), address.bytes())?;
-        }
+    authors.insert(record.author().bytes(), address)?;
+    if let Body::Blob(blob) = record.body() {
+        blobs.insert(address, blob.bytes())?;
     }
     Ok(())
 }
 
+impl<'a> Tables<'a> {
+    fn open(tx: &'a WriteTransaction) -> Result<Self> {
+        Ok(Self {
+            store: tx.open_table(RECORDS)?,
+            heads: tx.open_table(HEADS)?,
+            manifests: tx.open_table(MANIFESTS)?,
+            authors: tx.open_multimap_table(AUTHORS)?,
+            blobs: tx.open_table(BLOBS)?,
+        })
+    }
+
+    fn insert(&mut self, record: &Record) -> Result<()> {
+        let address = record.address();
+        self.store.insert(address.bytes(), record.to_bytes().as_slice())?;
+        index(&mut self.authors, &mut self.blobs, address.bytes(), record)?;
+        if let Ok(m) = Manifest::from_record(record) {
+            let current =
+                self.manifests.get(record.author().bytes())?.map(|v| Address::hash(*v.value()));
+            let current_seq = match current {
+                Some(a) => stored(&self.store, &a)?
+                    .and_then(|r| Manifest::from_record(&r).ok())
+                    .map(|m| m.seq),
+                None => None,
+            };
+            if current_seq.is_none_or(|seq| m.seq > seq) {
+                self.manifests.insert(record.author().bytes(), address.bytes())?;
+            }
+        }
+        if let Ok(p) = Pointer::from_record(record) {
+            let key = head_key(record.author(), &p.name);
+            let current = self.heads.get(key.as_slice())?.map(|v| Address::hash(*v.value()));
+            let current = match current {
+                Some(a) => stored(&self.store, &a)?
+                    .and_then(|r| Pointer::from_record(&r).ok().map(|q| (r, q))),
+                None => None,
+            };
+            if current.as_ref().is_none_or(|(r, q)| Pointer::compare((record, &p), (r, q)).is_gt())
+            {
+                self.heads.insert(key.as_slice(), address.bytes())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, author: &[u8; 32], dropped: &HashSet<[u8; 32]>) -> Result<()> {
+        for address in dropped {
+            self.store.remove(address)?;
+            self.authors.remove(author, address)?;
+            self.blobs.remove(address)?;
+        }
+        if self.manifests.get(author)?.is_some_and(|m| dropped.contains(m.value())) {
+            self.manifests.remove(author)?;
+        }
+        let lower: &[u8] = author;
+        let upper = after(author);
+        let stays = |_: &[u8], v: &[u8; 32]| !dropped.contains(v);
+        match upper.as_ref() {
+            Some(upper) => self.heads.retain_in(lower..upper.as_slice(), stays)?,
+            None => self.heads.retain_in(lower.., stays)?,
+        }
+        Ok(())
+    }
+}
+
 fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<Swept> {
-    let mut store = tx.open_table(RECORDS)?;
-    let mut heads = tx.open_table(HEADS)?;
-    let mut manifests = tx.open_table(MANIFESTS)?;
+    let mut tables = Tables::open(tx)?;
     let mut pins = tx.open_table(PINS)?;
     let keep: HashSet<&[u8; 32]> = keep.iter().map(PublicKey::bytes).collect();
     let mut expired = Vec::new();
@@ -212,47 +286,85 @@ fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<S
     for address in &expired {
         pins.remove(address)?;
     }
-    let mut dropped = Vec::new();
-    for entry in store.iter()? {
-        let (k, v) = entry?;
-        let address = *k.value();
-        if pinned.contains(&address) {
+    let mut dropped: Vec<([u8; 32], HashSet<[u8; 32]>)> = Vec::new();
+    for entry in tables.authors.iter()? {
+        let (author, records) = entry?;
+        let author = *author.value();
+        if keep.contains(&author) {
             continue;
         }
-        let author = Record::from_bytes(v.value()).ok().map(|r| *r.author().bytes());
-        let stays = author.is_some_and(|author| {
-            keep.contains(&author)
-                || (paying.contains(&author)
-                    && manifests.get(&author).ok().flatten().is_some_and(|m| *m.value() == address))
-        });
-        if !stays {
-            dropped.push(address);
+        let manifest = if paying.contains(&author) {
+            tables.manifests.get(&author)?.map(|m| *m.value())
+        } else {
+            None
+        };
+        let mut gone = HashSet::new();
+        for record in records {
+            let address = *record?.value();
+            if !pinned.contains(&address) && manifest != Some(address) {
+                gone.insert(address);
+            }
+        }
+        if !gone.is_empty() {
+            dropped.push((author, gone));
         }
     }
     let mut swept = Swept::default();
-    for address in &dropped {
-        store.remove(address)?;
-        swept.records.push(Address::hash(*address));
+    for (author, gone) in &dropped {
+        tables.remove(author, gone)?;
+        swept.records.extend(gone.iter().map(|a| Address::hash(*a)));
     }
-    let mut stale = Vec::new();
-    for entry in heads.iter()? {
-        let (k, v) = entry?;
-        if store.get(v.value())?.is_none() {
-            stale.push(k.value().to_vec());
-        }
-    }
-    for key in stale {
-        heads.remove(key.as_slice())?;
-    }
-    let mut orphaned = Vec::new();
-    for entry in manifests.iter()? {
-        let (author, address) = entry?;
-        if store.get(address.value())?.is_none() {
-            orphaned.push(*author.value());
-        }
-    }
-    for author in orphaned {
-        manifests.remove(&author)?;
-    }
+    swept.records.sort();
     Ok(swept)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use weft_core::{Draft, SecretKey};
+
+    fn record(n: u8, body: Body) -> Record {
+        let key = SecretKey::from_seed([n; 32]);
+        Draft {
+            author: key.public(),
+            signer: key.public(),
+            kind: "page".into(),
+            created: 1_700_000_000,
+            refs: vec![],
+            body,
+        }
+        .sign(&key)
+        .unwrap()
+    }
+
+    #[test]
+    fn an_index_without_derived_tables_rebuilds_them_at_open() {
+        let dir = std::env::temp_dir().join(format!("weft-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.redb");
+        let page = record(1, Body::Inline(b"# Page".to_vec()));
+        let blob = Address::hash([7; 32]);
+        let named = record(2, Body::Blob(blob));
+        {
+            let db = Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            {
+                let mut store = tx.open_table(RECORDS).unwrap();
+                for r in [&page, &named] {
+                    store.insert(r.address().bytes(), r.to_bytes().as_slice()).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let index = Index::open(&path).unwrap();
+        assert_eq!(index.blobs().unwrap(), [*blob.bytes()].into_iter().collect());
+        let keep = [*page.author()].into_iter().collect();
+        let swept = index.sweep(1_700_000_001, &keep).unwrap();
+        assert_eq!(swept.records, vec![named.address()]);
+        assert!(index.blobs().unwrap().is_empty(), "a swept record leaves the blobs table");
+        assert!(index.record(&page.address()).unwrap().is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
