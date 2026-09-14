@@ -93,7 +93,7 @@ impl World {
     }
 
     fn all(&self) -> Vec<Record> {
-        self.store().snapshot().unwrap().records().cloned().collect()
+        self.store().snapshot().unwrap().records().map(|r| (*r).clone()).collect()
     }
 
     fn manifest(&self) -> Manifest {

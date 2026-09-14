@@ -148,6 +148,18 @@ impl Home {
         Ok(meta.public)
     }
 
+    pub fn retire(&self, label: &str, pass: &[u8], at: Option<u64>) -> Result<(PublicKey, u64)> {
+        let path = self.device_path(label);
+        if !path.is_file() {
+            return fail(format!("no device labelled {label}"));
+        }
+        let at = at.map_or_else(now, Ok)?;
+        if at <= keystore::meta(&path)?.created {
+            return fail("retirement must come after the device was created");
+        }
+        keystore::retire(&path, pass, at).map(|m| (m.public, at))
+    }
+
     pub fn manifest(
         &self,
         prev: Option<&Manifest>,

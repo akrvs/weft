@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use weft_core::{
     Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, PublicKey, Record, Revoke,
@@ -56,11 +57,11 @@ struct View {
 }
 
 impl View {
-    fn grants(&self, root: &PublicKey) -> Vec<(&Record, Grant)> {
+    fn grants(&self, root: &PublicKey) -> Vec<(Arc<Record>, Grant)> {
         self.snap.grants(root, self.manifest.as_ref(), self.now)
     }
 
-    fn own<'a>(&'a self, root: &PublicKey) -> impl Iterator<Item = &'a Record> {
+    fn own<'a>(&'a self, root: &PublicKey) -> impl Iterator<Item = Arc<Record>> + 'a {
         self.snap.own(root, self.manifest.as_ref())
     }
 }
@@ -129,18 +130,14 @@ impl Gate {
     pub fn list(&self, app: &PublicKey, kind: &str) -> Result<Vec<Address>> {
         let view = self.view()?;
         self.allow(&view, app, kind, false)?;
-        let mut out: Vec<Address> =
-            view.own(&self.root).filter(|r| r.kind() == kind).map(Record::address).collect();
+        let mut out: Vec<Address> = view.snap.readable(kind).map(|r| r.address()).collect();
         out.sort_unstable();
         Ok(out)
     }
 
     pub fn get(&self, app: &PublicKey, address: &Address) -> Result<Vec<u8>> {
         let view = self.view()?;
-        let record = view
-            .own(&self.root)
-            .find(|r| &r.address() == address)
-            .ok_or(Error::Refused("no such record"))?;
+        let record = view.snap.verified(*address).ok_or(Error::Refused("no such record"))?;
         self.allow(&view, app, record.kind(), false)?;
         Ok(record.to_bytes())
     }
@@ -162,7 +159,7 @@ impl Gate {
         self.allow(&view, app, login::KIND, true)?;
         let challenge = Challenge::decode(challenge)?;
         let record = self.sign(&view, challenge.draft(&self.root, &self.key.public(), view.now))?;
-        let manifest = view.snap.manifest_record(&self.root).cloned();
+        let manifest = view.snap.manifest_record(&self.root).map(|r| (*r).clone());
         Ok(Proof { login: record, manifest }.encode())
     }
 
@@ -183,7 +180,7 @@ impl Gate {
     pub fn grants(&self, app: &PublicKey) -> Result<Vec<Record>> {
         self.privileged(app)?;
         let view = self.view()?;
-        Ok(view.grants(&self.root).into_iter().map(|(r, _)| r.clone()).collect())
+        Ok(view.grants(&self.root).into_iter().map(|(r, _)| (*r).clone()).collect())
     }
 
     pub fn revoke(&self, app: &PublicKey, grant: Address) -> Result<Address> {
@@ -226,7 +223,7 @@ impl Gate {
 
     pub fn manifest(&self, app: &PublicKey, author: &PublicKey) -> Result<Option<Vec<u8>>> {
         self.privileged(app)?;
-        Ok(self.home.store().snapshot()?.manifest_record(author).map(Record::to_bytes))
+        Ok(self.home.store().snapshot()?.manifest_record(author).map(|r| r.to_bytes()))
     }
 
     pub fn pointers(&self, app: &PublicKey, author: &PublicKey, name: &str) -> Result<Vec<Record>> {
@@ -236,7 +233,7 @@ impl Gate {
         Ok(snap
             .pointers(author, name, manifest.as_ref())
             .into_iter()
-            .map(|(r, _)| r.clone())
+            .map(|(r, _)| (*r).clone())
             .collect())
     }
 

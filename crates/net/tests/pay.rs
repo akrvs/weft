@@ -209,7 +209,60 @@ async fn stranger_pays_to_pin_and_sweep_drops_it() {
 }
 
 #[tokio::test]
-async fn receipts_are_refused_for_the_wrong_relay_bank_or_author() {
+async fn a_sponsor_pins_a_friends_page_and_the_sweep_keeps_the_friends_manifest() {
+    let root = key(1);
+    let device = key(2);
+    let sponsor = key(4);
+    let bank = key(9);
+    let net = Net::start(&[], 1, &[&bank]).await;
+    let c = Client::from_endpoint(endpoint().await);
+    let manifest = Manifest {
+        seq: 1,
+        prev: None,
+        devices: vec![Device {
+            key: device.public(),
+            label: "laptop".into(),
+            created: 1_000,
+            expires: None,
+        }],
+        revoked: vec![],
+    };
+    let manifest_record = manifest.draft(&root.public(), 1_000).sign(&root).unwrap();
+    let page_record = page(&root, &device, b"a friend wrote this", 2_000);
+    let other_page = page(&root, &device, b"and this too", 2_001);
+    let until = now() + 86_400;
+    let voucher = Voucher::mint(&bank, net.key(), 100, [1; 32]).unwrap();
+    let paid = receipt(&sponsor, &sponsor, net.key(), &[&page_record], until, voucher);
+    let batch = [manifest_record.clone(), page_record.clone(), other_page.clone(), paid.clone()];
+    let outcome = c.put(net.addr.clone(), &batch).await.unwrap();
+    assert_eq!(outcome.stored.len(), 3, "{outcome:?}");
+    assert!(
+        outcome.rejected.iter().any(|(i, why)| *i == 2 && why == "payment required"),
+        "the unpaid page is not carried by the sponsor: {outcome:?}"
+    );
+    assert_eq!(
+        c.get(net.addr.clone(), page_record.address()).await.unwrap(),
+        Some(page_record.clone())
+    );
+
+    let swept = net.relay.sweep(now()).unwrap();
+    assert!(
+        swept.records.is_empty(),
+        "the friend's manifest stays while a record is pinned: {swept:?}"
+    );
+    let head = c.head(net.addr.clone(), root.public(), "home").await.unwrap();
+    assert_eq!(head.manifest, Some(manifest_record.clone()));
+
+    let swept = net.relay.sweep(until + 1).unwrap();
+    assert_eq!(swept.records.len(), 3, "{swept:?}");
+    assert!(swept.records.contains(&manifest_record.address()));
+    assert!(swept.records.contains(&paid.address()));
+    c.close().await;
+    net.stop().await;
+}
+
+#[tokio::test]
+async fn receipts_are_refused_for_the_wrong_relay_bank_or_missing_record() {
     let root = key(1);
     let other = key(4);
     let bank = key(9);
@@ -241,10 +294,12 @@ async fn receipts_are_refused_for_the_wrong_relay_bank_or_author() {
     let sponsor = Voucher::mint(&bank, net.key(), 50, [2; 32]).unwrap();
     let sponsored = receipt(&other, &other, net.key(), &[&page_record], until, sponsor);
     let outcome = c.put(net.addr.clone(), &[page_record.clone(), sponsored]).await.unwrap();
-    assert!(outcome.rejected.iter().any(|(_, why)| why.contains("another author")), "{outcome:?}");
+    assert!(outcome.rejected.is_empty(), "a receipt pays for any author: {outcome:?}");
+    assert_eq!(outcome.stored.len(), 2, "{outcome:?}");
 
     let missing = Voucher::mint(&bank, net.key(), 50, [3; 32]).unwrap();
-    let dangling = receipt(&root, &root, net.key(), &[&page_record], until, missing);
+    let nowhere = page(&root, &root, b"nowhere", 2_001);
+    let dangling = receipt(&root, &root, net.key(), &[&nowhere], until, missing);
     let outcome = c.put(net.addr.clone(), &[dangling]).await.unwrap();
     assert!(
         outcome.rejected.iter().any(|(_, why)| why.contains("not in the batch")),
@@ -274,7 +329,10 @@ async fn receipts_are_refused_for_the_wrong_relay_bank_or_author() {
         outcome.rejected.iter().any(|(_, why)| why.contains("until out of range")),
         "{outcome:?}"
     );
-    assert!(c.get(net.addr.clone(), page_record.address()).await.unwrap().is_none());
+    assert!(
+        c.get(net.addr.clone(), page_record.address()).await.unwrap().is_some(),
+        "the sponsored copy stays"
+    );
 
     c.close().await;
     net.stop().await;

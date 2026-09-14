@@ -134,7 +134,12 @@ optionally, the newest manifest for its author:
 6. The record address is the blake3 hash of the input bytes.
 
 Revocation applies to everything the revoked key signed. A relying party
-holding a newer manifest must re-verify what it holds.
+holding a newer manifest must re-verify what it holds. A compromised key
+goes in `revoked`. A lost key is retired instead: the root publishes a
+manifest whose device entry sets `expires` to the time of loss, so records
+`created` before it keep verifying and later ones do not. Whoever holds a
+retired key can backdate `created`; retiring trusts the signatures dated
+before the loss, revoking trusts none.
 
 ## 8. Limits
 
@@ -206,8 +211,8 @@ canonical map:
 | `until` | uint | greater than the record's `created` |
 | `voucher` | bytes | an encoded voucher that verifies |
 
-Root or device signed. A receipt only pays for records by its own author.
-What a relay charges and when it sweeps is the relay's contract, in
+Root or device signed. A receipt may pay for records by any author; the
+payer sponsors them. What a relay charges and when it sweeps is the relay's contract, in
 `relay.md`. The voucher rail is an experiment: vouchers are bearer
 instruments with no privacy and a bank is a plain key the relay trusts.
 

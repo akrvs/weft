@@ -69,9 +69,24 @@ pub fn generate(
     created: u64,
     expires: Option<u64>,
 ) -> Result<Meta> {
-    let seed: [u8; 32] = random()?;
-    let key = SecretKey::from_seed(seed);
+    let key = SecretKey::from_seed(random()?);
     let meta = Meta { public: key.public(), label: label.to_owned(), created, expires };
+    write(path, pass, &key, meta, fs::write_private)
+}
+
+pub fn retire(path: &Path, pass: &[u8], expires: u64) -> Result<Meta> {
+    let key = open(path, pass)?;
+    let meta = Meta { expires: Some(expires), ..meta(path)? };
+    write(path, pass, &key, meta, fs::replace_private)
+}
+
+fn write(
+    path: &Path,
+    pass: &[u8],
+    key: &SecretKey,
+    meta: Meta,
+    put: fn(&Path, &[u8]) -> Result<()>,
+) -> Result<Meta> {
     let salt: [u8; 16] = random()?;
     let nonce: [u8; 24] = random()?;
     let head = header(&meta, &salt, &nonce);
@@ -83,7 +98,7 @@ pub fn generate(
         .map_err(|_| "encryption failed")?;
     let mut full = head;
     full.push(("ct".to_owned(), Value::Bytes(buf)));
-    fs::write_private(path, &Value::Map(full).encode())?;
+    put(path, &Value::Map(full).encode())?;
     Ok(meta)
 }
 

@@ -49,24 +49,20 @@ pub async fn push(
         None => relays(home)?,
     };
     let snap = store.snapshot()?;
-    let mut records: Vec<Record> = snap.records().cloned().collect();
-    if !addresses.is_empty() {
-        records.retain(|r| addresses.contains(&r.address()));
-    }
+    let mut records: Vec<Record> = if addresses.is_empty() {
+        snap.records().map(|r| (*r).clone()).collect()
+    } else {
+        addresses.iter().filter_map(|a| snap.find(*a)).map(|r| (*r).clone()).collect()
+    };
     if records.is_empty() {
         return fail("nothing to push");
     }
     if let Some(p) = &paid {
         let root = home.root()?;
-        let manifest = snap
-            .records()
-            .filter(|r| r.kind() == weft_core::manifest::KIND && *r.author() == root)
-            .filter_map(|r| Manifest::from_record(r).ok().map(|m| (m.seq, r)))
-            .max_by_key(|(seq, _)| *seq);
-        if let Some((_, m)) = manifest
-            && !records.contains(m)
+        if let Some(m) = snap.manifest_record(&root)
+            && !records.contains(&m)
         {
-            records.push(m.clone());
+            records.push((*m).clone());
         }
         records.push(p.receipt.clone());
     }

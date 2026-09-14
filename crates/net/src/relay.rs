@@ -263,11 +263,8 @@ impl Relay {
         Ok(())
     }
 
-    async fn stored_size(&self, address: &Address, author: &PublicKey) -> Result<Option<u64>> {
+    async fn stored_size(&self, address: &Address) -> Result<Option<u64>> {
         let Some(record) = self.index.record(address)? else { return Ok(None) };
-        if record.author() != author {
-            return Err(Error::Refused("record by another author".to_owned()));
-        }
         let mut size = record.to_bytes().len() as u64;
         if let Body::Blob(blob) = record.body() {
             size = size.saturating_add(self.blob_size(blob).await?);
@@ -305,14 +302,11 @@ impl Relay {
         for address in &receipt.records {
             let size = match batch.pending.iter().position(|p| p.record.address() == *address) {
                 Some(i) => {
-                    if batch.pending[i].record.author() != record.author() {
-                        return Err(Error::Refused("record by another author".to_owned()));
-                    }
                     covered.push(i);
                     batch.pending[i].size
                 }
                 None => self
-                    .stored_size(address, record.author())
+                    .stored_size(address)
                     .await?
                     .ok_or_else(|| Error::Refused(format!("{address} is not in the batch")))?,
             };
@@ -329,7 +323,13 @@ impl Relay {
         covered.sort_unstable_by(|a, b| b.cmp(a));
         let mut records: Vec<Record> =
             covered.iter().map(|&i| batch.pending.remove(i).record).collect();
-        records.extend(manifest_for(record.author(), batch));
+        let mut authors: Vec<PublicKey> = records.iter().map(|r| *r.author()).collect();
+        authors.push(*record.author());
+        authors.sort_unstable();
+        authors.dedup();
+        for author in &authors {
+            records.extend(manifest_for(author, batch));
+        }
         records.push(record.clone());
         let mut pins = receipt.records.clone();
         pins.push(record.address());

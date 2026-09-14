@@ -135,3 +135,32 @@ fn login_round_trip_on_the_command_line() {
     let out = b.ok(&["login", "verify", proof, "--service", "http://127.0.0.1:8080"]);
     assert!(out.starts_with(&root), "the proof carries its manifest: {out}");
 }
+
+#[test]
+fn a_retired_device_keeps_its_earlier_records() {
+    let a = Machine::new("retire");
+    let b = Machine::new("retire-reader");
+    let root = a.ok(&["init"]).lines().next().unwrap().to_owned();
+    a.ok(&["device", "add", "phone"]);
+    a.ok(&["manifest"]);
+    let page = a.home.join("page.md");
+    std::fs::write(&page, "# before").unwrap();
+    let before = a.ok(&["sign", page.to_str().unwrap(), "--as", "phone"]).trim().to_owned();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let (success, text) = a.run(&["device", "retire", "phone", "--at", "1"]);
+    assert!(!success && text.contains("after the device was created"), "{text}");
+    let retired = a.ok(&["device", "retire", "phone"]);
+    assert!(retired.contains("retired") && retired.contains("expires"), "{retired}");
+    a.ok(&["manifest"]);
+    std::fs::write(&page, "# after").unwrap();
+    let after = a.ok(&["sign", page.to_str().unwrap(), "--as", "phone"]).trim().to_owned();
+
+    copy_records(&a.records(), &b.records());
+    assert!(b.ok(&["verify", &before]).contains("kind    page"));
+    let (success, text) = b.run(&["verify", &after]);
+    assert!(!success && text.contains("validity window"), "{text}");
+    let whoami = a.ok(&["whoami"]);
+    assert!(whoami.contains("phone  created") && whoami.contains("expires"), "{whoami}");
+    assert!(whoami.contains(&root));
+}

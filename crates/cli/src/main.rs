@@ -6,6 +6,7 @@ mod net;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use weft_core::{
@@ -156,6 +157,11 @@ enum DeviceCommand {
     Revoke {
         label: String,
     },
+    Retire {
+        label: String,
+        #[arg(long)]
+        at: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -185,6 +191,12 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Device { command: DeviceCommand::Revoke { label } } => {
             let key = home.revoke(&label)?;
             say!("revoked {}  {label}", key.address());
+            say!("publish a new manifest with `weft manifest`");
+            Ok(())
+        }
+        Command::Device { command: DeviceCommand::Retire { label, at } } => {
+            let (key, at) = home.retire(&label, &home::passphrase(false)?, at)?;
+            say!("retired {}  {label}  expires {at}", key.address());
             say!("publish a new manifest with `weft manifest`");
             Ok(())
         }
@@ -258,9 +270,9 @@ fn login_sign(home: &Home, store: &Store, challenge: &str, signer: &str) -> Resu
     let key = home.open(signer, &home::passphrase(false)?)?;
     let record = challenge.draft(&root, &key.public(), home::now()?).sign(&key)?;
     let snap = store.snapshot()?;
-    let manifest = snap.manifest_record(&root);
-    verify(&record, manifest.and_then(|r| Manifest::from_record(r).ok()).as_ref())?;
-    let proof = Proof { login: record, manifest: manifest.cloned() };
+    let manifest = snap.manifest_record(&root).map(|r| (*r).clone());
+    verify(&record, manifest.as_ref().and_then(|r| Manifest::from_record(r).ok()).as_ref())?;
+    let proof = Proof { login: record, manifest };
     say!("{}", proof.to_text());
     Ok(())
 }
@@ -327,10 +339,10 @@ fn receipts(home: &Home, store: &Store) -> Result<()> {
     let root = home.root()?;
     let snap = store.snapshot()?;
     let manifest = snap.manifest(&root);
-    let mut receipts: Vec<(&Record, Receipt)> = snap
+    let mut receipts: Vec<(Arc<Record>, Receipt)> = snap
         .own(&root, manifest.as_ref())
         .filter(|r| r.kind() == weft_core::receipt::KIND)
-        .filter_map(|r| Receipt::from_record(r).ok().map(|x| (r, x)))
+        .filter_map(|r| Receipt::from_record(&r).ok().map(|x| (r, x)))
         .collect();
     receipts.sort_by_key(|(r, _)| r.created());
     for (record, receipt) in receipts {
@@ -422,7 +434,7 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
     let prev = snap
         .records()
         .filter(|r| r.author() == &root && r.kind() == weft_core::manifest::KIND)
-        .filter_map(|r| Manifest::from_record(r).ok().map(|m| (r.address(), m)))
+        .filter_map(|r| Manifest::from_record(&r).ok().map(|m| (r.address(), m)))
         .max_by_key(|(_, m)| m.seq);
     let next = home.manifest(prev.as_ref().map(|(_, m)| m), prev.as_ref().map(|(a, _)| *a))?;
     let key = home.open(ROOT, &home::passphrase(false)?)?;

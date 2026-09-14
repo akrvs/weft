@@ -145,3 +145,59 @@ fn the_cache_stays_under_its_cap_and_reads_fall_through_to_disk() {
     assert_eq!(unlimited.cached_bytes(), one * 6);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_index_is_reused_until_the_directory_changes_and_loads_on_demand() {
+    let dir = std::env::temp_dir().join(format!("weft-home-{}-index", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = key(1);
+    let note = |n: u8| {
+        Draft {
+            author: root.public(),
+            signer: root.public(),
+            kind: "note".into(),
+            created: u64::from(n) + 1,
+            refs: vec![],
+            body: Body::Inline(vec![n; 64]),
+        }
+        .sign(&root)
+        .unwrap()
+    };
+    let notes: Vec<_> = (0..4u8).map(note).collect();
+    let store = Store::with_cache(dir.clone(), 1);
+    for n in &notes {
+        store.put(n).unwrap();
+    }
+    let records = dir.join("records");
+    let settled = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+    let dir_file = std::fs::File::open(&records).unwrap();
+    dir_file.set_modified(settled).unwrap();
+    assert_eq!(store.snapshot().unwrap().len(), 4);
+
+    let fifth = note(9);
+    store.put(&fifth).unwrap();
+    dir_file.set_modified(settled).unwrap();
+    let snap = store.snapshot().unwrap();
+    assert_eq!(snap.len(), 4, "an unchanged mtime reuses the index");
+    assert!(snap.find(fifth.address()).is_none());
+    dir_file.set_modified(std::time::SystemTime::now()).unwrap();
+    let snap = store.snapshot().unwrap();
+    assert_eq!(snap.len(), 5, "a changed mtime walks again");
+    assert!(snap.find(fifth.address()).is_some());
+    assert_eq!(store.cached_bytes(), 0, "a walk keeps nothing past the cap");
+
+    dir_file.set_modified(settled).unwrap();
+    assert_eq!(store.snapshot().unwrap().len(), 5);
+    for n in notes.iter().chain([&fifth]) {
+        std::fs::remove_file(records.join(format!("{}.weft", n.address()))).unwrap();
+    }
+    dir_file.set_modified(settled).unwrap();
+    let snap = store.snapshot().unwrap();
+    assert_eq!(snap.len(), 5, "metadata comes from the index");
+    assert_eq!(snap.records().count(), 0, "records load from disk when asked");
+    assert!(snap.own(&root.public(), None).next().is_none());
+    dir_file.set_modified(std::time::SystemTime::now()).unwrap();
+    assert!(store.snapshot().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

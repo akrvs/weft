@@ -68,14 +68,14 @@ fetch only the manifest.
    no receipt covers are rejected with `payment required`.
 6. A receipt is honoured when its `relay` is this relay, its voucher's
    bank is one the relay trusts, the voucher id is not yet spent, `until`
-   is after now and at most 366 days ahead, every record it names is by
-   the receipt's author and is in the batch or already stored, and
-   `cents` is at least the cost. The cost is the sum over the named
-   records of `ceil(bytes / 1024) * days * rate`, bytes being the record
-   plus its blob, `days = ceil((until - now) / 86400)`. No change is
-   given. The voucher is then spent, the records, the author's manifest,
-   and the receipt are stored, and each named record and the receipt is
-   pinned until `until`, or later if already pinned later.
+   is after now and at most 366 days ahead, every record it names, by
+   any author, is in the batch or already stored, and `cents` is at least
+   the cost. The cost is the sum over the named records of
+   `ceil(bytes / 1024) * days * rate`, bytes being the record plus its
+   blob, `days = ceil((until - now) / 86400)`. No change is given. The
+   voucher is then spent, the records, the manifests of their authors and
+   of the payer, and the receipt are stored, and each named record and
+   the receipt is pinned until `until`, or later if already pinned later.
 7. A receipt by an allowlisted author is stored and nothing is charged.
 8. A manifest replaces the author's newest manifest only when its `seq`
    is higher. A pointer replaces the head for its author and name only
@@ -94,9 +94,10 @@ iroh-blobs file store beside it.
 ## Sweep
 
 At start, every 60 seconds, and after a reload the relay walks its
-authors table under one rule, decoding no record. A record stays if its author is allowlisted, if
-it holds a pin that has not passed, or if it is the current manifest of
-an author who still holds a pin. Everything else goes, with its pin
+authors table under one rule, decoding no record. A record stays if its
+author is allowlisted, if it holds a pin that has not passed, or if it is
+the current manifest of an author one of whose records holds such a pin.
+Everything else goes, with its pin
 entry, the heads that pointed at it, and the manifest entry that named
 it. Spent voucher ids are kept forever.
 

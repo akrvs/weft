@@ -272,15 +272,12 @@ fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<S
     let keep: HashSet<&[u8; 32]> = keep.iter().map(PublicKey::bytes).collect();
     let mut expired = Vec::new();
     let mut pinned: HashSet<[u8; 32]> = HashSet::new();
-    let mut paying: HashSet<[u8; 32]> = HashSet::new();
     for entry in pins.iter()? {
         let (k, v) = entry?;
-        let (until, author) = v.value();
-        if until < now {
+        if v.value().0 < now {
             expired.push(*k.value());
         } else {
             pinned.insert(*k.value());
-            paying.insert(*author);
         }
     }
     for address in &expired {
@@ -293,18 +290,16 @@ fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<S
         if keep.contains(&author) {
             continue;
         }
-        let manifest = if paying.contains(&author) {
+        let records = records
+            .map(|r| r.map(|v| *v.value()).map_err(crate::Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        let manifest = if records.iter().any(|a| pinned.contains(a)) {
             tables.manifests.get(&author)?.map(|m| *m.value())
         } else {
             None
         };
-        let mut gone = HashSet::new();
-        for record in records {
-            let address = *record?.value();
-            if !pinned.contains(&address) && manifest != Some(address) {
-                gone.insert(address);
-            }
-        }
+        let gone: HashSet<[u8; 32]> =
+            records.into_iter().filter(|a| !pinned.contains(a) && manifest != Some(*a)).collect();
         if !gone.is_empty() {
             dropped.push((author, gone));
         }

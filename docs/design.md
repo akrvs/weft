@@ -125,6 +125,10 @@ acknowledging that a specific service is owed a specific amount, settled
 out of band through any rail. Authors pay relays to host, readers pay
 authors per article or month, readers pay relays for priority. None
 requires the reader to be identified beyond a possibly throwaway key.
+Version 1 settles through the voucher in `protocol.md`, a bearer token a
+bank the relay trusts has signed. A real rail, a Lightning preimage or an
+ecash token, replaces the voucher behind `Relay::settle` in a later
+version; nothing else in the protocol names the rail.
 
 ### Trust and moderation
 
@@ -212,8 +216,8 @@ adversary; a token or sale; mobile before desktop; live streaming.
 - Render a restricted native subset for signed records before any
   sandboxed HTML.
 - Revocation is retroactive in version 1: everything a revoked key signed
-  stops verifying. Distinguishing a lost key from a compromised one, with
-  an effective time, is open for M2.
+  stops verifying. A lost key is retired through the device's `expires`
+  instead, which keeps its earlier records; `protocol.md` section 7.
 
 ## Open questions
 
@@ -222,5 +226,4 @@ adversary; a token or sale; mobile before desktop; live streaming.
 - Streaming payments versus aggregated receipts.
 - When a consensus backed name registry is justified.
 - Record kinds: fixed set or open namespace with a small core.
-- Revocation with an effective time.
 - The project's real name.
