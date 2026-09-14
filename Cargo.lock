@@ -6366,6 +6366,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "percent-encoding",
+ "redb",
  "tokio",
  "weft-core",
  "weft-home",

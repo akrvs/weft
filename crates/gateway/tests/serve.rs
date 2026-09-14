@@ -104,17 +104,41 @@ async fn serve(
     allow: Option<HashSet<PublicKey>>,
     limits: Limits,
 ) -> (String, Arc<Gateway>) {
+    let (addr, gateway, _) = serve_handle(resolver, allow, limits).await;
+    (addr, gateway)
+}
+
+type Serving = (String, Arc<Gateway>, tokio::task::JoinHandle<std::io::Result<()>>);
+
+async fn serve_handle(
+    resolver: Resolver<Local>,
+    allow: Option<HashSet<PublicKey>>,
+    limits: Limits,
+) -> Serving {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let gateway =
         Arc::new(Gateway::new(resolver, format!("http://{addr}"), allow, limits).unwrap());
-    tokio::spawn(weft_gateway::serve(listener, Arc::clone(&gateway)));
-    (addr.to_string(), gateway)
+    let handle = tokio::spawn(weft_gateway::serve(listener, Arc::clone(&gateway)));
+    (addr.to_string(), gateway, handle)
+}
+
+async fn restart(site: &Site, (_, gateway, handle): Serving) -> Serving {
+    handle.abort();
+    for _ in 0..100 {
+        if Arc::strong_count(&gateway) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(gateway);
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    serve_handle(resolver, None, Limits::default()).await
 }
 
 async fn remote_reader(site: &Site, remote: &Remote) -> Resolver<Local> {
     let home = Home::new(site.dir.clone());
-    home.add_relay(remote.addr.id).unwrap();
+    home.add_relay(remote.addr.clone().into()).unwrap();
     let client = Client::from_endpoint(endpoint(Some(&remote.addr)).await);
     Resolver::with_client(home, Local::new(site.dir.clone()), client)
 }
@@ -222,10 +246,15 @@ impl Reply {
 }
 
 async fn request(addr: &str, method: &str, path: &str) -> Reply {
+    request_host(addr, method, path, "x").await
+}
+
+async fn request_host(addr: &str, method: &str, path: &str, host: &str) -> Reply {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream
         .write_all(
-            format!("{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
         )
         .await
         .unwrap();
@@ -384,8 +413,11 @@ async fn login_round_trip() {
     let page = r.text();
     assert!(page.contains("http-equiv=\"refresh\""));
     let challenge = challenge_in(&page);
-    assert_eq!(challenge.service, origin);
+    assert_eq!(challenge.service, "http://x", "the service names the host the browser used");
     assert!(challenge.expires > now);
+    let r = request_host(&addr, "GET", "/login", &addr).await;
+    let at_origin = request_host(&addr, "GET", r.header("location").unwrap(), &addr).await;
+    assert_eq!(challenge_in(&at_origin.text()).service, origin);
 
     let sign = |c: &Challenge, key: &SecretKey| Proof {
         login: c.draft(&root, &key.public(), now).sign(key).unwrap(),
@@ -500,7 +532,9 @@ async fn login_round_trip() {
 #[tokio::test]
 async fn store_down_answers_503_and_sessions_survive_a_gateway_restart() {
     let site = site();
-    let addr = start(&site).await;
+    let resolver = Resolver::new(Home::new(site.dir.clone()), Local::new(site.dir.clone()));
+    let first = serve_handle(resolver, None, Limits::default()).await;
+    let addr = first.0.clone();
     let now = weft_home::now().unwrap();
     assert_eq!(request(&addr, "GET", &format!("/{}", site.page)).await.status, 200);
 
@@ -517,27 +551,27 @@ async fn store_down_answers_503_and_sessions_survive_a_gateway_restart() {
     let r = send(&addr, "POST", "/login", &[], proof.to_text().as_bytes()).await;
     assert_eq!(r.status, 200);
     let cookie = cookie_of(&r);
-    let file = std::fs::read(site.dir.join(weft_gateway::login::SESSIONS)).unwrap();
-    assert!(!file.is_empty());
+    assert!(site.dir.join(weft_gateway::state::FILE).is_file());
 
-    let again = start(&site).await;
+    let second = restart(&site, first).await;
+    let again = second.0.clone();
     let r = send(&again, "GET", "/login", &[("Cookie", &cookie)], b"").await;
-    assert_eq!(r.status, 200, "the session came from the file");
+    assert_eq!(r.status, 200, "the session came from the table");
     assert!(r.text().contains("Logged in"));
     let r = send(&again, "POST", "/logout", &[("Cookie", &cookie)], b"").await;
     assert_eq!(r.status, 303);
-    let third = start(&site).await;
+    let third = restart(&site, second).await.0;
     let r = send(&third, "GET", "/login", &[("Cookie", &cookie)], b"").await;
-    assert_eq!(r.status, 303, "logout reached the file");
+    assert_eq!(r.status, 303, "logout reached the table");
 
     site.daemon.abort();
     std::fs::remove_file(weft_store::socket_path(&site.dir)).unwrap();
-    let r = request(&addr, "GET", &format!("/{}", site.page)).await;
+    let r = request(&third, "GET", &format!("/{}", site.page)).await;
     assert_eq!(r.status, 503);
     assert!(r.text().contains("not running"));
-    let r = request(&addr, "GET", &format!("/blob/{}", site.blob)).await;
+    let r = request(&third, "GET", &format!("/blob/{}", site.blob)).await;
     assert_eq!(r.status, 503);
-    let r = request(&addr, "GET", "/login").await;
+    let r = request(&third, "GET", "/login").await;
     assert_eq!(r.status, 303, "login does not need the daemon");
 
     let _ = std::fs::remove_dir_all(&site.dir);
@@ -705,6 +739,28 @@ async fn a_replaced_allow_list_takes_effect_at_once() {
     let cookie = cookie_of(&r);
     let r = send(&addr, "GET", &format!("/{}", site.page), &[("Cookie", &cookie)], b"").await;
     assert_eq!(r.status, 200, "a swept session reads anonymously");
+    site.daemon.abort();
+    let _ = std::fs::remove_dir_all(&site.dir);
+}
+
+#[tokio::test]
+async fn a_publisher_host_routes_and_names_its_own_service() {
+    let site = site();
+    let addr = start(&site).await;
+    let r = request_host(&addr, "GET", "/", "x").await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("<form"), "a host that is no domain sees the form");
+    let r = request_host(&addr, "GET", &format!("/{}", site.page), "alice.example").await;
+    assert_eq!(r.status, 200, "a full target reads the same on a publisher host");
+    assert_eq!(r.header("x-weft-name").unwrap(), "address");
+    let r = request_host(&addr, "GET", "/login", "alice.example:8080").await;
+    let location = r.header("location").unwrap().to_owned();
+    let page = request_host(&addr, "GET", &location, "alice.example:8080").await.text();
+    assert_eq!(challenge_in(&page).service, "http://alice.example:8080");
+    let r = request_host(&addr, "GET", "/login", "Bad Host").await;
+    assert_eq!(r.status, 400);
+    let r = request_host(&addr, "GET", "/login", "x").await;
+    assert_eq!(r.status, 303, "the origin's own login still works");
     site.daemon.abort();
     let _ = std::fs::remove_dir_all(&site.dir);
 }

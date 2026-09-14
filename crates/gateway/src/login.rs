@@ -1,27 +1,27 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use weft_core::address::Kind;
-use weft_core::cbor::{self, Value};
 use weft_core::{Address, Challenge, Manifest, Proof, PublicKey, login};
+
+use crate::state::State;
 
 pub const PENDING_TTL: u64 = 300;
 pub const SESSION_TTL: u64 = 86_400;
 pub const PENDING_MAX: usize = 1024;
 pub const DEFAULT_SESSIONS: usize = 4096;
 pub const COOKIE: &str = "weft_session";
-pub const SESSIONS: &str = "gateway/sessions";
+pub const MAX_HOST: usize = 253;
 
 pub type Token = [u8; 32];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Origin,
+    Host,
     Proof(weft_core::Error),
     Nonce,
     Full,
-    Cap(usize),
     Random,
     Denied,
     State(String),
@@ -30,11 +30,11 @@ pub enum Refusal {
 impl core::fmt::Display for Refusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Origin => f.write_str("origin is not a valid service name"),
+            Self::Origin => f.write_str("origin is not an http or https service name"),
+            Self::Host => f.write_str("host is not a service name"),
             Self::Proof(e) => write!(f, "proof rejected: {e}"),
             Self::Nonce => f.write_str("challenge unknown, used, or expired"),
             Self::Full => f.write_str("too many logins in flight"),
-            Self::Cap(n) => write!(f, "cap {n} is over the file limit {}", cbor::MAX_ITEMS),
             Self::Random => f.write_str("no randomness"),
             Self::Denied => f.write_str("identity is not on the allow list"),
             Self::State(e) => f.write_str(e),
@@ -53,6 +53,7 @@ pub enum Claim {
 struct Pending {
     expires: u64,
     token: Option<Token>,
+    service: String,
 }
 
 #[derive(Debug)]
@@ -64,8 +65,8 @@ struct Session {
 #[derive(Debug)]
 pub struct Logins {
     origin: String,
-    path: PathBuf,
     cap: usize,
+    state: Arc<State>,
     allow: RwLock<Option<HashSet<PublicKey>>>,
     pending: Mutex<HashMap<[u8; 32], Pending>>,
     sessions: Mutex<BTreeMap<Token, Session>>,
@@ -79,10 +80,6 @@ fn random() -> Result<[u8; 32], Refusal> {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn state(e: impl core::fmt::Display) -> Refusal {
-    Refusal::State(e.to_string())
 }
 
 pub fn allowlist(text: &str) -> Result<HashSet<PublicKey>, Refusal> {
@@ -99,97 +96,56 @@ pub fn allowlist(text: &str) -> Result<HashSet<PublicKey>, Refusal> {
         .collect()
 }
 
-pub fn checked_cap(cap: usize) -> Result<usize, Refusal> {
-    if u64::try_from(cap).is_ok_and(|n| n <= cbor::MAX_ITEMS) {
-        Ok(cap)
-    } else {
-        Err(Refusal::Cap(cap))
-    }
+fn scheme(origin: &str) -> Option<&str> {
+    ["https", "http"].into_iter().find(|s| {
+        origin.strip_prefix(s).and_then(|r| r.strip_prefix("://")).is_some_and(|h| !h.is_empty())
+    })
 }
 
-fn load(path: &Path, cap: usize, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
-    let mut sessions =
-        parse(path, now).map_err(|e| Refusal::State(format!("{}: {e}", path.display())))?;
-    trim(&mut sessions, cap);
-    Ok(sessions)
+pub fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= MAX_HOST
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b":.-[]".contains(&b))
 }
 
-fn trim(sessions: &mut BTreeMap<Token, Session>, cap: usize) {
-    while sessions.len() > cap {
-        let soonest = sessions.iter().min_by_key(|(_, s)| s.expires).map(|(t, _)| *t);
-        match soonest {
-            Some(t) => sessions.remove(&t),
-            None => break,
-        };
-    }
-}
-
-fn parse(path: &Path, now: u64) -> Result<BTreeMap<Token, Session>, Refusal> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(e) => return Err(state(e)),
-    };
-    let value = cbor::decode(&bytes).map_err(state)?;
-    let items = value.as_array().ok_or_else(|| state("not an array"))?;
-    let mut sessions = BTreeMap::new();
-    for item in items {
-        let map = item.as_map().ok_or_else(|| state("session is not a map"))?;
-        cbor::only(map, &["author", "expires", "token"]).map_err(state)?;
-        let token: Token = cbor::field(map, "token")
-            .map_err(state)?
-            .as_bytes()
-            .and_then(|b| b.try_into().ok())
-            .ok_or_else(|| state("token is not 32 bytes"))?;
-        let author = cbor::field(map, "author")
-            .map_err(state)?
-            .as_bytes()
-            .and_then(|b| <&[u8; 32]>::try_from(b).ok())
-            .ok_or_else(|| state("author is not 32 bytes"))
-            .and_then(|b| PublicKey::from_bytes(b).map_err(state))?;
-        let expires = cbor::field(map, "expires")
-            .map_err(state)?
-            .as_uint()
-            .ok_or_else(|| state("expires is not an integer"))?;
-        if now < expires && sessions.insert(token, Session { author, expires }).is_some() {
-            return Err(state("duplicate token"));
-        }
-    }
-    Ok(sessions)
-}
-
-fn save(path: &Path, sessions: &BTreeMap<Token, Session>) -> Result<(), Refusal> {
-    let items = sessions
-        .iter()
-        .map(|(token, s)| {
-            Value::Map(vec![
-                ("author".into(), Value::Bytes(s.author.bytes().to_vec())),
-                ("expires".into(), Value::Uint(s.expires)),
-                ("token".into(), Value::Bytes(token.to_vec())),
-            ])
-        })
-        .collect();
-    weft_home::fs::replace_private(path, &Value::Array(items).encode()).map_err(state)
+fn soonest(sessions: &BTreeMap<Token, Session>, cap: usize) -> Vec<Token> {
+    let mut by_expiry: Vec<(u64, Token)> = sessions.iter().map(|(t, s)| (s.expires, *t)).collect();
+    by_expiry.sort_unstable();
+    by_expiry.iter().take(sessions.len().saturating_sub(cap)).map(|(_, t)| *t).collect()
 }
 
 impl Logins {
     pub fn new(
         origin: String,
-        home: &Path,
+        state: Arc<State>,
         allow: Option<HashSet<PublicKey>>,
         cap: usize,
         now: u64,
     ) -> Result<Self, Refusal> {
-        if !login::valid_service(&origin) {
+        if !login::valid_service(&origin) || scheme(&origin).is_none() {
             return Err(Refusal::Origin);
         }
-        let cap = checked_cap(cap)?;
-        let path = home.join(SESSIONS);
-        let sessions = load(&path, cap, now)?;
+        let mut sessions = BTreeMap::new();
+        let mut gone = Vec::new();
+        for (token, author, expires) in state.sessions()? {
+            if now < expires {
+                sessions.insert(token, Session { author, expires });
+            } else {
+                gone.push(token);
+            }
+        }
+        let evicted = soonest(&sessions, cap);
+        for t in &evicted {
+            sessions.remove(t);
+        }
+        gone.extend(evicted);
+        state.remove_sessions(gone.iter())?;
         Ok(Self {
             origin,
-            path,
             cap,
+            state,
             allow: RwLock::new(allow),
             pending: Mutex::new(HashMap::new()),
             sessions: Mutex::new(sessions),
@@ -207,13 +163,15 @@ impl Logins {
 
     pub fn sweep(&self, now: u64) -> Result<usize, Refusal> {
         let mut sessions = lock(&self.sessions);
-        let before = sessions.len();
-        sessions.retain(|_, s| now < s.expires);
-        let swept = before - sessions.len();
-        if swept > 0 {
-            save(&self.path, &sessions)?;
+        let gone: Vec<Token> =
+            sessions.iter().filter(|(_, s)| now >= s.expires).map(|(t, _)| *t).collect();
+        for t in &gone {
+            sessions.remove(t);
         }
-        Ok(swept)
+        if !gone.is_empty() {
+            self.state.remove_sessions(gone.iter())?;
+        }
+        Ok(gone.len())
     }
 
     pub fn origin(&self) -> &str {
@@ -224,7 +182,17 @@ impl Logins {
         self.origin.starts_with("https://")
     }
 
-    pub fn open(&self, now: u64) -> Result<Challenge, Refusal> {
+    pub fn service(&self, host: Option<&str>) -> Result<String, Refusal> {
+        let Some(host) = host else { return Ok(self.origin.clone()) };
+        if !valid_host(host) {
+            return Err(Refusal::Host);
+        }
+        let service = format!("{}://{host}", scheme(&self.origin).unwrap_or("http"));
+        if login::valid_service(&service) { Ok(service) } else { Err(Refusal::Host) }
+    }
+
+    pub fn open(&self, now: u64, host: Option<&str>) -> Result<Challenge, Refusal> {
+        let service = self.service(host)?;
         let nonce = random()?;
         let expires = now.saturating_add(PENDING_TTL);
         let mut pending = lock(&self.pending);
@@ -232,8 +200,8 @@ impl Logins {
         if pending.len() >= PENDING_MAX {
             return Err(Refusal::Full);
         }
-        pending.insert(nonce, Pending { expires, token: None });
-        Ok(Challenge { service: self.origin.clone(), nonce, expires })
+        pending.insert(nonce, Pending { expires, token: None, service: service.clone() });
+        Ok(Challenge { service, nonce, expires })
     }
 
     pub fn satisfy(
@@ -242,25 +210,34 @@ impl Logins {
         now: u64,
         newer: Option<&Manifest>,
     ) -> Result<(PublicKey, Token), Refusal> {
-        let login = proof.verify(&self.origin, now, newer).map_err(Refusal::Proof)?;
-        if !self.allows(&login.author) {
-            return Err(Refusal::Denied);
-        }
+        let nonce = Challenge::from_record(&proof.login).map_err(Refusal::Proof)?.nonce;
         let token = random()?;
         let mut pending = lock(&self.pending);
-        let entry = pending.get_mut(&login.challenge.nonce).ok_or(Refusal::Nonce)?;
+        let entry = pending.get_mut(&nonce).ok_or(Refusal::Nonce)?;
         if now >= entry.expires || entry.token.is_some() {
             return Err(Refusal::Nonce);
         }
-        let mut sessions = lock(&self.sessions);
-        sessions.retain(|_, s| now < s.expires);
-        trim(&mut sessions, self.cap.saturating_sub(1));
-        let expires = now.saturating_add(SESSION_TTL);
-        sessions.insert(token, Session { author: login.author, expires });
-        if let Err(e) = save(&self.path, &sessions) {
-            sessions.remove(&token);
-            return Err(e);
+        let login = proof.verify(&entry.service, now, newer).map_err(Refusal::Proof)?;
+        if !self.allows(&login.author) {
+            return Err(Refusal::Denied);
         }
+        let mut sessions = lock(&self.sessions);
+        let mut gone: Vec<Token> =
+            sessions.iter().filter(|(_, s)| now >= s.expires).map(|(t, _)| *t).collect();
+        for t in &gone {
+            sessions.remove(t);
+        }
+        let evicted = soonest(&sessions, self.cap.saturating_sub(1));
+        for t in &evicted {
+            sessions.remove(t);
+        }
+        gone.extend(evicted);
+        if !gone.is_empty() {
+            self.state.remove_sessions(gone.iter())?;
+        }
+        let expires = now.saturating_add(SESSION_TTL);
+        self.state.put_session(&token, &login.author, expires)?;
+        sessions.insert(token, Session { author: login.author, expires });
         entry.token = Some(token);
         Ok((login.author, token))
     }
@@ -278,7 +255,7 @@ impl Logins {
                 Claim::Ready(token)
             }
             None => Claim::Waiting(Challenge {
-                service: self.origin.clone(),
+                service: entry.service.clone(),
                 nonce: *nonce,
                 expires: entry.expires,
             }),
@@ -293,7 +270,7 @@ impl Logins {
     pub fn logout(&self, token: &Token) -> Result<(), Refusal> {
         let mut sessions = lock(&self.sessions);
         if sessions.remove(token).is_some() {
-            save(&self.path, &sessions)?;
+            self.state.remove_sessions([token])?;
         }
         Ok(())
     }
@@ -321,6 +298,7 @@ pub fn token_from_cookies(header: &str) -> Option<Token> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use weft_core::SecretKey;
 
     const T: u64 = 1_800_000_000;
@@ -332,42 +310,16 @@ mod tests {
         dir
     }
 
+    fn state(dir: &Path) -> Arc<State> {
+        Arc::new(State::open(dir).unwrap())
+    }
+
+    fn at(origin: &str, dir: &Path, cap: usize, now: u64) -> Result<Logins, Refusal> {
+        Logins::new(origin.into(), state(dir), None, cap, now)
+    }
+
     fn logins(name: &str) -> Logins {
-        Logins::new(ORIGIN.into(), &home(name), None, DEFAULT_SESSIONS, T).unwrap()
-    }
-
-    fn capped(name: &str, cap: usize, now: u64) -> Result<Logins, Refusal> {
-        Logins::new(ORIGIN.into(), &home(name), None, cap, now)
-    }
-
-    #[test]
-    fn a_full_sessions_table_evicts_the_soonest_expiry_and_a_load_keeps_the_newest() {
-        let dir = home("evict");
-        let logins = Logins::new(ORIGIN.into(), &dir, None, 2, T).unwrap();
-        let keys: Vec<_> = (1..=3u8).map(|n| SecretKey::from_seed([n; 32])).collect();
-        let tokens: Vec<_> = keys
-            .iter()
-            .enumerate()
-            .map(|(i, key)| {
-                let at = T + u64::try_from(i).unwrap();
-                let challenge = logins.open(at).unwrap();
-                logins.satisfy(&proof(&challenge, key), at, None).unwrap().1
-            })
-            .collect();
-        assert_eq!(logins.session(&tokens[0], T + 3), None, "the first login made room");
-        assert_eq!(logins.session(&tokens[1], T + 3), Some(keys[1].public()));
-        assert_eq!(logins.session(&tokens[2], T + 3), Some(keys[2].public()));
-        let lowered = Logins::new(ORIGIN.into(), &dir, None, 1, T + 3).unwrap();
-        assert_eq!(lowered.session(&tokens[1], T + 4), None, "a lower cap keeps the newest");
-        assert_eq!(lowered.session(&tokens[2], T + 4), Some(keys[2].public()));
-        let one = Logins::new(ORIGIN.into(), &dir, None, 1, T + 4).unwrap();
-        let challenge = one.open(T + 5).unwrap();
-        let (_, fresh) = one.satisfy(&proof(&challenge, &keys[0]), T + 5, None).unwrap();
-        assert_eq!(one.session(&tokens[2], T + 6), None);
-        assert_eq!(one.session(&fresh, T + 6), Some(keys[0].public()));
-        assert!(matches!(capped("over", 4097, T), Err(Refusal::Cap(4097))));
-        assert!(capped("edge", 4096, T).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
+        at(ORIGIN, &home(name), DEFAULT_SESSIONS, T).unwrap()
     }
 
     fn proof(challenge: &Challenge, key: &SecretKey) -> Proof {
@@ -376,23 +328,81 @@ mod tests {
     }
 
     #[test]
-    fn origin_must_be_a_service_name() {
+    fn a_full_sessions_table_evicts_the_soonest_expiry_and_a_load_keeps_the_newest() {
+        let dir = home("evict");
+        let logins = at(ORIGIN, &dir, 2, T).unwrap();
+        let keys: Vec<_> = (1..=3u8).map(|n| SecretKey::from_seed([n; 32])).collect();
+        let tokens: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let now = T + u64::try_from(i).unwrap();
+                let challenge = logins.open(now, None).unwrap();
+                logins.satisfy(&proof(&challenge, key), now, None).unwrap().1
+            })
+            .collect();
+        assert_eq!(logins.session(&tokens[0], T + 3), None, "the first login made room");
+        assert_eq!(logins.session(&tokens[1], T + 3), Some(keys[1].public()));
+        assert_eq!(logins.session(&tokens[2], T + 3), Some(keys[2].public()));
+        drop(logins);
+        let lowered = at(ORIGIN, &dir, 1, T + 3).unwrap();
+        assert_eq!(lowered.session(&tokens[1], T + 4), None, "a lower cap keeps the newest");
+        assert_eq!(lowered.session(&tokens[2], T + 4), Some(keys[2].public()));
+        drop(lowered);
+        let one = at(ORIGIN, &dir, 1, T + 4).unwrap();
+        let challenge = one.open(T + 5, None).unwrap();
+        let (_, fresh) = one.satisfy(&proof(&challenge, &keys[0]), T + 5, None).unwrap();
+        assert_eq!(one.session(&tokens[2], T + 6), None);
+        assert_eq!(one.session(&fresh, T + 6), Some(keys[0].public()));
+        assert_eq!(one.state.sessions().unwrap().len(), 1, "evictions reach the table");
+        drop(one);
+        assert!(at(ORIGIN, &dir, 100_000, T).is_ok(), "no cap ceiling");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn origin_must_be_an_http_service_name() {
         let dir = home("origin");
-        assert!(Logins::new("HTTP://x".into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
-        assert!(Logins::new(String::new(), &dir, None, DEFAULT_SESSIONS, T).is_err());
-        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_ok());
-        assert!(
-            Logins::new("https://example.com".into(), &dir, None, DEFAULT_SESSIONS, T)
-                .unwrap()
-                .secure()
+        assert_eq!(at("HTTP://x", &dir, DEFAULT_SESSIONS, T).unwrap_err(), Refusal::Origin);
+        assert_eq!(at("", &dir, DEFAULT_SESSIONS, T).unwrap_err(), Refusal::Origin);
+        assert_eq!(at("ftp://x", &dir, DEFAULT_SESSIONS, T).unwrap_err(), Refusal::Origin);
+        assert_eq!(at("http://", &dir, DEFAULT_SESSIONS, T).unwrap_err(), Refusal::Origin);
+        assert!(at(ORIGIN, &dir, DEFAULT_SESSIONS, T).is_ok());
+        assert!(at("https://example.com", &dir, DEFAULT_SESSIONS, T).unwrap().secure());
+    }
+
+    #[test]
+    fn the_service_follows_the_host_under_the_origin_scheme() {
+        let dir = home("host");
+        let logins = at("https://gw.example", &dir, DEFAULT_SESSIONS, T).unwrap();
+        assert_eq!(logins.service(None).unwrap(), "https://gw.example");
+        assert_eq!(logins.service(Some("alice.example")).unwrap(), "https://alice.example");
+        assert_eq!(
+            logins.service(Some("alice.example:8443")).unwrap(),
+            "https://alice.example:8443"
         );
+        assert_eq!(logins.service(Some("[::1]:8443")).unwrap(), "https://[::1]:8443");
+        for bad in ["", "Alice.example", "a/b", "a?b", "a@b", "a b", &"x".repeat(254)] {
+            assert_eq!(logins.service(Some(bad)).unwrap_err(), Refusal::Host, "{bad}");
+        }
+        let key = SecretKey::from_seed([1; 32]);
+        let challenge = logins.open(T, Some("alice.example")).unwrap();
+        assert_eq!(challenge.service, "https://alice.example");
+        let Claim::Waiting(waiting) = logins.claim(&challenge.nonce, T + 1) else { panic!() };
+        assert_eq!(waiting.service, "https://alice.example");
+        let elsewhere = Challenge { service: "https://gw.example".into(), ..challenge.clone() };
+        assert!(matches!(
+            logins.satisfy(&proof(&elsewhere, &key), T + 1, None),
+            Err(Refusal::Proof(_))
+        ));
+        assert!(logins.satisfy(&proof(&challenge, &key), T + 1, None).is_ok());
     }
 
     #[test]
     fn nonce_is_single_use_and_expires() {
         let logins = logins("nonce");
         let key = SecretKey::from_seed([1; 32]);
-        let challenge = logins.open(T).unwrap();
+        let challenge = logins.open(T, None).unwrap();
         assert!(matches!(logins.claim(&challenge.nonce, T + 1), Claim::Waiting(_)));
         let p = proof(&challenge, &key);
         let (author, token) = logins.satisfy(&p, T + 1, None).unwrap();
@@ -406,13 +416,16 @@ mod tests {
         logins.logout(&token).unwrap();
         assert_eq!(logins.session(&token, T + 3), None);
 
-        let late = logins.open(T).unwrap();
+        let late = logins.open(T, None).unwrap();
         assert!(matches!(logins.claim(&late.nonce, T + PENDING_TTL), Claim::Unknown));
-        let stale = logins.open(T).unwrap();
+        let stale = logins.open(T, None).unwrap();
         assert!(logins.satisfy(&proof(&stale, &key), T + PENDING_TTL, None).is_err());
         let unknown = Challenge { service: ORIGIN.into(), nonce: [7; 32], expires: T + 300 };
         assert_eq!(logins.satisfy(&proof(&unknown, &key), T + 1, None), Err(Refusal::Nonce));
-        let elsewhere = Challenge { service: "http://evil".into(), ..challenge };
+        let used = Challenge { service: "http://evil".into(), ..challenge };
+        assert_eq!(logins.satisfy(&proof(&used, &key), T + 1, None), Err(Refusal::Nonce));
+        let elsewhere =
+            Challenge { service: "http://evil".into(), ..logins.open(T, None).unwrap() };
         assert!(matches!(
             logins.satisfy(&proof(&elsewhere, &key), T + 1, None),
             Err(Refusal::Proof(_))
@@ -423,10 +436,10 @@ mod tests {
     fn pending_is_capped_and_swept() {
         let logins = logins("capped");
         for _ in 0..PENDING_MAX {
-            logins.open(T).unwrap();
+            logins.open(T, None).unwrap();
         }
-        assert_eq!(logins.open(T).err(), Some(Refusal::Full));
-        logins.open(T + PENDING_TTL).unwrap();
+        assert_eq!(logins.open(T, None).err(), Some(Refusal::Full));
+        logins.open(T + PENDING_TTL, None).unwrap();
     }
 
     #[test]
@@ -442,23 +455,21 @@ mod tests {
         assert_eq!(token_from_cookies("weft_session=!!!"), None);
         assert_eq!(token_from_cookies("weft_session=AAAA"), None);
         assert!(logins.cookie(None).contains("Max-Age=0"));
-        let secure =
-            Logins::new("https://x".into(), &home("secure"), None, DEFAULT_SESSIONS, T).unwrap();
+        let secure = at("https://x", &home("secure"), DEFAULT_SESSIONS, T).unwrap();
         assert!(secure.cookie(Some(&token)).contains("Secure"));
     }
 
     #[test]
-    fn sweep_drops_expired_sessions_from_the_file_and_allow_is_replaceable() {
+    fn sweep_drops_expired_sessions_from_the_table_and_allow_is_replaceable() {
         let dir = home("sweep");
         let key = SecretKey::from_seed([1; 32]);
-        let logins = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap();
-        let challenge = logins.open(T).unwrap();
+        let logins = at(ORIGIN, &dir, DEFAULT_SESSIONS, T).unwrap();
+        let challenge = logins.open(T, None).unwrap();
         let (_, token) = logins.satisfy(&proof(&challenge, &key), T + 1, None).unwrap();
         assert_eq!(logins.sweep(T + 2).unwrap(), 0);
         assert_eq!(logins.sweep(T + SESSION_TTL + 1).unwrap(), 1);
         assert_eq!(logins.session(&token, T + 2), None);
-        let reloaded = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 2).unwrap();
-        assert_eq!(reloaded.session(&token, T + 3), None, "the sweep reached the file");
+        assert!(logins.state.sessions().unwrap().is_empty(), "the sweep reached the table");
 
         let stranger = SecretKey::from_seed([2; 32]);
         assert!(logins.allows(&stranger.public()));
@@ -471,50 +482,37 @@ mod tests {
     }
 
     #[test]
-    fn sessions_survive_a_restart_and_a_bad_file_refuses() {
+    fn sessions_survive_a_restart_and_a_bad_table_refuses() {
         let dir = home("persist");
         let key = SecretKey::from_seed([1; 32]);
-        let first = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap();
-        let challenge = first.open(T).unwrap();
+        let first = at(ORIGIN, &dir, DEFAULT_SESSIONS, T).unwrap();
+        let challenge = first.open(T, None).unwrap();
         let (_, token) = first.satisfy(&proof(&challenge, &key), T + 1, None).unwrap();
-        let stale = first.open(T).unwrap();
+        let stale = first.open(T, None).unwrap();
         let (_, old) = first.satisfy(&proof(&stale, &key), T + 1, None).unwrap();
         drop(first);
 
-        let second = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 2).unwrap();
+        let second = at(ORIGIN, &dir, DEFAULT_SESSIONS, T + 2).unwrap();
         assert_eq!(second.session(&token, T + 3), Some(key.public()));
         second.logout(&token).unwrap();
-        let third = Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + 4).unwrap();
+        drop(second);
+        let third = at(ORIGIN, &dir, DEFAULT_SESSIONS, T + 4).unwrap();
         assert_eq!(third.session(&token, T + 5), None);
         assert_eq!(third.session(&old, T + 5), Some(key.public()));
-        let later =
-            Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T + SESSION_TTL + 2).unwrap();
+        drop(third);
+        let later = at(ORIGIN, &dir, DEFAULT_SESSIONS, T + SESSION_TTL + 2).unwrap();
         assert_eq!(later.session(&old, T + SESSION_TTL + 3), None);
+        assert!(later.state.sessions().unwrap().is_empty(), "expired rows leave the table");
+        drop(later);
 
-        let path = dir.join(SESSIONS);
+        let path = dir.join(crate::state::FILE);
         let good = std::fs::read(&path).unwrap();
-        std::fs::write(&path, &good[..good.len() - 1]).unwrap();
-        assert!(matches!(
-            Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).unwrap_err(),
-            Refusal::State(_)
-        ));
-        let extra = Value::Array(vec![Value::Map(vec![
-            ("author".into(), Value::Bytes(key.public().bytes().to_vec())),
-            ("expires".into(), Value::Uint(T + 10)),
-            ("token".into(), Value::Bytes(vec![1; 32])),
-            ("x".into(), Value::Uint(1)),
-        ])]);
-        std::fs::write(&path, extra.encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
-        let short = Value::Array(vec![Value::Map(vec![
-            ("author".into(), Value::Bytes(vec![1; 31])),
-            ("expires".into(), Value::Uint(T + 10)),
-            ("token".into(), Value::Bytes(vec![1; 32])),
-        ])]);
-        std::fs::write(&path, short.encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_err());
-        std::fs::write(&path, Value::Array(vec![]).encode()).unwrap();
-        assert!(Logins::new(ORIGIN.into(), &dir, None, DEFAULT_SESSIONS, T).is_ok());
+        std::fs::write(&path, &good[..64]).unwrap();
+        assert!(matches!(State::open(&dir).unwrap_err(), Refusal::State(_)));
+        std::fs::write(&path, b"not a database").unwrap();
+        assert!(State::open(&dir).is_err());
+        std::fs::write(&path, good).unwrap();
+        assert!(at(ORIGIN, &dir, DEFAULT_SESSIONS, T).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -525,10 +523,11 @@ mod tests {
         let text = format!(" {}\n\n", listed.public().address());
         let allow = allowlist(&text).unwrap();
         let logins =
-            Logins::new(ORIGIN.into(), &home("allow"), Some(allow), DEFAULT_SESSIONS, T).unwrap();
+            Logins::new(ORIGIN.into(), state(&home("allow")), Some(allow), DEFAULT_SESSIONS, T)
+                .unwrap();
         assert!(logins.allows(&listed.public()));
         assert!(!logins.allows(&stranger.public()));
-        let challenge = logins.open(T).unwrap();
+        let challenge = logins.open(T, None).unwrap();
         assert_eq!(
             logins.satisfy(&proof(&challenge, &stranger), T + 1, None),
             Err(Refusal::Denied)

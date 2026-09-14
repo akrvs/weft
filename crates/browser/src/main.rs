@@ -73,6 +73,7 @@ fn identity(app: State<'_, App>) -> Result<Identity> {
 struct GrantView {
     address: String,
     app: String,
+    name: Option<String>,
     access: String,
     kinds: String,
     expires: Option<u64>,
@@ -88,22 +89,19 @@ struct StoreView {
 async fn store_view(app: State<'_, App>) -> Result<StoreView> {
     let store = app.resolver.reads();
     let kinds = store.call(async |c| c.kinds().await).await.map_err(|e| err(&e))?;
-    let grants = store
-        .call(async |c| c.grants().await)
-        .await
-        .map_err(|e| err(&e))?
-        .iter()
-        .map(|r| {
-            Grant::from_record(r).map(|g| GrantView {
-                address: r.address().to_string(),
-                app: g.app.address().to_string(),
-                access: g.access.to_string(),
-                kinds: g.kinds.join(","),
-                expires: g.expires,
-            })
-        })
-        .collect::<core::result::Result<Vec<_>, _>>()
-        .map_err(|e| err(&e))?;
+    let records = store.call(async |c| c.grants().await).await.map_err(|e| err(&e))?;
+    let mut grants = Vec::with_capacity(records.len());
+    for r in &records {
+        let g = Grant::from_record(r).map_err(|e| err(&e))?;
+        grants.push(GrantView {
+            address: r.address().to_string(),
+            app: g.app.address().to_string(),
+            name: app.resolver.title(&g.app).await,
+            access: g.access.to_string(),
+            kinds: g.kinds.join(","),
+            expires: g.expires,
+        });
+    }
     Ok(StoreView { kinds, grants })
 }
 
@@ -138,7 +136,7 @@ async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<
         {
             push.insert(0, manifest);
         }
-        for relay in relays {
+        for relay in &relays {
             let outcome = client.put(relay, &push).await.map_err(|e| err(&e))?;
             let _ = writeln!(
                 report,

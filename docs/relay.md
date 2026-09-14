@@ -16,7 +16,13 @@ environment, both relay and clients bind with iroh relays disabled and
 find each other by mDNS on the local network under the service name
 `weft`, so a relay id alone reaches a relay on the same LAN with no
 internet. Any other value of `WEFT_NET` is refused. The relay list and
-every message are the same in both modes.
+every message are the same in both modes. A relay list entry is one line,
+`<id>` or `<id>@<host:port>[,<host:port>]`, at most 8 addresses, none
+with port 0 or an unspecified host; the addresses are dialed directly
+before any lookup, which reaches a relay across subnets where mDNS does
+not. `weft-relay serve` prints its own entry after `online`, and `weft
+relay add` takes the same text; a second entry for an id replaces the
+first.
 
 ## Framing
 

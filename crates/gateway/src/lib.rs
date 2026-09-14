@@ -3,6 +3,7 @@
 pub mod budget;
 pub mod html;
 pub mod login;
+pub mod state;
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{
-    ALLOW, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE,
+    ALLOW, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, HOST,
     HeaderName, HeaderValue, LOCATION, REFERRER_POLICY, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
 };
 use http::{Method, Request, Response, StatusCode};
@@ -30,6 +31,7 @@ use weft_store::Local;
 
 use crate::budget::Budget;
 use crate::login::{Claim, Logins, Refusal, Token, token_from_cookies};
+use crate::state::State;
 
 pub const LINKS: Links = Links { record: "/", blob: "/blob/" };
 pub const MAX_PATH: usize = 1024;
@@ -90,9 +92,9 @@ impl Gateway {
         limits: Limits,
     ) -> Result<Self, Refusal> {
         let now = weft_home::now().map_err(|e| Refusal::State(e.to_string()))?;
-        let logins = Logins::new(origin, resolver.home().path(), allow, limits.sessions, now)?;
-        let path = resolver.home().path().join(budget::FILE);
-        let budget = Budget::open(path, limits.budget, budget::WINDOW, limits.identities, now)?;
+        let state = Arc::new(State::open(resolver.home().path())?);
+        let logins = Logins::new(origin, Arc::clone(&state), allow, limits.sessions, now)?;
+        let budget = Budget::open(state, limits.budget, budget::WINDOW, limits.identities, now)?;
         Ok(Self { resolver, logins, budget, pulls: Semaphore::new(limits.pulls) })
     }
 }
@@ -121,19 +123,24 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
     let head = req.method() == Method::HEAD;
     let token =
         req.headers().get(COOKIE).and_then(|v| v.to_str().ok()).and_then(token_from_cookies);
+    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok()).map(str::to_ascii_lowercase);
+    let host = host.as_deref();
     let path = req.uri().path().to_owned();
     let mut reply = match (req.method(), path.as_str()) {
         (&Method::POST, "/login") => match body(req).await {
-            Ok(text) => post_login(&gateway, &text).await,
+            Ok(text) => post_login(&gateway, &text, host).await,
             Err(f) => failed(f),
         },
         (&Method::POST, "/logout") => logout(&gateway.logins, token.as_ref()),
-        (&Method::GET | &Method::HEAD, "/login") => login_page(&gateway.logins, token.as_ref()),
+        (&Method::GET | &Method::HEAD, "/login") => {
+            login_page(&gateway.logins, token.as_ref(), host)
+        }
         (&Method::GET | &Method::HEAD, _) if path.starts_with("/login/") => {
-            claim(&gateway.logins, &path[7..])
+            claim(&gateway.logins, &path[7..], host)
         }
         (&Method::GET | &Method::HEAD, _) => {
-            read(&gateway, token.as_ref(), &path, req.uri().query()).await
+            let publisher = publisher(&gateway.logins, host);
+            read(&gateway, token.as_ref(), &path, req.uri().query(), publisher.as_deref()).await
         }
         _ => {
             let mut r =
@@ -148,23 +155,51 @@ pub async fn handle(gateway: Arc<Gateway>, req: Request<Incoming>) -> Result<Rep
     Ok(reply)
 }
 
-async fn read(gateway: &Gateway, token: Option<&Token>, path: &str, query: Option<&str>) -> Reply {
+fn bare_host(host: &str) -> &str {
+    if host.starts_with('[') {
+        host.split_once(']').map_or(host, |(v6, _)| &v6[1..])
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    }
+}
+
+fn publisher(logins: &Logins, host: Option<&str>) -> Option<String> {
+    let host = bare_host(host?);
+    let origin = logins.origin().split_once("://").map_or("", |(_, rest)| rest);
+    let origin = bare_host(origin.split('/').next().unwrap_or(""));
+    let numeric = host.rsplit('.').next().is_some_and(|l| l.bytes().all(|b| b.is_ascii_digit()));
+    if host == origin || numeric {
+        return None;
+    }
+    match format!("{host}/home").parse::<Target>() {
+        Ok(Target::Domain { host, .. }) => Some(host),
+        _ => None,
+    }
+}
+
+async fn read(
+    gateway: &Gateway,
+    token: Option<&Token>,
+    path: &str,
+    query: Option<&str>,
+    publisher: Option<&str>,
+) -> Reply {
     let now = match now() {
         Ok(now) => now,
         Err(f) => return failed(f),
     };
     let Some(author) = token.and_then(|t| gateway.logins.session(t, now)) else {
-        return route(&gateway.resolver.offline(), LOGIN_TO_FETCH, path, query).await;
+        return route(&gateway.resolver.offline(), LOGIN_TO_FETCH, path, query, publisher).await;
     };
     if let Some(reset) = gateway.budget.spent(&author, now) {
         let hint = format!("{BUDGET_SPENT}{}", html::iso(reset));
-        return route(&gateway.resolver.offline(), &hint, path, query).await;
+        return route(&gateway.resolver.offline(), &hint, path, query, publisher).await;
     }
     match gateway.pulls.try_acquire() {
         Ok(_permit) => {
             let meter = Arc::new(AtomicU64::new(0));
             let metered = gateway.resolver.metered(Arc::clone(&meter));
-            let reply = route(&metered, "", path, query).await;
+            let reply = route(&metered, "", path, query, publisher).await;
             if let Err(e) = gateway.budget.charge(author, now, meter.load(Ordering::Relaxed)) {
                 eprintln!("budget: {e}");
             }
@@ -183,21 +218,28 @@ fn missing(what: &str, hint: &str) -> Reply {
     html_reply(StatusCode::NOT_FOUND, html::error(404, &message))
 }
 
-async fn route(resolver: &Resolver<Local>, hint: &str, path: &str, query: Option<&str>) -> Reply {
+async fn route(
+    resolver: &Resolver<Local>,
+    hint: &str,
+    path: &str,
+    query: Option<&str>,
+    publisher: Option<&str>,
+) -> Reply {
     if path.len() > MAX_PATH {
         return html_reply(StatusCode::URI_TOO_LONG, html::error(414, "path too long"));
     }
-    match path {
-        "/" => html_reply(StatusCode::OK, html::form()),
-        "/style.css" => {
+    match (path, publisher) {
+        ("/", Some(host)) => page(resolver, hint, host, None).await,
+        ("/", None) => html_reply(StatusCode::OK, html::form()),
+        ("/style.css", _) => {
             let mut r = reply(StatusCode::OK, "text/css; charset=utf-8", html::STYLE.into());
             r.headers_mut()
                 .insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
             r
         }
-        "/go" => go(query),
+        ("/go", _) => go(query),
         _ if path.starts_with("/blob/") => blob(resolver, hint, &path[6..]).await,
-        _ => page(resolver, hint, &path[1..]).await,
+        _ => page(resolver, hint, &path[1..], publisher).await,
     }
 }
 
@@ -242,12 +284,28 @@ async fn blob(resolver: &Resolver<Local>, hint: &str, rest: &str) -> Reply {
     r
 }
 
-async fn page(resolver: &Resolver<Local>, hint: &str, rest: &str) -> Reply {
+fn target_for(input: &str, publisher: Option<&str>) -> Result<(Target, String), Error> {
+    match (input.parse::<Target>(), publisher) {
+        (Ok(t), _) => Ok((t, input.to_owned())),
+        (Err(e), Some(host)) => {
+            let under = format!("{host}/{input}");
+            under.parse().map(|t| (t, under)).map_err(|_| e)
+        }
+        (Err(e), None) => Err(e),
+    }
+}
+
+async fn page(
+    resolver: &Resolver<Local>,
+    hint: &str,
+    rest: &str,
+    publisher: Option<&str>,
+) -> Reply {
     let Ok(input) = percent_decode_str(rest).decode_utf8() else {
         return html_reply(StatusCode::BAD_REQUEST, html::error(400, "path is not utf-8"));
     };
-    let target: Target = match input.parse() {
-        Ok(t) => t,
+    let (target, input) = match target_for(&input, publisher) {
+        Ok(found) => found,
         Err(e) => return html_reply(StatusCode::BAD_REQUEST, html::error(400, &e.to_string())),
     };
     match resolver.resolve(target, &LINKS).await {
@@ -316,18 +374,22 @@ fn refused(refusal: &Refusal) -> Reply {
     let status = match refusal {
         Refusal::Proof(_) | Refusal::Nonce | Refusal::Denied => StatusCode::FORBIDDEN,
         Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
-        Refusal::Origin | Refusal::Random | Refusal::State(_) | Refusal::Cap(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        Refusal::Host => StatusCode::BAD_REQUEST,
+        Refusal::Origin | Refusal::Random | Refusal::State(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     html_reply(status, html::error(status.as_u16(), &refusal.to_string()))
 }
 
-fn logged_in(logins: &Logins, author: &PublicKey) -> Reply {
-    html_reply(StatusCode::OK, html::logged_in(&author.address().to_string(), logins.origin()))
+fn logged_in(logins: &Logins, author: &PublicKey, host: Option<&str>) -> Reply {
+    match logins.service(host) {
+        Ok(service) => {
+            html_reply(StatusCode::OK, html::logged_in(&author.address().to_string(), &service))
+        }
+        Err(r) => refused(&r),
+    }
 }
 
-async fn post_login(gateway: &Gateway, text: &str) -> Reply {
+async fn post_login(gateway: &Gateway, text: &str, host: Option<&str>) -> Reply {
     let now = match now() {
         Ok(n) => n,
         Err(f) => return failed(f),
@@ -338,22 +400,23 @@ async fn post_login(gateway: &Gateway, text: &str) -> Reply {
     };
     let newer = gateway.resolver.freshest_manifest(proof.login.author()).await.ok().flatten();
     match gateway.logins.satisfy(&proof, now, newer.as_ref()) {
-        Ok((author, token)) => {
-            with_cookie(logged_in(&gateway.logins, &author), &gateway.logins.cookie(Some(&token)))
-        }
+        Ok((author, token)) => with_cookie(
+            logged_in(&gateway.logins, &author, host),
+            &gateway.logins.cookie(Some(&token)),
+        ),
         Err(r) => refused(&r),
     }
 }
 
-fn login_page(logins: &Logins, token: Option<&Token>) -> Reply {
+fn login_page(logins: &Logins, token: Option<&Token>, host: Option<&str>) -> Reply {
     let now = match now() {
         Ok(n) => n,
         Err(f) => return failed(f),
     };
     if let Some(author) = token.and_then(|t| logins.session(t, now)) {
-        return logged_in(logins, &author);
+        return logged_in(logins, &author, host);
     }
-    match logins.open(now) {
+    match logins.open(now, host) {
         Ok(challenge) => {
             let location = format!("/login/{}", text::to_text(&challenge.nonce));
             let mut r = html_reply(StatusCode::SEE_OTHER, html::error(303, &location));
@@ -366,7 +429,7 @@ fn login_page(logins: &Logins, token: Option<&Token>) -> Reply {
     }
 }
 
-fn claim(logins: &Logins, rest: &str) -> Reply {
+fn claim(logins: &Logins, rest: &str, host: Option<&str>) -> Reply {
     let now = match now() {
         Ok(n) => n,
         Err(f) => return failed(f),
@@ -379,7 +442,9 @@ fn claim(logins: &Logins, rest: &str) -> Reply {
         Claim::Unknown => refused(&Refusal::Nonce),
         Claim::Waiting(challenge) => html_reply(StatusCode::OK, html::challenge(&challenge)),
         Claim::Ready(token) => match logins.session(&token, now) {
-            Some(author) => with_cookie(logged_in(logins, &author), &logins.cookie(Some(&token))),
+            Some(author) => {
+                with_cookie(logged_in(logins, &author, host), &logins.cookie(Some(&token)))
+            }
             None => refused(&Refusal::Nonce),
         },
     }
@@ -440,7 +505,7 @@ fn reply(status: StatusCode, content_type: &'static str, body: Bytes) -> Reply {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::sniff;
+    use super::*;
 
     #[test]
     fn sniff_knows_images_only() {
@@ -451,5 +516,42 @@ mod tests {
         assert_eq!(sniff(b"<svg onload=alert(1)>"), "application/octet-stream");
         assert_eq!(sniff(b"<html>"), "application/octet-stream");
         assert_eq!(sniff(b""), "application/octet-stream");
+    }
+
+    #[test]
+    fn a_publisher_host_is_a_domain_other_than_the_origin() {
+        let dir = std::env::temp_dir().join(format!("weft-gateway-{}-host", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = Arc::new(State::open(&dir).unwrap());
+        let logins = Logins::new("https://gw.example:8443".into(), state, None, 4, 0).unwrap();
+        assert_eq!(bare_host("alice.example:80"), "alice.example");
+        assert_eq!(bare_host("[::1]:80"), "::1");
+        assert_eq!(bare_host("alice.example"), "alice.example");
+        assert_eq!(publisher(&logins, None), None);
+        assert_eq!(publisher(&logins, Some("gw.example")), None, "the origin is not a publisher");
+        assert_eq!(publisher(&logins, Some("gw.example:8443")), None);
+        assert_eq!(publisher(&logins, Some("x")), None, "no dot, no domain");
+        assert_eq!(publisher(&logins, Some("127.0.0.1:8080")), None, "not a domain");
+        assert_eq!(publisher(&logins, Some("alice.example")), Some("alice.example".to_owned()));
+        assert_eq!(publisher(&logins, Some("alice.example:443")), Some("alice.example".to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_target_falls_under_the_publisher_host() {
+        let address = Address::of(b"x").to_string();
+        let (t, shown) = target_for("about", Some("alice.example")).unwrap();
+        assert_eq!(shown, "alice.example/about");
+        assert!(
+            matches!(t, Target::Domain { host, name } if host == "alice.example" && name == "about")
+        );
+        let (t, shown) = target_for(&address, Some("alice.example")).unwrap();
+        assert_eq!(shown, address, "a full target keeps its meaning on any host");
+        assert!(matches!(t, Target::Address(_)));
+        let (t, _) = target_for("bob.example/home", Some("alice.example")).unwrap();
+        assert!(matches!(t, Target::Domain { host, .. } if host == "bob.example"));
+        assert!(target_for("about", None).is_err());
+        assert!(target_for("a/b/c", Some("alice.example")).is_err(), "the original error stands");
+        assert!(target_for("", Some("alice.example")).is_err());
     }
 }

@@ -1,16 +1,14 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use weft_core::PublicKey;
-use weft_core::cbor::{self, Value};
 
-use crate::login::{Refusal, checked_cap};
+use crate::login::Refusal;
+use crate::state::State;
 
 pub const DEFAULT_BYTES: u64 = 64 * 1024 * 1024;
 pub const WINDOW: u64 = 3600;
 pub const DEFAULT_IDENTITIES: usize = 4096;
-pub const FILE: &str = "gateway/budget";
 
 #[derive(Debug, Clone, Copy)]
 struct Spend {
@@ -25,86 +23,44 @@ pub struct Budget {
     bytes: u64,
     window: u64,
     cap: usize,
-    path: PathBuf,
+    state: Arc<State>,
     spent: Mutex<Table>,
 }
 
-fn state(e: impl core::fmt::Display) -> Refusal {
-    Refusal::State(e.to_string())
+fn expired(table: &Table, now: u64, window: u64) -> Vec<[u8; 32]> {
+    table.iter().filter(|(_, s)| now >= s.since.saturating_add(window)).map(|(k, _)| *k).collect()
 }
 
-fn parse(path: &Path, now: u64, window: u64) -> Result<Table, Refusal> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Table::new()),
-        Err(e) => return Err(state(e)),
-    };
-    let value = cbor::decode(&bytes).map_err(state)?;
-    let items = value.as_array().ok_or_else(|| state("not an array"))?;
-    let mut table = Table::new();
-    for item in items {
-        let map = item.as_map().ok_or_else(|| state("spend is not a map"))?;
-        cbor::only(map, &["author", "bytes", "since"]).map_err(state)?;
-        let author: [u8; 32] = cbor::field(map, "author")
-            .map_err(state)?
-            .as_bytes()
-            .and_then(|b| b.try_into().ok())
-            .ok_or_else(|| state("author is not 32 bytes"))?;
-        PublicKey::from_bytes(&author).map_err(state)?;
-        let bytes = cbor::field(map, "bytes")
-            .map_err(state)?
-            .as_uint()
-            .ok_or_else(|| state("bytes is not an integer"))?;
-        let since = cbor::field(map, "since")
-            .map_err(state)?
-            .as_uint()
-            .ok_or_else(|| state("since is not an integer"))?;
-        if now < since.saturating_add(window)
-            && table.insert(author, Spend { since, bytes }).is_some()
-        {
-            return Err(state("duplicate author"));
-        }
-    }
-    Ok(table)
-}
-
-fn trim(table: &mut Table, cap: usize) {
-    while table.len() > cap {
-        let oldest = table.iter().min_by_key(|(_, s)| s.since).map(|(k, _)| *k);
-        match oldest {
-            Some(k) => table.remove(&k),
-            None => break,
-        };
-    }
-}
-
-fn save(path: &Path, table: &Table) -> Result<(), Refusal> {
-    let items = table
-        .iter()
-        .map(|(author, s)| {
-            Value::Map(vec![
-                ("author".into(), Value::Bytes(author.to_vec())),
-                ("bytes".into(), Value::Uint(s.bytes)),
-                ("since".into(), Value::Uint(s.since)),
-            ])
-        })
-        .collect();
-    weft_home::fs::replace_private(path, &Value::Array(items).encode()).map_err(state)
+fn oldest(table: &Table, cap: usize) -> Vec<[u8; 32]> {
+    let mut by_age: Vec<(u64, [u8; 32])> = table.iter().map(|(k, s)| (s.since, *k)).collect();
+    by_age.sort_unstable();
+    by_age.iter().take(table.len().saturating_sub(cap)).map(|(_, k)| *k).collect()
 }
 
 impl Budget {
     pub fn open(
-        path: PathBuf,
+        state: Arc<State>,
         bytes: u64,
         window: u64,
         cap: usize,
         now: u64,
     ) -> Result<Self, Refusal> {
-        let cap = checked_cap(cap)?;
-        let mut spent =
-            parse(&path, now, window).map_err(|e| state(format!("{}: {e}", path.display())))?;
-        trim(&mut spent, cap);
-        Ok(Self { bytes, window, cap, path, spent: Mutex::new(spent) })
+        let mut table = Table::new();
+        for (author, since, bytes) in state.spends()? {
+            PublicKey::from_bytes(&author).map_err(|e| Refusal::State(e.to_string()))?;
+            table.insert(author, Spend { since, bytes });
+        }
+        let mut gone = expired(&table, now, window);
+        for k in &gone {
+            table.remove(k);
+        }
+        let evicted = oldest(&table, cap);
+        for k in &evicted {
+            table.remove(k);
+        }
+        gone.extend(evicted);
+        state.remove_spends(gone.iter())?;
+        Ok(Self { bytes, window, cap, state, spent: Mutex::new(table) })
     }
 
     pub fn bytes(&self) -> u64 {
@@ -134,14 +90,23 @@ impl Budget {
             return Ok(());
         }
         let mut table = self.lock();
-        let window = self.window;
-        table.retain(|_, s| now < s.since.saturating_add(window));
+        let mut gone = expired(&table, now, self.window);
+        for k in &gone {
+            table.remove(k);
+        }
         if !table.contains_key(author.bytes()) {
-            trim(&mut table, self.cap.saturating_sub(1));
+            let evicted = oldest(&table, self.cap.saturating_sub(1));
+            for k in &evicted {
+                table.remove(k);
+            }
+            gone.extend(evicted);
+        }
+        if !gone.is_empty() {
+            self.state.remove_spends(gone.iter())?;
         }
         let spend = table.entry(*author.bytes()).or_insert(Spend { since: now, bytes: 0 });
         spend.bytes = spend.bytes.saturating_add(bytes);
-        save(&self.path, &table)
+        self.state.put_spend(author.bytes(), spend.since, spend.bytes)
     }
 }
 
@@ -149,25 +114,30 @@ impl Budget {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use weft_core::SecretKey;
 
     fn who(n: u8) -> PublicKey {
         SecretKey::from_seed([n; 32]).public()
     }
 
-    fn path(name: &str) -> PathBuf {
+    fn home(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("weft-budget-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        dir.join(FILE)
+        dir
     }
 
-    fn open(path: &Path, bytes: u64, now: u64) -> Budget {
-        Budget::open(path.to_path_buf(), bytes, 60, 3, now).unwrap()
+    fn open(home: &Path, bytes: u64, now: u64) -> Budget {
+        capped(home, bytes, 3, now)
+    }
+
+    fn capped(home: &Path, bytes: u64, cap: usize, now: u64) -> Budget {
+        Budget::open(Arc::new(State::open(home).unwrap()), bytes, 60, cap, now).unwrap()
     }
 
     #[test]
     fn a_window_fills_then_resets() {
-        let budget = open(&path("window"), 100, 0);
+        let budget = open(&home("window"), 100, 0);
         let (a, b) = (who(1), who(2));
         assert_eq!(budget.spent(&a, 10), None);
         budget.charge(a, 10, 60).unwrap();
@@ -184,59 +154,51 @@ mod tests {
 
     #[test]
     fn zero_disables_and_stale_entries_go() {
-        let path = path("zero");
-        let budget = open(&path, 0, 0);
+        let dir = home("zero");
+        let budget = open(&dir, 0, 0);
         budget.charge(who(1), 0, u64::MAX).unwrap();
         assert_eq!(budget.spent(&who(1), 1), None);
         assert!(budget.lock().is_empty());
-        assert!(!path.exists(), "an unlimited budget writes nothing");
-        let budget = open(&path, 10, 0);
+        assert!(budget.state.spends().unwrap().is_empty(), "an unlimited budget writes nothing");
+        drop(budget);
+        let budget = open(&dir, 10, 0);
         budget.charge(who(1), 0, 10).unwrap();
         budget.charge(who(2), 0, 1).unwrap();
         budget.charge(who(3), 61, 1).unwrap();
         assert_eq!(budget.lock().len(), 1, "expired windows are pruned on charge");
+        assert_eq!(budget.state.spends().unwrap().len(), 1, "and leave the table");
     }
 
     #[test]
     fn spent_windows_survive_a_restart_and_expired_ones_do_not() {
-        let path = path("restart");
-        let budget = open(&path, 100, 0);
+        let dir = home("restart");
+        let budget = open(&dir, 100, 0);
         budget.charge(who(1), 10, 100).unwrap();
         budget.charge(who(2), 20, 1).unwrap();
         drop(budget);
-        let again = open(&path, 100, 30);
+        let again = open(&dir, 100, 30);
         assert_eq!(again.spent(&who(1), 30), Some(70), "the spent window is back");
         assert_eq!(again.spent(&who(2), 30), None);
         assert_eq!(again.lock().len(), 2);
-        let later = open(&path, 100, 85);
+        drop(again);
+        let later = open(&dir, 100, 85);
         assert!(later.lock().is_empty(), "windows past their reset are dropped on load");
         assert_eq!(later.spent(&who(1), 85), None);
+        assert!(later.state.spends().unwrap().is_empty());
     }
 
     #[test]
     fn a_bad_file_refuses_and_the_table_is_capped() {
-        let path = path("bad");
-        let budget = open(&path, 100, 0);
+        let dir = home("bad");
+        let budget = open(&dir, 100, 0);
         budget.charge(who(1), 0, 1).unwrap();
+        drop(budget);
+        let path = dir.join(crate::state::FILE);
         let good = std::fs::read(&path).unwrap();
-        std::fs::write(&path, &good[..good.len() - 1]).unwrap();
-        assert!(matches!(
-            Budget::open(path.clone(), 100, 60, 3, 0).unwrap_err(),
-            Refusal::State(_)
-        ));
-        let extra = Value::Array(vec![Value::Map(vec![
-            ("author".into(), Value::Bytes(who(1).bytes().to_vec())),
-            ("bytes".into(), Value::Uint(1)),
-            ("extra".into(), Value::Uint(1)),
-            ("since".into(), Value::Uint(0)),
-        ])]);
-        std::fs::write(&path, extra.encode()).unwrap();
-        assert!(matches!(
-            Budget::open(path.clone(), 100, 60, 3, 0).unwrap_err(),
-            Refusal::State(_)
-        ));
+        std::fs::write(&path, &good[..64]).unwrap();
+        assert!(matches!(State::open(&dir).unwrap_err(), Refusal::State(_)));
         std::fs::write(&path, good).unwrap();
-        let budget = open(&path, 100, 0);
+        let budget = open(&dir, 100, 0);
         for n in 0..3 {
             let mut seed = [0u8; 32];
             seed[..8].copy_from_slice(&u64::try_from(n).unwrap().saturating_add(100).to_be_bytes());
@@ -245,9 +207,11 @@ mod tests {
         assert_eq!(budget.lock().len(), 3);
         assert!(!budget.lock().contains_key(who(1).bytes()), "the oldest window made room");
         drop(budget);
-        let lowered = Budget::open(path.clone(), 100, 60, 1, 2).unwrap();
+        let lowered = capped(&dir, 100, 1, 2);
         assert_eq!(lowered.lock().len(), 1, "a lower cap keeps the newest window");
-        assert!(matches!(Budget::open(path.clone(), 100, 60, 4097, 2), Err(Refusal::Cap(4097))));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+        assert_eq!(lowered.state.spends().unwrap().len(), 1);
+        drop(lowered);
+        assert_eq!(capped(&dir, 100, 100_000, 2).lock().len(), 1, "no cap ceiling");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

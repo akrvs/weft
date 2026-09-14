@@ -13,6 +13,26 @@ impl Links {
     pub const WEFT: Self = Self { record: "weft:", blob: "weft://blob/" };
 }
 
+pub const MAX_TITLE: usize = 64;
+
+pub fn title(markdown: &str) -> Option<String> {
+    let text = if markdown.len() > MAX_INPUT { "" } else { markdown };
+    let mut inside = false;
+    let mut out = String::new();
+    for event in Parser::new(text) {
+        match event {
+            Event::Start(Tag::Heading { level: HeadingLevel::H1, .. }) => inside = true,
+            Event::End(TagEnd::Heading(HeadingLevel::H1)) => break,
+            Event::Text(t) | Event::Code(t) if inside => out.push_str(&t),
+            Event::Start(_) if !inside => return None,
+            _ => {}
+        }
+    }
+    let title: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = title.chars().take(MAX_TITLE).collect::<String>();
+    (!title.is_empty()).then_some(title)
+}
+
 pub fn render(markdown: &str, links: &Links) -> String {
     let text = if markdown.len() > MAX_INPUT { "" } else { markdown };
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
@@ -194,6 +214,20 @@ mod tests {
 
     fn render(markdown: &str) -> String {
         super::render(markdown, &Links::WEFT)
+    }
+
+    #[test]
+    fn the_title_is_the_leading_h1_alone() {
+        assert_eq!(super::title("# My  *App*\n\ntext"), Some("My App".to_owned()));
+        assert_eq!(super::title("#  Spaced   `code` here  "), Some("Spaced code here".to_owned()));
+        assert_eq!(super::title("text first\n\n# Late"), None);
+        assert_eq!(super::title("## Not top level"), None);
+        assert_eq!(super::title(""), None);
+        assert_eq!(super::title("# "), None);
+        let long = format!("# {}", "x".repeat(200));
+        assert_eq!(super::title(&long).unwrap().len(), super::MAX_TITLE);
+        let big = format!("# ok\n{}", "y".repeat(super::MAX_INPUT));
+        assert_eq!(super::title(&big), None);
     }
 
     #[test]

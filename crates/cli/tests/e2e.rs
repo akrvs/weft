@@ -164,3 +164,16 @@ fn a_retired_device_keeps_its_earlier_records() {
     assert!(whoami.contains("phone  created") && whoami.contains("expires"), "{whoami}");
     assert!(whoami.contains(&root));
 }
+
+#[test]
+fn relay_entries_may_carry_addresses() {
+    let a = Machine::new("relays");
+    a.ok(&["init"]);
+    let id = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29";
+    a.ok(&["relay", "add", id]);
+    let entry = format!("{id}@192.168.7.2:4433,[fd00::7]:4433");
+    a.ok(&["relay", "add", &entry]);
+    assert_eq!(a.ok(&["relay", "list"]).trim(), entry, "the addressed entry replaced the bare one");
+    let (success, text) = a.run(&["relay", "add", &format!("{id}@192.168.7.2")]);
+    assert!(!success && text.contains("host:port"), "{text}");
+}

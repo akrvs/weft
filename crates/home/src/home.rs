@@ -4,9 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use weft_core::{Device, Manifest, PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
-use crate::fail::{Fail, Result, fail};
+use crate::fail::{Result, fail};
 use crate::fs;
 use crate::keystore::{self, Meta};
+use crate::relay::Relay;
 use crate::store::Store;
 
 pub const ROOT: &str = "root";
@@ -189,7 +190,7 @@ impl Home {
         self.dir.join("relays")
     }
 
-    pub fn relays(&self) -> Result<Vec<iroh::EndpointId>> {
+    pub fn relays(&self) -> Result<Vec<Relay>> {
         let path = self.relays_path();
         if !path.is_file() {
             return Ok(Vec::new());
@@ -198,16 +199,17 @@ impl Home {
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
-            .map(|l| l.parse::<iroh::EndpointId>().map_err(|e| Fail(e.to_string())))
+            .map(str::parse)
             .collect()
     }
 
-    pub fn add_relay(&self, id: iroh::EndpointId) -> Result<()> {
+    pub fn add_relay(&self, relay: Relay) -> Result<()> {
         let mut relays = self.relays()?;
-        if relays.contains(&id) {
-            return Ok(());
+        match relays.iter_mut().find(|r| r.id == relay.id) {
+            Some(existing) if *existing == relay => return Ok(()),
+            Some(existing) => *existing = relay,
+            None => relays.push(relay),
         }
-        relays.push(id);
         let text = relays.iter().fold(String::new(), |mut t, r| {
             use std::fmt::Write;
             let _ = writeln!(t, "{r}");

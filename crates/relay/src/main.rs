@@ -212,6 +212,10 @@ async fn serve(dir: &Path) -> Result<()> {
     let sweeper = relay.sweeper(every);
     let router = relay.clone().spawn();
     net.online(router.endpoint()).await;
+    let addrs: Vec<String> = router.endpoint().addr().ip_addrs().map(ToString::to_string).collect();
+    if !addrs.is_empty() {
+        println!("entry    {}@{}", relay.id(), addrs.join(","));
+    }
     println!("online");
     let mut hangup = signal(SignalKind::hangup()).map_err(|e| e.to_string())?;
     loop {

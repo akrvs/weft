@@ -23,6 +23,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 percent-encoding.workspace = true
+redb.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]

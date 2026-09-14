@@ -1,15 +1,14 @@
 use std::path::Path;
 
-use iroh::EndpointId;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
 use weft_net::Client;
 
-use weft_home::{Home, Result, Store, fail, fs};
+use weft_home::{Home, Relay, Result, Store, fail, fs};
 
-fn relays(home: &Home) -> Result<Vec<EndpointId>> {
+fn relays(home: &Home) -> Result<Vec<Relay>> {
     let relays = home.relays()?;
     if relays.is_empty() {
-        return fail("no relays configured; run `weft relay add <endpoint-id>`");
+        return fail("no relays configured; run `weft relay add <id>[@host:port]`");
     }
     Ok(relays)
 }
@@ -20,7 +19,7 @@ async fn client() -> Result<Client> {
 
 #[derive(Debug)]
 pub struct Paid {
-    pub relay: EndpointId,
+    pub relay: Relay,
     pub receipt: Record,
 }
 
@@ -28,7 +27,7 @@ pub async fn price(home: &Home) -> Result<()> {
     let relays = relays(home)?;
     let client = client().await?;
     for relay in relays {
-        let (rate, banks) = client.price(relay).await.map_err(|e| e.to_string())?;
+        let (rate, banks) = client.price(&relay).await.map_err(|e| e.to_string())?;
         say!("{relay}  {rate} cents per KiB per day");
         for bank in banks {
             say!("  bank {}", bank.address());
@@ -45,7 +44,7 @@ pub async fn push(
     paid: Option<Paid>,
 ) -> Result<Vec<Address>> {
     let relays = match &paid {
-        Some(p) => vec![p.relay],
+        Some(p) => vec![p.relay.clone()],
         None => relays(home)?,
     };
     let snap = store.snapshot()?;
@@ -85,7 +84,7 @@ pub async fn push(
     let mut stored = Vec::new();
     for relay in relays {
         for batch in records.chunks(weft_net::wire::MAX_BATCH) {
-            let outcome = client.put(relay, batch).await.map_err(|e| e.to_string())?;
+            let outcome = client.put(&relay, batch).await.map_err(|e| e.to_string())?;
             say!("{relay}  stored {}  rejected {}", outcome.stored.len(), outcome.rejected.len());
             for (i, why) in outcome.rejected {
                 let address =
@@ -101,7 +100,7 @@ pub async fn push(
 
 async fn newest_manifest(
     client: &Client,
-    relay: EndpointId,
+    relay: &Relay,
     author: PublicKey,
 ) -> Result<Option<Manifest>> {
     let head = client
@@ -122,7 +121,7 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
     let client = client().await?;
     let mut found = None;
     for relay in relays {
-        if let Some(record) = client.get(relay, address).await.map_err(|e| e.to_string())? {
+        if let Some(record) = client.get(&relay, address).await.map_err(|e| e.to_string())? {
             found = Some((relay, record));
             break;
         }
@@ -133,7 +132,7 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
     let manifest = if record.self_signed() {
         None
     } else {
-        newest_manifest(&client, relay, *record.author()).await?
+        newest_manifest(&client, &relay, *record.author()).await?
     };
     let verified = verify(&record, manifest.as_ref())?;
     let path = store.put(&record)?;
@@ -144,7 +143,7 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
         if let Some(parent) = target.parent() {
             fs::ensure_dir(parent)?;
         }
-        let size = client.fetch_blob(relay, blob, &target).await.map_err(|e| e.to_string())?;
+        let size = client.fetch_blob(&relay, blob, &target).await.map_err(|e| e.to_string())?;
         say!("blob {}  {size} bytes", target.display());
     } else if let (Some(out), Body::Inline(data)) = (out, record.body()) {
         fs::write(out, data)?;
@@ -160,7 +159,7 @@ pub async fn resolve(home: &Home, store: &Store, author: Address, name: &str) ->
     let client = client().await?;
     let mut best: Option<(Record, Pointer)> = None;
     for relay in relays {
-        let head = client.head(relay, author, name).await.map_err(|e| e.to_string())?;
+        let head = client.head(&relay, author, name).await.map_err(|e| e.to_string())?;
         let manifest = match head.manifest {
             Some(m) => {
                 verify(&m, None)?;

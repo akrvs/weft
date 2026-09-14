@@ -99,8 +99,10 @@ async fn publish() -> Site {
 async fn reader(site: &Site) -> (Resolver<Store>, PathBuf) {
     let dir = temp("reader");
     let home = Home::new(dir.clone());
-    home.add_relay(site.addr.id).unwrap();
-    let client = Client::from_endpoint(endpoint(Some(&site.addr)).await);
+    let entry =
+        weft_home::Relay { id: site.addr.id, addrs: site.addr.ip_addrs().copied().collect() };
+    home.add_relay(entry.to_string().parse().unwrap()).unwrap();
+    let client = Client::from_endpoint(endpoint(None).await);
     let store = home.store();
     (Resolver::with_client(home, store, client), dir)
 }
@@ -175,4 +177,38 @@ async fn a_metered_handle_counts_only_pulled_bytes() {
     for d in site.dirs.iter().chain([&dir]) {
         let _ = std::fs::remove_dir_all(d);
     }
+}
+
+#[tokio::test]
+async fn the_title_is_the_home_page_heading_read_locally() {
+    let dir = temp("title");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone());
+    let author = key(4);
+    let named = |name: &str, body: &[u8], created: u64| {
+        let page = Draft {
+            author: author.public(),
+            signer: author.public(),
+            kind: "page".into(),
+            created,
+            refs: vec![],
+            body: Body::Inline(body.to_vec()),
+        }
+        .sign(&author)
+        .unwrap();
+        let pointer =
+            Pointer { name: name.into(), target: page.address(), seq: created, prev: vec![] }
+                .draft(&author.public(), &author.public(), created)
+                .sign(&author)
+                .unwrap();
+        store.put(&page).unwrap();
+        store.put(&pointer).unwrap();
+    };
+    assert_eq!(resolver.title(&author.public()).await, None, "no page yet");
+    named("home", b"# Far Away\n\nwelcome", 1);
+    assert_eq!(resolver.title(&author.public()).await, Some("Far Away".to_owned()));
+    named("home", b"no heading here", 2);
+    assert_eq!(resolver.title(&author.public()).await, None, "the newest home has no title");
+    assert_eq!(resolver.title(&key(5).public()).await, None, "an unknown author has none");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -140,7 +140,14 @@ el("identity").addEventListener("click", async () => {
 });
 el("who-close").addEventListener("click", () => who.close());
 
-type GrantView = { address: string; app: string; access: string; kinds: string; expires: number | null };
+type GrantView = {
+  address: string;
+  app: string;
+  name: string | null;
+  access: string;
+  kinds: string;
+  expires: number | null;
+};
 type StoreView = { kinds: [string, number][]; grants: GrantView[] };
 
 const storeDialog = el<HTMLDialogElement>("store");
@@ -215,7 +222,10 @@ async function showStore(): Promise<void> {
         revokeForm.hidden = false;
       });
       const expires = g.expires === null ? "" : new Date(g.expires * 1000).toISOString();
-      grants.append(row([g.app, g.access, g.kinds, expires, button]));
+      const app = document.createElement("span");
+      app.textContent = g.name ?? g.app;
+      app.title = g.app;
+      grants.append(row([app, g.access, g.kinds, expires, button]));
     }
     if (view.grants.length === 0) grants.append(row(["no active grants"]));
     startForm.hidden = true;

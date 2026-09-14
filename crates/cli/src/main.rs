@@ -14,7 +14,8 @@ use weft_core::{
     Revoke, Voucher, verify,
 };
 
-use weft_home::{Home, ROOT, Result, Store, fail, home, read_record};
+use weft_home::{Home, ROOT, Relay, Result, Store, fail, home, read_record};
+use weft_resolve::Resolver;
 
 #[derive(Parser, Debug)]
 #[command(name = "weft", version, about = "Signed, content-addressed records you hold the keys to")]
@@ -120,7 +121,7 @@ enum LoginCommand {
 
 #[derive(Subcommand, Debug)]
 enum RelayCommand {
-    Add { id: iroh::EndpointId },
+    Add { relay: Relay },
     List,
 }
 
@@ -210,7 +211,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             net::resolve(home, store, author, &name).await
         }
         Command::Dns { domain } => dns(&domain).await,
-        Command::Relay { command: RelayCommand::Add { id } } => home.add_relay(id),
+        Command::Relay { command: RelayCommand::Add { relay } } => home.add_relay(relay),
         Command::Relay { command: RelayCommand::List } => {
             for id in home.relays()? {
                 say!("{id}");
@@ -236,7 +237,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Grant {
             command: GrantCommand::Add { app, kinds, read, write, expires, signer },
         } => grant_add(home, store, app, kinds, (read, write), expires, &signer),
-        Command::Grant { command: GrantCommand::List } => grant_list(home, store),
+        Command::Grant { command: GrantCommand::List } => grant_list(home, store).await,
         Command::Grant { command: GrantCommand::Revoke { grant, signer } } => {
             grant_revoke(home, store, grant, &signer)
         }
@@ -321,7 +322,9 @@ fn pay(
         return fail(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
     }
     let voucher = Voucher::decode(&std::fs::read(voucher)?)?;
-    let relay = relay_id(&voucher.to)?;
+    let id = relay_id(&voucher.to)?;
+    let relay =
+        home.relays()?.into_iter().find(|r| r.id == id).unwrap_or(Relay { id, addrs: Vec::new() });
     let mut records = addresses.to_vec();
     records.sort_unstable();
     records.dedup();
@@ -384,14 +387,16 @@ fn grant_add(
     Ok(())
 }
 
-fn grant_list(home: &Home, store: &Store) -> Result<()> {
+async fn grant_list(home: &Home, store: &Store) -> Result<()> {
     let root = home.root()?;
     let snap = store.snapshot()?;
     let manifest = snap.manifest(&root);
+    let resolver = Resolver::new(Home::new(home.path().to_path_buf()), store.clone()).offline();
     for (record, grant) in snap.grants(&root, manifest.as_ref(), home::now()?) {
         let expiry = grant.expires.map_or(String::new(), |e| format!("  expires {e}"));
+        let name = resolver.title(&grant.app).await.map_or(String::new(), |t| format!("  {t}"));
         say!(
-            "{}  app {}  {}  {}{expiry}",
+            "{}  app {}{name}  {}  {}{expiry}",
             record.address(),
             grant.app.address(),
             grant.access,

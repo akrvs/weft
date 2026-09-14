@@ -6,8 +6,8 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
-use weft_home::{Home, Reads, Store};
-use weft_net::{Client, EndpointId};
+use weft_home::{Home, Reads, Relay, Store};
+use weft_net::Client;
 
 use crate::dns::Dns;
 use crate::error::{Error, Result};
@@ -107,7 +107,7 @@ impl<R: Reads> Resolver<R> {
             .await
     }
 
-    async fn relays(&self) -> Result<Option<(&Client, Vec<EndpointId>)>> {
+    async fn relays(&self) -> Result<Option<(&Client, Vec<Relay>)>> {
         if !self.pulls {
             return Ok(None);
         }
@@ -123,7 +123,7 @@ impl<R: Reads> Resolver<R> {
             return Ok(Some(checked(address, data)?));
         }
         let Some((client, relays)) = self.relays().await? else { return Ok(None) };
-        for relay in relays {
+        for relay in &relays {
             let Ok(Ok(data)) = timeout(BLOB_TIMEOUT, client.pull_blob(relay, &address)).await
             else {
                 continue;
@@ -205,9 +205,9 @@ impl<R: Reads> Resolver<R> {
         let Some((client, relays)) = self.relays().await? else {
             return Err(Error::NotFound(address));
         };
-        for relay in relays {
+        for relay in &relays {
             if let Ok(Ok(Some(record))) = timeout(RELAY_TIMEOUT, client.get(relay, address)).await {
-                return Ok((self.pulled(record), relay.to_string()));
+                return Ok((self.pulled(record), relay.id.to_string()));
             }
         }
         Err(Error::NotFound(address))
@@ -217,7 +217,7 @@ impl<R: Reads> Resolver<R> {
         let manifest = self.manifest(&author).await?;
         let mut best: Option<(Record, Pointer)> = None;
         if let Some((client, relays)) = self.relays().await? {
-            for relay in relays {
+            for relay in &relays {
                 let Ok(Ok(head)) = timeout(RELAY_TIMEOUT, client.head(relay, author, name)).await
                 else {
                     continue;
@@ -247,6 +247,20 @@ impl<R: Reads> Resolver<R> {
         let (record, pointer) = best.ok_or_else(|| Error::NoPointer(name.to_owned()))?;
         self.reads().keep(&record).await?;
         Ok(pointer.target)
+    }
+
+    pub async fn title(&self, author: &PublicKey) -> Option<String> {
+        let local = self.offline();
+        let address = local.head(*author, crate::target::HOME).await.ok()?;
+        let (record, _) = local.record(address).await.ok()?;
+        let manifest =
+            if record.self_signed() { None } else { local.manifest(record.author()).await.ok()? };
+        verify(&record, manifest.as_ref()).ok()?;
+        let Body::Inline(bytes) = record.body() else { return None };
+        if record.kind() != "page" {
+            return None;
+        }
+        crate::render::title(core::str::from_utf8(bytes).ok()?)
     }
 
     pub async fn resolve(&self, target: Target, links: &Links) -> Result<Page> {

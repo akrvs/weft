@@ -189,6 +189,7 @@ weft-browser example.com/blog                # domain tier in the address bar
 weft-store serve --device laptop             # the gateway reads through the daemon
 weft-store serve --device laptop --cache 64  # MiB of records kept in memory, 256 default, 0 unlimited
 weft-gateway --bind 127.0.0.1:8080           # then open http://127.0.0.1:8080/example.com/blog
+curl -H 'Host: example.com' 127.0.0.1:8080/blog  # a publisher CNAME: the host is the domain, the path the name
 ```
 
 The lookup goes over DNS over HTTPS to Cloudflare, or to `WEFT_DOH=ip,name`,
@@ -198,7 +199,11 @@ no `_weft` record, or a malformed one, is remembered too, for the zone's
 negative TTL under the same clamp, so a bad name costs one round trip an
 hour, not one per navigation. The gateway serves every form the address
 bar takes, `/<address>`, `/<author>/<name>`, `/<domain>/<name>`, with the
-signature check in a header bar and in `x-weft-*` response headers. Every
+signature check in a header bar and in `x-weft-*` response headers. A
+`Host` header naming a domain other than the gateway's own makes that
+domain the author: `/` opens its `home` and `/<name>` its `<name>`, while
+a path that is already a full target keeps its meaning, so a publisher
+points a CNAME at the gateway and login challenges name that host. Every
 record and blob comes over the store socket; with the daemon stopped every
 page is a 503. Anonymous readers see what the store holds and nothing
 more; a logged in session may have the gateway pull from its relays, at
@@ -292,7 +297,7 @@ the seam for real money is one function.
 weft-gateway --bind 127.0.0.1:8080          # GET /login issues a challenge and waits
 weft-gateway --allow allow.txt              # one root address per line; unlisted identities get 403
 weft-gateway --pulls 4 --budget 64          # pulls in flight, MiB per identity per hour, 0 is unlimited
-weft-gateway --sessions 4096 --identities 4096  # tables on disk; a full one drops the soonest to expire
+weft-gateway --sessions 4096 --identities 4096  # rows in gateway/state.redb; a full table drops the soonest to expire
 kill -HUP $(pidof weft-gateway)             # rereads the allow list and sweeps expired sessions
 weft login sign <challenge> --as laptop     # a proof: the signed challenge plus your manifest
 weft-browser 'weft:login?c=<challenge>'     # or the consent dialog signs and posts it for you
@@ -305,11 +310,13 @@ response is a record of kind `login` whose body is the challenge verbatim,
 signed by a device the manifest authorizes, carried with that manifest so
 any verifier can check it offline. The gateway matches the origin, the
 nonce, and the clock, prefers the newest manifest it can find, opens a
-session for the root address, and shows it. Sessions live in
-`$WEFT_HOME/gateway/sessions`, mode 0600, so a gateway restart keeps
-everyone logged in and logout still revokes. The table holds at most
-`--sessions` entries, 4096 by default and never more than the file format
-carries; a login past that drops the session that expires soonest. The `login` record itself is
+session for the root address, and shows it. The service is the origin's
+scheme on the host the browser sent, so a publisher host logs in under
+its own name. Sessions are rows in `$WEFT_HOME/gateway/state.redb`, mode
+0600, so a gateway restart keeps everyone logged in and logout still
+revokes. The table holds at most `--sessions` entries, 4096 by default
+with no ceiling; a login past that drops the session that expires
+soonest. The `login` record itself is
 stored nowhere; every store and every relay refuses it.
 
 ## [ Persistence ] — posture
@@ -348,8 +355,8 @@ stored nowhere; every store and every relay refuses it.
   four at a time, and never past a byte budget per identity per hour, so
   a public gateway is not a fetch proxy for its relay list. Over budget a
   reader still gets every local record; a miss says when the window
-  resets. The windows live in `$WEFT_HOME/gateway/budget`, mode 0600, so
-  a restart does not open them afresh.
+  resets. The windows are rows in `$WEFT_HOME/gateway/state.redb`, mode
+  0600, so a restart does not open them afresh.
 - The store daemon listens on a 0600 Unix socket, authenticates every
   connection with a fresh nonce signed under its own domain string,
   authorizes every request through one function against the grants active

@@ -57,9 +57,7 @@ impl Client {
         address: &Address,
         out: &Path,
     ) -> Result<u64> {
-        let relay: EndpointAddr = relay.into();
-        let hash = Hash::from_bytes(*address.bytes());
-        self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id)).await.map_err(net)?;
+        let hash = self.download(relay.into(), address).await?;
         let abs = std::path::absolute(out).map_err(net)?;
         self.blobs.blobs().export(hash, abs).await.map_err(net)
     }
@@ -69,11 +67,21 @@ impl Client {
         relay: impl Into<EndpointAddr>,
         address: &Address,
     ) -> Result<Vec<u8>> {
-        let relay: EndpointAddr = relay.into();
-        let hash = Hash::from_bytes(*address.bytes());
-        self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id)).await.map_err(net)?;
+        let hash = self.download(relay.into(), address).await?;
         let bytes = self.blobs.blobs().get_bytes(hash).await.map_err(net)?;
         Ok(bytes.to_vec())
+    }
+
+    async fn download(&self, relay: EndpointAddr, address: &Address) -> Result<Hash> {
+        let hash = Hash::from_bytes(*address.bytes());
+        let primed = if relay.ip_addrs().next().is_some() {
+            Some(self.endpoint().connect(relay.clone(), iroh_blobs::ALPN).await.map_err(net)?)
+        } else {
+            None
+        };
+        self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id)).await.map_err(net)?;
+        drop(primed);
+        Ok(hash)
     }
 
     async fn call(&self, relay: impl Into<EndpointAddr>, request: &Request) -> Result<Response> {
