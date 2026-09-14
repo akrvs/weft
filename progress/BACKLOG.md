@@ -16,8 +16,6 @@ scheduled.
 | Gateway host based routing and TLS | M4 | A publisher CNAME to the gateway, TLS in process |
 | Grants over fetched records | M5 | Only the root's own records are visible through a grant |
 | Application display names | M5 | The store knows an app only by its key address |
-| Blob garbage collection on sweep | M7 | `sweep` reports orphaned blob hashes; iroh-blobs 0.103 keeps `delete` crate private |
-| Dead receipts after a refused paid push | M7 | The CLI stores the receipt before the relay answers |
 | Real payment rail | M7 | Lightning preimage or ecash token behind the voucher seam in `Relay::settle` |
 | Sponsorship | M7 | A receipt pays only for its author's records |
 | Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
@@ -29,4 +27,4 @@ scheduled.
 | Blob download progress | M12 | The browser shows nothing while a large blob pulls |
 | Pull budget survives a restart | M14 | Budget counters live in memory; a gateway restart opens every window afresh |
 | Fake name server for negative DNS | M13, M14 | The negative DoH path is verified only end to end against Cloudflare |
-| Relay drops a delisted author's records | M14 | A reload refuses the next push; records already stored free stay forever |
+| Relay sweep scans every record | M15 | The sweep and the blob protect set decode every stored record once a minute; an authors table would make both a lookup |

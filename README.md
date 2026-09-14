@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M14-yellow)
+![status](https://img.shields.io/badge/status-M15-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-98%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-99%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -37,7 +37,8 @@
 │              reads [the browser opens no record or blob file]   │
 │              fetch [a public gateway is nobody's proxy]         │
 │              ops [a signal reloads, a budget bounds the pulls]  │
-│ status     : M14 — spec frozen · 10 crates · one gate · one door│
+│              hygiene [what nothing holds up leaves the relay]   │
+│ status     : M15 — spec frozen · 10 crates · one gate · one door│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -261,16 +262,18 @@ weft push <page> <pointer>                        # rejected: payment required
 weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch, both records pin
 weft receipts                                     # what you paid, to whom, until when
 weft-relay rate 2 && kill -HUP $(pidof weft-relay) # allow, banks, and rate reload in place
+weft-relay deny <root> && kill -HUP $(pidof weft-relay) # their free records go, paid pins stay
 ```
 
 A voucher is a bank signed note naming the relay it can be redeemed at, a
 few cents, and a nonce. A receipt is a record you sign naming the relay,
 the records you want kept, a date, and the voucher. The relay checks the
 bank, the spend, the date, and the price, then stores and pins. Every
-minute it sweeps pins that have passed, along with heads and manifests
-nothing holds up any more. Allowlisted authors are never swept, a voucher
-spends once, and the relay still never signs. The rail is a faucet, on
-purpose: the seam for real money is one function.
+minute it drops every record that is neither allowlisted, pinned, nor the
+manifest of someone still paying, and collects the blobs nothing names
+any more. A voucher spends once, a receipt the relay refuses is never
+kept, and the relay still never signs. The rail is a faucet, on purpose:
+the seam for real money is one function.
 ## [ Login Flag ] — no account, no password, one signature
 
 ```bash
@@ -349,7 +352,7 @@ stored nowhere; every store and every relay refuses it.
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
 crates/home/         weft-home: encrypted keystore · record store · snapshot cache that mirrors the directory · Reads trait · relay list
-crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · redb index
+crates/net/          weft-net: wire · client · relay handler · pricing · pins · sweep · blob GC · redb index
 crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer
 crates/store/        weft-store: store wire · gate · browser key per run · daemon with --attach · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve · SIGHUP reload
@@ -384,8 +387,9 @@ cargo deny check
 
 The roadmap is complete, the store daemon is hardened, every reader is
 behind it, what the store lacks is pulled from the relays, the gateway
-pulls only for readers it knows and only so much, and both daemons reload
-on a signal. What follows is open: a real payment rail behind the voucher
-seam, blob collection on sweep, `weft:` as a registered URL handler so a
-site's login link opens the browser, gateway host based routing and TLS,
-browser visual design. See [`progress/`](progress/).
+pulls only for readers it knows and only so much, both daemons reload on
+a signal, and the relay keeps nothing it is not paid or told to keep.
+What follows is open: a real payment rail behind the voucher seam,
+`weft:` as a registered URL handler so a site's login link opens the
+browser, gateway host based routing and TLS, a pull budget that survives
+a restart, browser visual design. See [`progress/`](progress/).
