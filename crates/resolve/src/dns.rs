@@ -126,6 +126,17 @@ impl Dns {
                 vec![NameServerConfig::https(ip, Arc::from(name.trim()), None)]
             }
         };
+        Self::over(servers)
+    }
+
+    #[cfg(test)]
+    fn udp(addr: std::net::SocketAddr) -> Result<Self> {
+        let mut connection = hickory_resolver::config::ConnectionConfig::udp();
+        connection.port = addr.port();
+        Self::over(vec![NameServerConfig::new(addr.ip(), true, vec![connection])])
+    }
+
+    fn over(servers: Vec<NameServerConfig>) -> Result<Self> {
         let mut options = ResolverOpts::default();
         options.timeout = TIMEOUT;
         options.attempts = 1;
@@ -334,5 +345,116 @@ mod tests {
             parse([record(&format!("WEFT={}", key.address()))].iter().map(Vec::as_slice), true),
             Err(Negative::Binding("no weft record"))
         ));
+    }
+
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use hickory_resolver::proto::rr::Record;
+    use hickory_resolver::proto::rr::rdata::{SOA, TXT};
+
+    fn soa(minimum: u32) -> Record {
+        let zone = Name::from_ascii("example.").unwrap();
+        let soa = SOA::new(zone.clone(), zone.clone(), 1, 60, 60, 60, minimum);
+        Record::from_rdata(zone, 300, RData::SOA(soa))
+    }
+
+    fn txt(name: &Name, ttl: u32, value: &str) -> Record {
+        Record::from_rdata(name.clone(), ttl, RData::TXT(TXT::new(vec![value.to_owned()])))
+    }
+
+    fn answer(query: &Message) -> Message {
+        let q = query.queries.first().unwrap();
+        let name = q.name().clone();
+        let host = name.to_ascii();
+        let mut r = Message::response(query.metadata.id, query.metadata.op_code);
+        r.metadata.recursion_desired = true;
+        r.metadata.recursion_available = true;
+        r.add_query(q.clone());
+        let bound = format!("weft={}", key().address());
+        match host.as_str() {
+            "_weft.none.example." => {
+                r.metadata.response_code = ResponseCode::NXDomain;
+                r.add_authority(soa(120));
+            }
+            "_weft.empty.example." => {
+                r.add_authority(soa(90));
+            }
+            "_weft.two.example." => {
+                r.add_answer(txt(&name, 600, &bound));
+                r.add_answer(txt(&name, 600, &bound));
+                r.add_authority(soa(75));
+            }
+            "_weft.bad.example." => {
+                r.add_answer(txt(&name, 600, "weft=nonsense"));
+            }
+            "_weft.good.example." => {
+                r.metadata.authentic_data = true;
+                r.add_answer(txt(&name, 500, "v=spf1 -all"));
+                r.add_answer(txt(&name, 200, &bound));
+            }
+            _ => r.metadata.response_code = ResponseCode::ServFail,
+        }
+        r
+    }
+
+    async fn fake() -> (SocketAddr, Arc<AtomicUsize>) {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let (n, from) = socket.recv_from(&mut buf).await.unwrap();
+                count.fetch_add(1, Ordering::SeqCst);
+                let query = Message::from_vec(&buf[..n]).unwrap();
+                socket.send_to(&answer(&query).to_vec().unwrap(), from).await.unwrap();
+            }
+        });
+        (addr, asked)
+    }
+
+    #[tokio::test]
+    async fn a_fake_name_server_drives_every_outcome() {
+        let (addr, asked) = fake().await;
+        let dns = Dns::udp(addr).unwrap();
+
+        let binding = dns.lookup("good.example").await.unwrap();
+        assert_eq!(binding, Binding { author: key(), authentic: true });
+        assert!(dns.cache().entries["good.example"].1 - Instant::now() > MIN_TTL);
+        assert!(dns.cache().entries["good.example"].1 - Instant::now() <= Duration::from_secs(200));
+
+        for host in ["none.example", "empty.example"] {
+            let err = dns.lookup(host).await.unwrap_err();
+            assert!(err.to_string().contains("no _weft record"), "{host}: {err}");
+            let cached = dns.cache().entries[host].clone();
+            assert!(matches!(cached.0, Err(Negative::NoRecord)));
+        }
+        let none = dns.cache().entries["none.example"].1;
+        assert!(
+            none - Instant::now() > Duration::from_secs(110),
+            "the SOA minimum is the miss TTL"
+        );
+        assert!(none - Instant::now() <= Duration::from_secs(120));
+        let empty = dns.cache().entries["empty.example"].1;
+        assert!(empty - Instant::now() <= Duration::from_secs(90));
+
+        assert!(matches!(dns.lookup("two.example").await.unwrap_err(), Error::Binding(_)));
+        assert!(matches!(dns.lookup("bad.example").await.unwrap_err(), Error::Binding(_)));
+        assert!(matches!(dns.cache().entries["two.example"].0, Err(Negative::Binding(_))));
+        let bad = dns.cache().entries["bad.example"].1;
+        assert!(bad - Instant::now() >= Duration::from_secs(59), "no SOA clamps to the floor");
+
+        let before = asked.load(Ordering::SeqCst);
+        dns.lookup("good.example").await.unwrap();
+        dns.lookup("none.example").await.unwrap_err();
+        dns.lookup("two.example").await.unwrap_err();
+        assert_eq!(asked.load(Ordering::SeqCst), before, "hits and misses come from the cache");
+
+        assert!(matches!(dns.lookup("fail.example").await.unwrap_err(), Error::Dns(_)));
+        assert!(matches!(dns.lookup("fail.example").await.unwrap_err(), Error::Dns(_)));
+        assert_eq!(asked.load(Ordering::SeqCst), before + 2, "errors are never cached");
+        assert!(!dns.cache().entries.contains_key("fail.example"));
     }
 }
