@@ -25,6 +25,9 @@ pub enum Request {
     Grants,
     Revoke { grant: Address },
     Publish { body: Vec<u8>, name: Option<String> },
+    Names,
+    Point { name: String, target: Address },
+    Receipt { body: Vec<u8> },
     Record { address: Address },
     Manifest { author: PublicKey },
     Pointers { author: PublicKey, name: String },
@@ -177,6 +180,15 @@ impl Request {
                 m.push(("t".to_owned(), text("publish")));
                 m
             }
+            Self::Names => vec![("t".to_owned(), text("names"))],
+            Self::Point { name, target } => vec![
+                ("name".to_owned(), text(name)),
+                ("t".to_owned(), text("point")),
+                ("target".to_owned(), bytes(target.bytes())),
+            ],
+            Self::Receipt { body } => {
+                vec![("body".to_owned(), bytes(body)), ("t".to_owned(), text("receipt"))]
+            }
             Self::Record { address } => {
                 vec![
                     ("address".to_owned(), bytes(address.bytes())),
@@ -280,36 +292,54 @@ impl Request {
                 let name = cbor::optional(&m, "name").map(name_text).transpose()?;
                 Ok(Self::Publish { body: body.to_vec(), name })
             }
-            "record" => {
-                cbor::only(&m, &["address", "t"])?;
-                Ok(Self::Record { address: address(&m, "address")? })
+            t => Self::decode_reads(t, &m),
+        }
+    }
+
+    fn decode_reads(t: &str, m: &[(String, Value)]) -> Result<Self> {
+        match t {
+            "names" => {
+                cbor::only(m, &["t"])?;
+                Ok(Self::Names)
             }
-            "manifest" => {
-                cbor::only(&m, &["author", "t"])?;
-                Ok(Self::Manifest { author: author(&m)? })
-            }
-            "pointers" => {
-                cbor::only(&m, &["author", "name", "t"])?;
-                Ok(Self::Pointers {
-                    author: author(&m)?,
-                    name: name_text(cbor::field(&m, "name")?)?,
+            "point" => {
+                cbor::only(m, &["name", "t", "target"])?;
+                Ok(Self::Point {
+                    name: name_text(cbor::field(m, "name")?)?,
+                    target: address(m, "target")?,
                 })
             }
+            "receipt" => {
+                cbor::only(m, &["body", "t"])?;
+                Ok(Self::Receipt { body: sized(m, "body", MAX_INLINE)?.to_vec() })
+            }
+            "record" => {
+                cbor::only(m, &["address", "t"])?;
+                Ok(Self::Record { address: address(m, "address")? })
+            }
+            "manifest" => {
+                cbor::only(m, &["author", "t"])?;
+                Ok(Self::Manifest { author: author(m)? })
+            }
+            "pointers" => {
+                cbor::only(m, &["author", "name", "t"])?;
+                Ok(Self::Pointers { author: author(m)?, name: name_text(cbor::field(m, "name")?)? })
+            }
             "blob" => {
-                cbor::only(&m, &["address", "offset", "t"])?;
-                Ok(Self::Blob { address: address(&m, "address")?, offset: bounded(&m, "offset")? })
+                cbor::only(m, &["address", "offset", "t"])?;
+                Ok(Self::Blob { address: address(m, "address")?, offset: bounded(m, "offset")? })
             }
             "keep" => {
-                cbor::only(&m, &["record", "t"])?;
-                Ok(Self::Keep { record: sized(&m, "record", MAX_RECORD)?.to_vec() })
+                cbor::only(m, &["record", "t"])?;
+                Ok(Self::Keep { record: sized(m, "record", MAX_RECORD)?.to_vec() })
             }
             "keep-blob" => {
-                cbor::only(&m, &["address", "chunk", "offset", "t", "total"])?;
+                cbor::only(m, &["address", "chunk", "offset", "t", "total"])?;
                 Ok(Self::KeepBlob {
-                    address: address(&m, "address")?,
-                    total: bounded(&m, "total")?,
-                    offset: bounded(&m, "offset")?,
-                    chunk: sized(&m, "chunk", MAX_CHUNK)?.to_vec(),
+                    address: address(m, "address")?,
+                    total: bounded(m, "total")?,
+                    offset: bounded(m, "offset")?,
+                    chunk: sized(m, "chunk", MAX_CHUNK)?.to_vec(),
                 })
             }
             _ => Err(Error::Wire("unknown request type")),

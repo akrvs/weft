@@ -1,3 +1,5 @@
+use data_encoding::BASE64URL_NOPAD;
+
 use crate::cbor::{self, Value};
 use crate::record::Body;
 use crate::{Address, Draft, Error, PublicKey, Record, Result, SecretKey};
@@ -67,6 +69,21 @@ impl Voucher {
 
     pub fn id(&self) -> Address {
         Address::of(&self.encode())
+    }
+
+    pub fn to_text(&self) -> String {
+        BASE64URL_NOPAD.encode(&self.encode())
+    }
+
+    pub fn from_text(text: &str) -> Result<Self> {
+        let text = text.trim();
+        if text.len() > MAX_VOUCHER / 3 * 4 + 4 {
+            return Err(Error::Limit("voucher"));
+        }
+        let bytes = BASE64URL_NOPAD
+            .decode(text.as_bytes())
+            .map_err(|_| Error::Encoding("not base64url"))?;
+        Self::decode(&bytes)
     }
 }
 

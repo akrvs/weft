@@ -93,6 +93,28 @@ impl Client {
         }
     }
 
+    pub async fn names(&mut self) -> Result<Vec<Record>> {
+        match self.call(&Request::Names).await? {
+            Response::Records { records } => decode_all(&records),
+            _ => Err(Error::Wire("expected records")),
+        }
+    }
+
+    pub async fn point(&mut self, name: &str, target: Address) -> Result<Record> {
+        self.signed(&Request::Point { name: name.to_owned(), target }).await
+    }
+
+    pub async fn receipt(&mut self, body: Vec<u8>) -> Result<Record> {
+        self.signed(&Request::Receipt { body }).await
+    }
+
+    async fn signed(&mut self, request: &Request) -> Result<Record> {
+        match self.call(request).await? {
+            Response::Get { record } => Ok(Record::from_bytes(&record)?),
+            _ => Err(Error::Wire("expected get")),
+        }
+    }
+
     pub async fn stop(&mut self) -> Result<()> {
         match self.call(&Request::Stop).await? {
             Response::Ok => Ok(()),

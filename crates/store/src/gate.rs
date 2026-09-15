@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -6,8 +7,8 @@ use std::sync::Arc;
 
 use tokio::sync::Notify;
 use weft_core::{
-    Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, PublicKey, Record, Revoke,
-    SecretKey, grant, login, manifest, verify,
+    Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, PublicKey, Receipt, Record,
+    Revoke, SecretKey, grant, login, manifest, pointer, verify,
 };
 use weft_home::{Home, Snapshot, Store};
 use zeroize::Zeroizing;
@@ -225,16 +226,52 @@ impl Gate {
         let page = self.sign(&view, self.draft(&view, PAGE, vec![], body))?;
         let mut out = vec![page];
         if let Some(name) = name {
-            let existing = view.snap.pointers(&self.root, name, view.manifest.as_ref());
-            let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
-            let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
-            let pointer = Pointer { name: name.to_owned(), target: out[0].address(), seq, prev };
-            out.push(self.sign(&view, pointer.draft(&self.root, &self.key.public(), view.now))?);
+            out.push(self.next_pointer(&view, name, out[0].address())?);
         }
         for record in &out {
             self.home.store().put(record)?;
         }
         Ok(out)
+    }
+
+    fn next_pointer(&self, view: &View, name: &str, target: Address) -> Result<Record> {
+        let existing = view.snap.pointers(&self.root, name, view.manifest.as_ref());
+        let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
+        let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
+        let pointer = Pointer { name: name.to_owned(), target, seq, prev };
+        self.sign(view, pointer.draft(&self.root, &self.key.public(), view.now))
+    }
+
+    pub fn names(&self, app: &PublicKey) -> Result<Vec<Record>> {
+        self.privileged(app)?;
+        let view = self.view()?;
+        let mut by_name: BTreeMap<String, Vec<(Arc<Record>, Pointer)>> = BTreeMap::new();
+        for record in view.own(&self.root).filter(|r| r.kind() == pointer::KIND) {
+            let Ok(pointer) = Pointer::from_record(&record) else { continue };
+            by_name.entry(pointer.name.clone()).or_default().push((record, pointer));
+        }
+        Ok(by_name.values().filter_map(|list| Store::head(list).map(|(r, _)| r.clone())).collect())
+    }
+
+    pub fn point(&self, app: &PublicKey, name: &str, target: Address) -> Result<Record> {
+        self.privileged(app)?;
+        let view = self.view()?;
+        if view.snap.verified(target).is_none() {
+            return Err(Error::Refused("no such record"));
+        }
+        let pointer = self.next_pointer(&view, name, target)?;
+        self.home.store().put(&pointer)?;
+        Ok(pointer)
+    }
+
+    pub fn receipt(&self, app: &PublicKey, body: &[u8]) -> Result<Record> {
+        self.privileged(app)?;
+        let view = self.view()?;
+        let receipt = Receipt::decode(body)?;
+        if receipt.until <= view.now {
+            return Err(Error::Refused("receipt already expired"));
+        }
+        self.sign(&view, receipt.draft(&self.root, &self.key.public(), view.now))
     }
 
     pub fn record(&self, app: &PublicKey, address: Address) -> Result<Option<Vec<u8>>> {

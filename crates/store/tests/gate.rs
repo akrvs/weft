@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
 use weft_core::{
-    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Record, Revoke,
-    SecretKey, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Receipt, Record,
+    Revoke, SecretKey, Voucher, verify,
 };
 use weft_home::{Home, Reads, Store};
 use weft_store::wire::{self, DOMAIN, MAX_BLOB, MAX_CHUNK, MAX_RECORD, Request, Response};
@@ -389,6 +389,64 @@ async fn publish_signs_a_page_and_the_next_pointer() {
 }
 
 #[tokio::test]
+async fn names_lists_heads_and_point_repoints_a_held_record() {
+    let w = World::start("names", 2);
+    let mut b = w.browser().await;
+    assert!(b.names().await.unwrap().is_empty());
+    let home = b.publish(b"# home".to_vec(), Some("home")).await.unwrap();
+    let blog = b.publish(b"# blog".to_vec(), Some("blog")).await.unwrap();
+    let note = w.note("aside");
+    let repointed = b.point("home", note).await.unwrap();
+    let pointer = Pointer::from_record(&repointed).unwrap();
+    assert_eq!(pointer.name, "home");
+    assert_eq!(pointer.target, note);
+    assert_eq!(pointer.seq, 2);
+    assert_eq!(pointer.prev, vec![home[1].address()]);
+    assert_eq!(repointed.signer(), &w.device.public());
+    verify(&repointed, Some(&w.manifest())).unwrap();
+
+    let names: Vec<Pointer> =
+        b.names().await.unwrap().iter().map(|r| Pointer::from_record(r).unwrap()).collect();
+    assert_eq!(names.len(), 2);
+    assert_eq!((names[0].name.as_str(), names[0].target), ("blog", blog[0].address()));
+    assert_eq!((names[1].name.as_str(), names[1].seq, names[1].target), ("home", 2, note));
+    assert!(w.all().contains(&repointed));
+
+    refused(b.point("home", Address::of(b"nowhere")).await, "no such record");
+    let mut app = w.client().await;
+    refused(app.names().await, "browser only");
+    refused(app.point("home", note).await, "browser only");
+}
+
+#[tokio::test]
+async fn receipt_is_signed_checked_and_not_stored() {
+    let w = World::start("receipt", 2);
+    let mut b = w.browser().await;
+    let note = w.note("paid");
+    let bank = key(7);
+    let relay = key(8).public();
+    let voucher = Voucher::mint(&bank, relay, 4, [9; 32]).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let receipt = Receipt { relay, records: vec![note], until: now + 86_400, voucher };
+    let record = b.receipt(receipt.encode()).await.unwrap();
+    assert_eq!(record.kind(), "receipt");
+    assert_eq!(record.author(), &w.root.public());
+    assert_eq!(record.signer(), &w.device.public());
+    assert_eq!(record.refs(), &[note]);
+    assert_eq!(Receipt::from_record(&record).unwrap(), receipt);
+    verify(&record, Some(&w.manifest())).unwrap();
+    assert!(!w.all().contains(&record));
+
+    let expired = Receipt { until: 1, ..receipt.clone() };
+    refused(b.receipt(expired.encode()).await, "already expired");
+    let wrong = Receipt { relay: key(9).public(), ..receipt.clone() };
+    refused(b.receipt(wrong.encode()).await, "relay");
+    refused(b.receipt(b"junk".to_vec()).await, "");
+    let mut app = w.client().await;
+    refused(app.receipt(receipt.encode()).await, "browser only");
+}
+
+#[tokio::test]
 async fn unauthorized_device_cannot_publish_or_revoke() {
     let w = World::start("unauthorized-browser", 5);
     let grant = w.grant(&["note"], Access::Read, None);
@@ -462,6 +520,25 @@ fn wire_rejects_malformed_frames() {
                 ("refs", Value::Array(vec![])),
             ]),
             "body too large",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("point".into())),
+                ("name", Value::Text("x".repeat(65))),
+                ("target", Value::Bytes(vec![0; 32])),
+            ]),
+            "long pointer name",
+        ),
+        (
+            map(vec![("t", Value::Text("point".into())), ("name", Value::Text("home".into()))]),
+            "point without target",
+        ),
+        (
+            map(vec![
+                ("t", Value::Text("receipt".into())),
+                ("body", Value::Bytes(vec![0; 65_537])),
+            ]),
+            "receipt body too large",
         ),
         (
             map(vec![

@@ -28,6 +28,12 @@ fn voucher_roundtrip_and_id() {
     let back = Voucher::decode(&bytes).unwrap();
     assert_eq!(back, v);
     assert_eq!(back.id(), Address::of(&bytes));
+    let text = v.to_text();
+    assert!(!text.contains(['=', '+', '/']));
+    assert_eq!(Voucher::from_text(&format!(" {text}\n")).unwrap(), v);
+    assert!(Voucher::from_text(&text[..text.len() - 1]).is_err());
+    assert!(Voucher::from_text("not*base64").is_err());
+    assert!(Voucher::from_text(&"A".repeat(400)).is_err());
 }
 
 #[test]

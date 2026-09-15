@@ -63,6 +63,9 @@ answered with `error` and the connection is closed.
 | `grants` | | browser only |
 | `revoke` | `grant`: bytes(32) | browser only |
 | `publish` | `body`: bytes; `name`: text, optional | browser only, body at most 65536 bytes, name 1 to 64 bytes |
+| `names` | | browser only |
+| `point` | `name`: text; `target`: bytes(32) | browser only, name 1 to 64 bytes |
+| `receipt` | `body`: bytes | browser only, a canonical receipt body, at most 65536 bytes |
 | `record` | `address`: bytes(32) | browser only |
 | `manifest` | `author`: bytes(32) | browser only |
 | `pointers` | `author`: bytes(32); `name`: text | browser only, name 1 to 64 bytes |
@@ -121,6 +124,14 @@ Arrays in a response hold at most 4096 entries.
   given, a pointer for it with the next `seq` and the current head as
   `prev`, stores both, and returns them. The store never pushes to a
   relay; the browser does.
+- `names`, `point`, and `receipt` are browser only too. `names` answers
+  `records` with the head pointer of every name the root owns, sorted by
+  name. `point` signs the next pointer for `name` at `target`, which must
+  be a record the store holds and verifies, stores it, and answers `get`
+  with it. `receipt` decodes and checks the body as a receipt, refuses
+  one whose `until` has passed, signs it as the root with the device key,
+  and answers `get` without storing it; the browser keeps it with `keep`
+  once the relay has accepted it.
 - `record`, `manifest`, `pointers`, `blob`, `keep`, and `keep-blob` are
   the browser's reads for rendering and answer `refused: browser only` for any other
   key. They cover every author the store holds, not only the root.

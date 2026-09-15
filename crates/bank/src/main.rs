@@ -82,6 +82,7 @@ fn run(dir: &Path, command: Command) -> Result<()> {
             write_private(&out, &voucher.encode())?;
             println!("{}", voucher.id());
             println!("{cents} cents to {}", to.address());
+            println!("{}", voucher.to_text());
             Ok(())
         }
     }

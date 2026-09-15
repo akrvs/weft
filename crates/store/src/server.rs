@@ -121,6 +121,15 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
                 records: records.iter().map(Record::to_bytes).collect(),
             })
         }
+        Request::Names => gate.names(app).map(|records| Response::Records {
+            records: records.iter().map(Record::to_bytes).collect(),
+        }),
+        Request::Point { name, target } => {
+            gate.point(app, &name, target).map(|r| Response::Get { record: r.to_bytes() })
+        }
+        Request::Receipt { body } => {
+            gate.receipt(app, &body).map(|r| Response::Get { record: r.to_bytes() })
+        }
         Request::Record { address } => gate.record(app, address).map(found),
         Request::Manifest { author } => gate.manifest(app, &author).map(found),
         Request::Pointers { author, name } => gate.pointers(app, &author, &name).map(|records| {
