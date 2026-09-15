@@ -793,12 +793,15 @@ fn setup(app: &tauri::App, home: Home) -> std::result::Result<(), Box<dyn std::e
         .build()?;
     let chrome = WebviewBuilder::new("chrome", WebviewUrl::App("index.html".into()));
     #[cfg(target_os = "linux")]
-    let chrome = chrome.initialization_script(theme::script(theme::current()));
+    let source = theme::source();
+    #[cfg(target_os = "linux")]
+    let chrome =
+        chrome.initialization_script(theme::script(source.as_ref().and_then(theme::current)));
     let chrome =
         window.add_child(chrome, LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0))?;
     frame(&chrome)?;
     #[cfg(target_os = "linux")]
-    app.manage(theme::watch(&chrome));
+    theme::watch(&chrome, source);
     #[cfg(feature = "drive")]
     if let Some(path) = std::env::var_os("WEFT_DRIVE") {
         drive::start(app.handle().clone(), path.as_ref())?;
