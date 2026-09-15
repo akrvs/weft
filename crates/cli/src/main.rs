@@ -9,9 +9,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use data_encoding::HEXLOWER;
+use weft_core::recovery::{Message, Signature};
 use weft_core::{
-    Access, Address, Body, Challenge, Draft, Grant, Manifest, Payment, Pointer, Proof, Receipt,
-    Record, Revoke, Voucher, verify,
+    Access, Address, Body, Challenge, Draft, Grant, Guardians, Manifest, Payment, Pointer, Proof,
+    PublicKey, Receipt, Record, Recovery, Revoke, Voucher, verify,
 };
 
 use weft_home::{Home, ROOT, Relay, Result, Store, fail, home, read_record};
@@ -36,7 +38,16 @@ enum Command {
         #[command(subcommand)]
         command: DeviceCommand,
     },
-    Manifest,
+    Manifest {
+        #[arg(long = "guardian")]
+        guardians: Vec<Address>,
+        #[arg(long)]
+        threshold: Option<usize>,
+    },
+    Recover {
+        #[command(subcommand)]
+        command: RecoverCommand,
+    },
     Sign {
         file: PathBuf,
         #[arg(long, default_value = "page")]
@@ -131,6 +142,21 @@ enum LoginCommand {
 }
 
 #[derive(Subcommand, Debug)]
+enum RecoverCommand {
+    Draft {
+        root: Address,
+    },
+    Sign {
+        message: String,
+    },
+    Finish {
+        message: String,
+        #[arg(long = "sig", required = true)]
+        sigs: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum RelayCommand {
     Add { relay: Relay },
     List,
@@ -212,12 +238,15 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             say!("publish a new manifest with `weft manifest`");
             Ok(())
         }
-        Command::Manifest => manifest(home, store),
+        Command::Manifest { guardians, threshold } => manifest(home, store, &guardians, threshold),
+        Command::Recover { command } => recover(home, store, command),
         Command::Sign { file, kind, signer, refs } => sign(home, store, &file, kind, &signer, refs),
         Command::Point { name, target, signer } => point(home, store, name, target, &signer),
         Command::Verify { file, manifest } => verify_file(store, &file, manifest.as_deref()),
         Command::Inspect { file } => inspect(&read_record(&file)?),
-        Command::Resolve { author, name, relay: false } => resolve(store, author, &name),
+        Command::Resolve { author, name, relay: false } => {
+            resolve(home, store, author, &name).await
+        }
         Command::Resolve { author, name, relay: true } => {
             net::resolve(home, store, author, &name).await
         }
@@ -473,8 +502,30 @@ fn whoami(home: &Home) -> Result<()> {
     Ok(())
 }
 
-fn manifest(home: &Home, store: &Store) -> Result<()> {
+fn key_of(address: Address) -> Result<PublicKey> {
+    if address.kind() != weft_core::address::Kind::Key {
+        return fail(format!("{address} is not a key address"));
+    }
+    Ok(PublicKey::from_bytes(address.bytes())?)
+}
+
+fn manifest(
+    home: &Home,
+    store: &Store,
+    guardians: &[Address],
+    threshold: Option<usize>,
+) -> Result<()> {
     let root = home.root()?;
+    let guardians = match (guardians.is_empty(), threshold) {
+        (true, None) => None,
+        (false, Some(threshold)) => {
+            let mut keys = guardians.iter().map(|a| key_of(*a)).collect::<Result<Vec<_>>>()?;
+            keys.sort_unstable();
+            keys.dedup();
+            Some(Guardians { keys, threshold })
+        }
+        _ => return fail("--guardian and --threshold go together"),
+    };
     let snap = store.snapshot()?;
     let prev = snap
         .records()
@@ -482,7 +533,7 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
         .filter_map(|r| Manifest::from_record(&r).ok().map(|m| (r.address(), m)))
         .max_by_key(|(_, m)| m.seq);
     let next =
-        home.manifest(prev.as_ref().map(|(_, m)| m), prev.as_ref().map(|(a, _)| *a), None)?;
+        home.manifest(prev.as_ref().map(|(_, m)| m), prev.as_ref().map(|(a, _)| *a), guardians)?;
     let key = home.open(ROOT, &home::passphrase(false)?)?;
     let created = home::now()?;
     let record = next.draft(&root, created).sign(&key)?;
@@ -500,6 +551,84 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
     let pointer_path = store.put(&pointer_record)?;
     say!("manifest seq {}  {}", next.seq, path.display());
     say!("pointer  seq {seq}  {}", pointer_path.display());
+    if let Some(g) = &next.guardians {
+        say!("guardians {} of {}", g.threshold, g.keys.len());
+    }
+    Ok(())
+}
+
+fn recover(home: &Home, store: &Store, command: RecoverCommand) -> Result<()> {
+    match command {
+        RecoverCommand::Draft { root } => recover_draft(home, store, root),
+        RecoverCommand::Sign { message } => recover_sign(home, &message),
+        RecoverCommand::Finish { message, sigs } => recover_finish(home, store, &message, &sigs),
+    }
+}
+
+fn recover_draft(home: &Home, store: &Store, root: Address) -> Result<()> {
+    let author = key_of(root)?;
+    let to = home.root()?;
+    let snap = store.snapshot()?;
+    let head =
+        snap.recovery_record(&author).and_then(|r| Recovery::from_record(&r).ok().map(|v| (r, v)));
+    let message = Message {
+        author,
+        to,
+        seq: head.as_ref().map_or(1, |(_, v)| v.seq.saturating_add(1)),
+        prev: head.iter().map(|(r, _)| r.address()).collect(),
+    };
+    say!("recover {} to {}  seq {}", root, to.address(), message.seq);
+    say!("{}", weft_core::login::to_text(&message.encode()));
+    Ok(())
+}
+
+fn recover_sign(home: &Home, message: &str) -> Result<()> {
+    let bytes = weft_core::login::from_text(message)?;
+    let parsed = Message::decode(&bytes)?;
+    let key = home.open(ROOT, &home::passphrase(false)?)?;
+    let sig = key.sign_in(weft_core::recovery::DOMAIN, &bytes);
+    say!("author {}", parsed.author.address());
+    say!("to     {}", parsed.to.address());
+    say!("seq    {}", parsed.seq);
+    say!("{}{}", HEXLOWER.encode(key.public().bytes()), HEXLOWER.encode(&sig));
+    Ok(())
+}
+
+fn recover_finish(home: &Home, store: &Store, message: &str, sigs: &[String]) -> Result<()> {
+    let bytes = weft_core::login::from_text(message)?;
+    let parsed = Message::decode(&bytes)?;
+    let root = home.root()?;
+    if parsed.to != root {
+        return fail(format!(
+            "the message names {} as the new root, this home is {}",
+            parsed.to.address(),
+            root.address()
+        ));
+    }
+    let mut sigs = sigs
+        .iter()
+        .map(|s| {
+            let raw =
+                HEXLOWER.decode(s.as_bytes()).map_err(|_| "signature is not lowercase hex")?;
+            if raw.len() != 96 {
+                return fail("a signature is 96 bytes: the guardian key then the signature");
+            }
+            let key = PublicKey::from_bytes(&raw[..32].try_into().map_err(|_| "key")?)?;
+            let sig: [u8; 64] = raw[32..].try_into().map_err(|_| "signature")?;
+            Ok(Signature { key, sig })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sigs.sort_by_key(|s| s.key);
+    let recovery = Recovery { to: parsed.to, seq: parsed.seq, prev: parsed.prev, sigs };
+    let key = home.open(ROOT, &home::passphrase(false)?)?;
+    let record = recovery.draft(&parsed.author, home::now()?).sign(&key)?;
+    let snap = store.snapshot()?;
+    let Some(manifest) = snap.manifest(&parsed.author) else {
+        return fail(format!("no manifest held for {}: fetch it first", parsed.author.address()));
+    };
+    verify(&record, Some(&manifest))?;
+    let path = store.put(&record)?;
+    say!("recovered {} to {}  {}", parsed.author.address(), root.address(), path.display());
     Ok(())
 }
 
@@ -651,8 +780,13 @@ async fn dns(domain: &str) -> Result<()> {
     Ok(())
 }
 
-fn resolve(store: &Store, author: Address, name: &str) -> Result<()> {
-    let author = weft_core::PublicKey::from_bytes(author.bytes())?;
+async fn resolve(home: &Home, store: &Store, author: Address, name: &str) -> Result<()> {
+    let asked = key_of(author)?;
+    let resolver = Resolver::new(Home::new(home.path().to_path_buf()), store.clone()).offline();
+    let author = resolver.redirect(asked).await.map_err(|e| e.to_string())?;
+    if author != asked {
+        say!("recovered to {}", author.address());
+    }
     let snap = store.snapshot()?;
     let manifest = snap.manifest(&author);
     let pointers = snap.pointers(&author, name, manifest.as_ref());

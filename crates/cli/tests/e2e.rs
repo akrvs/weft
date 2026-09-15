@@ -90,6 +90,56 @@ fn sign_on_a_verify_on_b_then_revoke() {
 }
 
 #[test]
+fn guardians_recover_a_lost_root() {
+    let a = Machine::new("recover-a");
+    let g = Machine::new("recover-g");
+    let c = Machine::new("recover-c");
+    let b = Machine::new("recover-b");
+    let guardian = g.ok(&["init"]).lines().next().unwrap().to_owned();
+    let root = a.ok(&["init"]).lines().next().unwrap().to_owned();
+    let (failed, text) = a.run(&["manifest", "--guardian", &guardian]);
+    assert!(!failed, "{text}");
+    assert!(text.contains("threshold"), "{text}");
+    let printed = a.ok(&["manifest", "--guardian", &guardian, "--threshold", "1"]);
+    assert!(printed.contains("guardians 1 of 1"), "{printed}");
+    let page = a.home.join("page.md");
+    std::fs::write(&page, "# Old\n").unwrap();
+    let old = a.ok(&["sign", page.to_str().unwrap()]).trim().to_owned();
+    let old_addr = Path::new(&old).file_stem().unwrap().to_str().unwrap().to_owned();
+    a.ok(&["point", "home", &old_addr]);
+
+    let new_root = c.ok(&["init"]).lines().next().unwrap().to_owned();
+    copy_records(&a.records(), &c.records());
+    let draft = c.ok(&["recover", "draft", &root]);
+    let message = draft.lines().last().unwrap().trim().to_owned();
+    assert!(draft.contains("seq 1"), "{draft}");
+    let signed = g.ok(&["recover", "sign", &message]);
+    assert!(signed.contains(&root) && signed.contains(&new_root), "{signed}");
+    let sig = signed.lines().last().unwrap().trim().to_owned();
+    assert_eq!(sig.len(), 192, "{signed}");
+    let (accepted, text) = c.run(&["recover", "finish", &message, "--sig", &"00".repeat(96)]);
+    assert!(!accepted, "{text}");
+    let (accepted, text) = a.run(&["recover", "finish", &message, "--sig", &sig]);
+    assert!(!accepted && text.contains("new root"), "{text}");
+    let finished = c.ok(&["recover", "finish", &message, "--sig", &sig]);
+    assert!(finished.contains("recovered"), "{finished}");
+
+    let page = c.home.join("page.md");
+    std::fs::write(&page, "# New\n").unwrap();
+    let new = c.ok(&["sign", page.to_str().unwrap()]).trim().to_owned();
+    let new_addr = Path::new(&new).file_stem().unwrap().to_str().unwrap().to_owned();
+    c.ok(&["point", "home", &new_addr]);
+
+    copy_records(&a.records(), &b.records());
+    copy_records(&c.records(), &b.records());
+    let resolved = b.ok(&["resolve", &root, "home"]);
+    assert!(resolved.starts_with(&format!("recovered to {new_root}\n{new_addr}")), "{resolved}");
+    let direct = b.ok(&["resolve", &new_root, "home"]);
+    assert!(direct.starts_with(&new_addr), "{direct}");
+    assert!(!direct.contains("recovered"), "{direct}");
+}
+
+#[test]
 fn wrong_passphrase_is_rejected() {
     let a = Machine::new("c");
     a.ok(&["init"]);

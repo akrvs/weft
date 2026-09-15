@@ -3,6 +3,7 @@ use std::path::Path;
 use data_encoding::HEXLOWER;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
 use weft_net::Client;
+use weft_resolve::Resolver;
 
 use weft_home::{Home, Relay, Result, Store, fail, fs};
 
@@ -231,9 +232,15 @@ pub async fn fetch(home: &Home, store: &Store, address: Address, out: Option<&Pa
 }
 
 pub async fn resolve(home: &Home, store: &Store, author: Address, name: &str) -> Result<()> {
-    let author = PublicKey::from_bytes(author.bytes())?;
+    let asked = PublicKey::from_bytes(author.bytes())?;
     let relays = relays(home)?;
-    let client = client().await?;
+    let resolver =
+        Resolver::with_client(Home::new(home.path().to_path_buf()), store.clone(), client().await?);
+    let author = resolver.redirect(asked).await.map_err(|e| e.to_string())?;
+    if author != asked {
+        say!("recovered to {}", author.address());
+    }
+    let client = resolver.client().await.map_err(|e| e.to_string())?;
     let mut best: Option<(Record, Pointer)> = None;
     for relay in relays {
         let head = client.head(&relay, author, name).await.map_err(|e| e.to_string())?;
@@ -260,7 +267,6 @@ pub async fn resolve(home: &Home, store: &Store, author: Address, name: &str) ->
             best = Some((record, pointer));
         }
     }
-    client.close().await;
     let Some((record, pointer)) = best else {
         return fail(format!("no valid pointer named {name} on any relay"));
     };

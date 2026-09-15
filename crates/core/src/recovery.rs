@@ -23,18 +23,59 @@ pub struct Recovery {
     pub sigs: Vec<Signature>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub author: PublicKey,
+    pub to: PublicKey,
+    pub seq: u64,
+    pub prev: Vec<Address>,
+}
+
+impl Message {
+    pub fn encode(&self) -> Vec<u8> {
+        Value::Map(vec![
+            ("author".to_owned(), Value::Bytes(self.author.bytes().to_vec())),
+            ("prev".to_owned(), addresses(&self.prev)),
+            ("seq".to_owned(), Value::Uint(self.seq)),
+            ("to".to_owned(), Value::Bytes(self.to.bytes().to_vec())),
+        ])
+        .encode()
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let value = cbor::decode(bytes)?;
+        let m = value.as_map().ok_or(Error::Encoding("recovery message is not a map"))?;
+        cbor::only(m, &["author", "prev", "seq", "to"])?;
+        let message = Self {
+            author: PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "author")?, "author")?)?,
+            to: PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "to")?, "to")?)?,
+            seq: cbor::field(m, "seq")?.as_uint().ok_or(Error::Field("seq"))?,
+            prev: prev(cbor::field(m, "prev")?)?,
+        };
+        if message.to == message.author {
+            return Err(Error::Field("to"));
+        }
+        if message.prev.len() > MAX_PREV {
+            return Err(Error::Limit("prev"));
+        }
+        Ok(message)
+    }
+}
+
 fn addresses(v: &[Address]) -> Value {
     Value::Array(v.iter().map(|a| Value::Bytes(a.bytes().to_vec())).collect())
 }
 
+fn prev(v: &Value) -> Result<Vec<Address>> {
+    v.as_array()
+        .ok_or(Error::Field("prev"))?
+        .iter()
+        .map(|v| cbor::bytes32(v, "prev").map(Address::hash))
+        .collect()
+}
+
 pub fn message(author: &PublicKey, to: &PublicKey, seq: u64, prev: &[Address]) -> Vec<u8> {
-    Value::Map(vec![
-        ("author".to_owned(), Value::Bytes(author.bytes().to_vec())),
-        ("prev".to_owned(), addresses(prev)),
-        ("seq".to_owned(), Value::Uint(seq)),
-        ("to".to_owned(), Value::Bytes(to.bytes().to_vec())),
-    ])
-    .encode()
+    Message { author: *author, to: *to, seq, prev: prev.to_vec() }.encode()
 }
 
 impl Recovery {
@@ -100,12 +141,7 @@ impl Recovery {
         Ok(Self {
             to: PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "to")?, "to")?)?,
             seq: cbor::field(m, "seq")?.as_uint().ok_or(Error::Field("seq"))?,
-            prev: cbor::field(m, "prev")?
-                .as_array()
-                .ok_or(Error::Field("prev"))?
-                .iter()
-                .map(|v| cbor::bytes32(v, "prev").map(Address::hash))
-                .collect::<Result<Vec<_>>>()?,
+            prev: prev(cbor::field(m, "prev")?)?,
             sigs: cbor::field(m, "sigs")?
                 .as_array()
                 .ok_or(Error::Field("sigs"))?
