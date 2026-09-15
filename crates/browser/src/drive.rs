@@ -15,10 +15,12 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn start(handle: AppHandle, path: &Path) -> std::io::Result<()> {
     let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
+    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    listener.set_nonblocking(true)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     let next = Arc::new(AtomicU64::new(1));
     tauri::async_runtime::spawn(async move {
+        let Ok(listener) = UnixListener::from_std(listener) else { return };
         while let Ok((stream, _)) = listener.accept().await {
             let id = next.fetch_add(1, Ordering::Relaxed);
             let handle = handle.clone();

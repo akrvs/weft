@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M19-yellow)
+![status](https://img.shields.io/badge/status-M20-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-136%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-139%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -41,7 +41,8 @@
 │              lan [a relay on the same wire, no internet]        │
 │              ends [nothing left behind but the browser]         │
 │              browser [pay, repoint, save, remember, register]   │
-│ status     : M19 — spec frozen · 10 crates · backlog empty      │
+│              drive [named links, a total, a scripted hand]      │
+│ status     : M20 — spec frozen · 10 crates · backlog thin       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,8 +70,9 @@ lets applications in only through revocable grants, a login that is a
 signature over a challenge instead of an account, and a relay that pins a
 stranger's page for a few cents and sweeps it when the pin runs out. The
 relay is a cache with a contract. The browser trusts nothing it has not
-verified itself and
-says so on every page.
+verified itself and says so on every page.
+
+![the browser open on a signed home page with the provenance panel expanded](docs/browser-home.png)
 
 ## [ Recon ] — the machine
 
@@ -180,8 +182,19 @@ weft-browser register                        # Linux: weft.desktop with x-scheme
 ```
 
 Light and dark follow the system. The provenance panel is one line that
-opens on click. The renderer still links only `weft:<address>` and
-`https:`; a `weft:author/name` link is dropped with its text.
+opens on click.
+
+Since M20 a page links by name, a pull knows its size, and a script can
+drive the whole window:
+
+```bash
+# [blog](weft:<root>/blog)                    # named and domain links render; the click resolves them as the address bar would
+# a blob still pulling                        # `size` asked of the relay first: the bar fills and says 1.2 MiB of 2.9 MiB
+cargo build --release -p weft-browser --features drive    # off by default, absent from the release build
+WEFT_DRIVE=$XDG_RUNTIME_DIR/drive.sock weft-browser <root>/home &
+printf "%s" "document.title" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/drive.sock   # {"ok":"weft"}
+crates/browser/smoke.sh                       # relay, bank, two homes, every dialog, both screenshots in docs/
+```
 
 Revocation still wins everywhere:
 
@@ -409,14 +422,14 @@ stored nowhere; every store and every relay refuses it.
 ```
 crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt and voucher text · login · verify
 crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait · addressed relay list
-crates/net/          weft-net: wire · client with pull progress · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline, watched · Markdown renderer · page titles
+crates/net/          weft-net: wire with size · client with pull progress and totals · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
+crates/resolve/      weft-resolve: target grammar with a text form · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
 crates/store/        weft-store: store wire · gate over every held record · names, point, receipt · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve, printing its entry · SIGHUP reload
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
 crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · paid push · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark · history and bookmarks · compose with preview, price, and pay · names and repoint · blob view and save · pull progress · weft: handler · start and store dialogs · login dialog
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark · history and bookmarks · compose with preview, price, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -444,8 +457,9 @@ cargo deny check
 
 The roadmap is complete and the backlog is empty of milestones. The
 browser has a design, remembers where it went, pays a relay from compose,
-repoints names, saves blobs, shows a pull, and opens `weft:` links from
-other browsers on Linux. What is left is listed in
-[`progress/BACKLOG.md`](progress/BACKLOG.md): named links in the
-renderer, a handler for macOS and Windows, a payment rail behind the
-voucher, and TLS at a reverse proxy. See [`progress/`](progress/).
+repoints names, saves blobs, shows a pull with its total, follows a link
+by name, opens `weft:` links from other browsers on Linux, and is driven
+end to end by a script. What is left is listed in
+[`progress/BACKLOG.md`](progress/BACKLOG.md): a handler for macOS and
+Windows, a payment rail behind the voucher, and TLS at a reverse proxy.
+See [`progress/`](progress/).

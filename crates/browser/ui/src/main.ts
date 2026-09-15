@@ -175,12 +175,13 @@ function showPull(p: Pull | null): void {
 }
 
 async function go(input: string, remember = true): Promise<void> {
-  const value = input.trim();
-  if (!value) return;
-  if (value.startsWith(LOGIN)) {
-    await openLogin(new URLSearchParams(value.slice(LOGIN.length)).get("c") ?? "");
+  const typed = input.trim();
+  if (!typed) return;
+  if (typed.startsWith(LOGIN)) {
+    await openLogin(new URLSearchParams(typed.slice(LOGIN.length)).get("c") ?? "");
     return;
   }
+  const value = typed.startsWith("weft:") ? typed.slice(5) : typed;
   if (remember) {
     trail.splice(at + 1);
     trail.push(value);
@@ -200,9 +201,8 @@ async function go(input: string, remember = true): Promise<void> {
     return;
   }
   await invoke("close_web");
-  const target = value.startsWith("weft:") ? value.slice(5) : value;
   try {
-    await showPage(await invoke<Page>("resolve", { input: target }));
+    await showPage(await invoke<Page>("resolve", { input: value }));
     void invoke("visit", { target: value }).catch(() => undefined);
   } catch (e) {
     content.innerHTML = "";
