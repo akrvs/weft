@@ -41,6 +41,7 @@ unknown fields.
 | `put` | `records`: array of record bytes | at most 64 records |
 | `get` | `address`: bytes(32) | |
 | `head` | `author`: bytes(32), `name`: text | name 1 to 64 bytes |
+| `recovery` | `author`: bytes(32) | |
 | `price` | | |
 | `size` | `address`: bytes(32) | |
 | `invoice` | `cents`: uint | 1 to 1 000 000 000 |
@@ -52,6 +53,7 @@ unknown fields.
 | `put` | `stored`: array of bytes(32); `rejected`: array of `[index, reason]` |
 | `get` | `record`: bytes, absent when unknown |
 | `head` | `pointer`: bytes, absent when unknown; `manifest`: bytes, absent when unknown |
+| `recovery` | `record`: bytes, absent when unknown |
 | `price` | `rate`: uint cents per KiB per day; `banks`: array of bytes(32), sorted; `sats`: uint sats per cent, 0 when the relay takes no Lightning |
 | `size` | `bytes`: uint, absent when the relay holds no complete blob at that hash |
 | `invoice` | `bolt11`: text, 1 to 4096 bytes; `hash`: bytes(32), the payment hash; `expires`: uint |
@@ -60,6 +62,11 @@ unknown fields.
 `head` always returns the newest manifest the relay holds for the author,
 whatever the name. Asking for the reserved name `manifest` is the way to
 fetch only the manifest.
+
+`recovery` returns the head among the recovery records the relay holds for
+the author, by the rule in `protocol.md` section 13. A recovery is pushed
+like any record under the lost root's allowlist entry or a paid pin, and
+is verified against that root's newest manifest before it is stored.
 
 `invoice` asks the relay's Lightning node for an invoice of
 `cents * sats * 1000` msat and remembers the payment hash with `cents`
@@ -104,11 +111,12 @@ payer pays the invoice with any wallet and puts the preimage in a receipt.
 
 ## Storage
 
-Records and indexes live in a redb database with eight tables: records by
-address, heads by author and name, newest manifest by author, pins by
-address holding `until` and the paying author, spent payment ids, open
-invoices by payment hash holding `cents` and `expires`, record addresses
-by author, and the blob each blob record names. The last two
+Records and indexes live in a redb database with nine tables: records by
+address, heads by author and name, newest manifest by author, recovery
+head by author, pins by address holding `until` and the paying author,
+spent payment ids, open invoices by payment hash holding `cents` and
+`expires`, record addresses by author, and the blob each blob record
+names. The last two
 are derived from the records table on every write; an index written
 without them is rebuilt once when the relay opens it. Blobs live in an
 iroh-blobs file store beside it.

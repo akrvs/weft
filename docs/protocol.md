@@ -85,12 +85,16 @@ Records are immutable. Mutation is expressed with pointers.
 | `prev` | bytes(32), optional | address of the previous manifest record |
 | `devices` | array of device maps | sorted by key bytes, unique, at most 256 |
 | `revoked` | array of bytes(32) | sorted, unique, at most 256 |
+| `guardians` | array of bytes(32), optional | root keys of other identities, sorted, unique, 1 to 16 |
+| `threshold` | uint, optional | 1 to the number of guardians |
 
 A device map holds `key` bytes(32), `label` text of 1 to 64 bytes,
 `created` uint, and optionally `expires` uint greater than `created`.
 
-The root key must not appear in `devices` or `revoked`. A key must not
-appear in both lists. When a record cites `prev`, it also lists it in `refs`.
+The root key must not appear in `devices`, `revoked`, or `guardians`. A key
+must not appear in both `devices` and `revoked`. `guardians` and
+`threshold` are present together or not at all; section 13 says what they
+do. When a record cites `prev`, it also lists it in `refs`.
 
 The newest manifest for an identity is the valid one with the highest
 `seq`, ties broken by the highest `created`.
@@ -149,7 +153,8 @@ before the loss, revoking trusts none.
 | Refs per record | 1024 |
 | Kind length | 32 bytes |
 | Devices, revoked keys | 256 each |
-| Pointer prev | 16 |
+| Guardians, recovery signatures | 16 each |
+| Pointer prev, recovery prev | 16 |
 | Name, label | 64 bytes |
 | Kinds per grant | 16 |
 | Service name | 253 bytes |
@@ -159,10 +164,12 @@ before the loss, revoking trusts none.
 
 ## 9. Reserved kinds
 
-`manifest`, `pointer`, `grant`, `revoke`, and `receipt` are defined here
-and are reserved: they can never be granted. `login` is defined here, may
-be granted, and is never stored or relayed. `page` and `file` are
-conventional for M1 and carry no extra rules. Later versions define
+The kind namespace is open: any text that satisfies section 4 is a kind,
+and a kind this document does not name carries no rules beyond section 4.
+`manifest`, `pointer`, `grant`, `revoke`, `receipt`, and `recovery` are
+defined here and are reserved: they can never be granted. `login` is
+defined here, may be granted, and is never stored or relayed. `page` and
+`file` are conventional and carry no extra rules. Later versions define
 `label` and `petname`.
 
 ## 10. Grants
@@ -261,3 +268,44 @@ The verifier, given its own origin and the current time:
 
 The login's `author` is the identity. A revoked device stops logging in as
 soon as the verifier sees the newer manifest.
+
+## 13. Recovery
+
+A root that named guardians can be replaced when it is lost. Guardians are
+root keys of other identities. Recovery is for a lost root, not a
+compromised one: the old root's newest manifest decides who the guardians
+are, and a root that is still held can change that list.
+
+`kind = "recovery"`. `author` is the lost root, `signer` is the new root.
+`body` is a canonical map:
+
+| Key | Type | Rule |
+|---|---|---|
+| `to` | bytes(32) | the new root, equal to `signer`, not equal to `author` |
+| `seq` | uint | sequence for this author |
+| `prev` | array of bytes(32) | addresses of the recovery heads the signers saw; at most 16, also in `refs` |
+| `sigs` | array of signature maps | sorted by key bytes, unique, 1 to 16 |
+
+A signature map holds `key` bytes(32), a guardian, and `sig` bytes(64),
+the guardian's Ed25519 signature over
+
+```
+message = "weft/recovery/1" || 0x00 || canonical({ author, prev, seq, to })
+```
+
+Verification, added to section 7 for this kind alone: the author's newest
+manifest is required and must name guardians; every `sigs` key must be one
+of them and its signature must verify; the number of signatures must reach
+`threshold`. The device authorization step is skipped, since the signer is
+the new root and not a device. Any other kind signed by the new root under
+the old author still needs a manifest that authorizes it.
+
+The head among valid recoveries for an author is the one with the highest
+`seq`, then the highest `created`, then the lowest address, as for
+pointers. Guardians supersede a recovery by signing one with a higher `seq`
+that cites the earlier head.
+
+A resolver asked for a name under an author first follows recovery heads,
+at most 4 hops; a fifth hop or a cycle is an error. The name is then
+resolved under the last root reached. A raw record address never
+redirects.

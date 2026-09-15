@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M21-yellow)
+![status](https://img.shields.io/badge/status-M22-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-146%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-156%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -43,7 +43,8 @@
 │              browser [pay, repoint, save, remember, register]   │
 │              drive [named links, a total, a scripted hand]      │
 │              rail [an invoice, a preimage, a portal, a login]   │
-│ status     : M21 — spec frozen · 10 crates · backlog thin       │
+│              recover [guardians hand a lost root to a new one]  │
+│ status     : M22 — spec frozen · 10 crates · backlog thin       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -328,6 +329,9 @@ weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch
 # or paste the voucher text into the browser's compose pane
 weft-relay sats 10 && weft-relay node lnd https://lnd:8080   # lnd.macaroon and lnd.pem in the relay dir
 weft-relay node fake                              # a node that writes each preimage to data/preimages/<hash>
+crates/relay/lnd.sh up                            # bitcoind and two lnd nodes in regtest containers, a channel between them
+WEFT_LND=$XDG_RUNTIME_DIR/weft-lnd cargo test -p weft-relay --test lnd -- --ignored   # a real invoice, paid, settled
+crates/relay/lnd.sh down
 weft invoice <page> <pointer> --days 30           # cost in cents, a BOLT11 invoice, its payment hash
 weft push <page> <pointer> --preimage <hex> --relay <id> --days 30   # the wallet's preimage is the proof
 # or press "lightning invoice" in compose and paste the preimage where the voucher goes
@@ -348,8 +352,13 @@ nothing names any more, and forgets invoices nobody paid within the hour.
 A payment settles once, a receipt the relay refuses is never kept, and
 the relay still never signs. Settling a preimage is one hash against the
 relay's own invoice table; the node is asked only to issue, over LND's
-REST API with a macaroon and the node's own certificate as the only
-trusted root. The LND path has not been run against a live node.
+REST API with an invoice macaroon and the node's own certificate pinned
+byte for byte, since LND's self signed certificate is a CA that no chain
+validator accepts as a leaf. `lnd.sh` stands up a regtest network in
+`podman` or `docker`, funds a payer, opens a channel, and writes the
+credentials the ignored live test reads; it has run here against LND
+0.19.2.
+
 ## [ Login Flag ] — no account, no password, one signature
 
 ```bash
@@ -378,12 +387,42 @@ with no ceiling; a login past that drops the session that expires
 soonest. The `login` record itself is
 stored nowhere; every store and every relay refuses it.
 
+## [ Recover Flag ] — guardians hand a lost root to a new one
+
+```bash
+weft manifest --guardian <friend> --guardian <sibling> --threshold 1   # name who may recover you
+weft init                                   # on the new machine: a fresh root
+weft fetch <old manifest>                   # or copy the records; the new home must hold the old manifest
+weft recover draft <old root>               # prints the message guardians sign, seq and prev from what you hold
+weft recover sign <message>                 # a guardian, at home: prints its key and signature as one hex line
+weft recover finish <message> --sig <hex>   # the new root signs the record, the store verifies it, push it
+weft resolve <old root> home                # recovered to <new root>, then the new root's page
+```
+
+A manifest may name up to sixteen guardians, other identities' root keys,
+and a threshold. A recovery is a record whose author is the lost root and
+whose signer is the new one, carrying that many guardian signatures over
+the old root, the new root, a sequence, and the heads it supersedes.
+`verify` checks it against the lost root's newest manifest like every
+other record, in the one place records are checked; below the threshold
+it is `guardian signatures below threshold`, and a stranger's signature or
+a manifest without guardians is `not authorized`. The relay indexes the
+head per author and answers `recovery`, the store answers it over the
+socket, and every resolver, the CLI, the gateway, and the browser, follows
+the head for at most four hops before naming anything under the author.
+Guardians supersede a recovery with a higher sequence. A compromised root
+is out of scope: it can still rewrite its own guardian list.
+
 ## [ Persistence ] — posture
 
 - `#![forbid(unsafe_code)]` in every crate, clippy pedantic, `unwrap`
   and `panic` denied in library code.
 - Strict Ed25519 verification, weak public keys rejected, domain separated
-  signatures.
+  signatures. Guardian signatures over a recovery live under their own
+  domain string and are counted only from keys the lost root's newest
+  manifest names.
+- The relay talks to LND over TLS with the node's certificate pinned byte
+  for byte and an invoice macaroon, the least it needs to issue.
 - Addresses carry a version byte and a blake3 checksum. Typos fail closed.
 - The core crate does no I/O and takes no randomness. The CLI owns both.
 - Wire frames are capped at 1 MiB, batches at 64 records, and every
@@ -433,16 +472,16 @@ stored nowhere; every store and every relay refuses it.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt with a voucher or a preimage · voucher text · login · verify
-crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait · addressed relay list
-crates/net/          weft-net: wire with size and invoice · client with pull progress and totals · relay handler · pricing in cents and sats · Node trait with a fake · invoices · pins · sponsorship · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar with a text form · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
-crates/store/        weft-store: store wire · gate over every held record · names, point, receipt · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
-crates/relay/        weft-relay: init · allow · rate · sats · bank · node fake or lnd · price · serve, printing its entry · SIGHUP reload
+crates/core/         weft-core: address · cbor · identity · record · manifest with guardians · pointer · grant · receipt with a voucher or a preimage · voucher text · login · recovery · verify
+crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait with recovery heads · addressed relay list
+crates/net/          weft-net: wire with size, invoice, and recovery · client with pull progress and totals · relay handler · pricing in cents and sats · Node trait with a fake · invoices · pins · sponsorship · sweep · blob GC · redb index · public or local network
+crates/resolve/      weft-resolve: target grammar with a text form · DNS over HTTPS with a positive and negative TTL cache · recovery redirects under a hop cap · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
+crates/store/        weft-store: store wire · gate over every held record · names, point, receipt, recovery · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
+crates/relay/        weft-relay: init · allow · rate · sats · bank · node fake or lnd with a pinned certificate · price · serve, printing its entry · SIGHUP reload · lnd.sh regtest and a live test
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
-crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh with a screenshot hash the tests check
+crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · quiet on a closed pipe
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh with a screenshot hash the tests check
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -468,10 +507,10 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete. A relay takes Lightning next to the voucher, the
-browser follows the desktop's colour scheme on WebKitGTK and is
-screenshotted in both, the driven smoke test logs into a real gateway,
-and a test fails when the screenshots fall behind the UI. What is left is
-listed in [`progress/BACKLOG.md`](progress/BACKLOG.md): a handler for
-macOS and Windows, a run of the LND adapter against a live node, and TLS
-at a reverse proxy. See [`progress/`](progress/).
+The roadmap is complete and its two open protocol questions are settled:
+guardians recover a lost root, and kinds are an open namespace with a
+reserved core. The LND adapter has issued and settled a real invoice in
+regtest, and the browser theme survives a desktop without a portal. What
+is left is listed in [`progress/BACKLOG.md`](progress/BACKLOG.md): a
+handler for macOS and Windows, a browser dialog for signing recoveries,
+and TLS at a reverse proxy. See [`progress/`](progress/).

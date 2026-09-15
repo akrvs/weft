@@ -82,7 +82,12 @@ A service that needs only a fact receives a selective disclosure proof
 instead. Identity is a bare public key, not a DID and not a domain.
 Readable names are layer 4's job.
 
-Open: social recovery for the root key.
+A root can name guardians, other identities' root keys, and a threshold in
+its manifest. When the root is lost, that many guardians sign a recovery
+record handing the identity to a new root, and every resolver follows it.
+A root that is merely compromised is not recovered this way: it can still
+rewrite the guardian list, so recovery trusts the newest manifest as the
+rest of the protocol does.
 
 ### Content
 
@@ -224,9 +229,11 @@ adversary; a token or sale; mobile before desktop; live streaming.
 
 ## Open questions
 
-- Social recovery for root keys.
 - Relay incentives before payments.
 - Streaming payments versus aggregated receipts.
 - When a consensus backed name registry is justified.
-- Record kinds: fixed set or open namespace with a small core.
 - The project's real name.
+
+Settled: social recovery through guardians named in the manifest,
+`protocol.md` section 13; record kinds are an open namespace with a
+reserved core, section 9.

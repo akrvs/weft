@@ -68,6 +68,7 @@ answered with `error` and the connection is closed.
 | `receipt` | `body`: bytes | browser only, a canonical receipt body, at most 65536 bytes |
 | `record` | `address`: bytes(32) | browser only |
 | `manifest` | `author`: bytes(32) | browser only |
+| `recovery` | `author`: bytes(32) | browser only |
 | `pointers` | `author`: bytes(32); `name`: text | browser only, name 1 to 64 bytes |
 | `blob` | `address`: bytes(32); `offset`: uint | browser only, offset at most 1 GiB |
 | `keep` | `record`: bytes | browser only, at most 131072 bytes |
@@ -132,12 +133,14 @@ Arrays in a response hold at most 4096 entries.
   one whose `until` has passed, signs it as the root with the device key,
   and answers `get` without storing it; the browser keeps it with `keep`
   once the relay has accepted it.
-- `record`, `manifest`, `pointers`, `blob`, `keep`, and `keep-blob` are
-  the browser's reads for rendering and answer `refused: browser only` for any other
-  key. They cover every author the store holds, not only the root.
-  `record` answers `get` with the record at that address or `missing`.
-  `manifest` answers `get` with the newest valid manifest record by that
-  author or `missing`. `pointers` answers `records` with the pointer
+- `record`, `manifest`, `recovery`, `pointers`, `blob`, `keep`, and
+  `keep-blob` are the browser's reads for rendering and answer
+  `refused: browser only` for any other key. They cover every author the
+  store holds, not only the root. `record` answers `get` with the record
+  at that address or `missing`. `manifest` answers `get` with the newest
+  valid manifest record by that author or `missing`. `recovery` answers
+  `get` with the head among the valid recovery records for that author,
+  `protocol.md` section 13, or `missing`. `pointers` answers `records` with the pointer
   records of that author and name that verify against the author's
   newest local manifest. The browser verifies again what it renders.
 - `blob` answers `blob` with the total length and the bytes from `offset`

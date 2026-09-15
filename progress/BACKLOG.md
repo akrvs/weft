@@ -6,6 +6,6 @@ scheduled.
 | Item | Origin | Notes |
 |---|---|---|
 | `weft:` handler on macOS and Windows | M19 | `weft-browser register` writes a desktop entry and runs `xdg-mime`; the other platforms need `CFBundleURLTypes` and a registry key, both behind a bundle |
-| LND adapter against a live node | M21 | `crates/relay/src/lnd.rs` posts to `/v1/invoices` with the macaroon header and trusts only `lnd.pem`; it compiles and the fake node covers the relay side, but no LND has answered it. Needs a regtest node, `weft-relay node lnd <url>`, one invoice, one push |
-| Light theme on WebKitGTK without a portal | M21 | `theme.rs` reads `org.freedesktop.appearance color-scheme` from the settings portal; a desktop without `xdg-desktop-portal` falls back to `prefers-color-scheme`, which WebKitGTK 2.52 reports as dark on this box whatever GTK says |
+| Recovery in the browser | M22 | `weft recover sign` and `finish` are CLI only; a guardian dialog would show the old and new root and sign with the root key through the daemon, which today never opens the root |
+| Theme fallback on a live desktop without a portal | M22 | `theme.rs` picks GSettings then GTK when the portal answers nothing; the mapping is unit tested and the code compiled, but this box has a portal, so neither fallback has stamped a running window |
 | TLS in the gateway process | M4 | A reverse proxy's job by decision |
