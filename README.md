@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M18-yellow)
+![status](https://img.shields.io/badge/status-M19-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-127%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-136%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -40,7 +40,8 @@
 │              hygiene [what nothing holds up leaves the relay]   │
 │              lan [a relay on the same wire, no internet]        │
 │              ends [nothing left behind but the browser]         │
-│ status     : M18 — spec frozen · 10 crates · one gate · one door│
+│              browser [pay, repoint, save, remember, register]   │
+│ status     : M19 — spec frozen · 10 crates · backlog empty      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -165,6 +166,23 @@ HTTPS page opens in a second web view under a banner that reads unsigned,
 and nothing below that line is trusted. Compose signs a page with a
 device key and pushes it to your relays.
 
+Since M19 the browser remembers, pays, and answers `weft:` links:
+
+```bash
+weft-browser register                        # Linux: weft.desktop with x-scheme-handler/weft, xdg-mime default
+# click a weft:login link in Firefox         # weft-browser opens with the consent dialog
+# back, forward, history, bookmark           # $WEFT_HOME/browser/history and bookmarks, mode 0600, 1024 visits kept
+# compose                                    # live preview on the right, existing names offered, price of every relay
+# paste the voucher text, days, sign and push # the daemon signs the receipt, kept only after the relay stored it
+# store > names > point                      # repoint a name at any record you hold, the next seq and prev
+# a blob that is not an image                # size, type, save to $XDG_DOWNLOAD_DIR/<address>, never overwritten
+# a blob still pulling                       # a bar under the address bar counts the bytes as they arrive
+```
+
+Light and dark follow the system. The provenance panel is one line that
+opens on click. The renderer still links only `weft:<address>` and
+`https:`; a `weft:author/name` link is dropped with its text.
+
 Revocation still wins everywhere:
 
 ```bash
@@ -286,10 +304,11 @@ A relay stores what its allowlist pushes for free. Everyone else pays.
 
 ```bash
 weft-relay rate 1 && weft-relay bank add <bank>   # cents per KiB per day, and who mints them
-weft-bank init && weft-bank mint --to <relay id> --cents 4 --out v.bin
+weft-bank init && weft-bank mint --to <relay id> --cents 4 --out v.bin   # also prints the voucher as text
 weft price                                        # every relay's rate and banks
 weft push <page> <pointer>                        # rejected: payment required
 weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch, both records pin
+# or paste the voucher text into the browser's compose pane
 weft receipts                                     # what you paid, to whom, until when
 weft-relay rate 2 && kill -HUP $(pidof weft-relay) # allow, banks, and rate reload in place
 weft-relay deny <root> && kill -HUP $(pidof weft-relay) # their free records go, paid pins stay
@@ -388,16 +407,16 @@ stored nowhere; every store and every relay refuses it.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt · login · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt and voucher text · login · verify
 crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait · addressed relay list
-crates/net/          weft-net: wire · client · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline · Markdown renderer · page titles
-crates/store/        weft-store: store wire · gate over every held record · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
+crates/net/          weft-net: wire · client with pull progress · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
+crates/resolve/      weft-resolve: target grammar · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline, watched · Markdown renderer · page titles
+crates/store/        weft-store: store wire · gate over every held record · names, point, receipt · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · bank · price · serve, printing its entry · SIGHUP reload
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
 crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · paid push · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · start dialog, attached or detached · store view with log tail, stop, and app titles · login dialog
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark · history and bookmarks · compose with preview, price, and pay · names and repoint · blob view and save · pull progress · weft: handler · start and store dialogs · login dialog
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -423,13 +442,10 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete and the backlog holds nothing but the browser: a
-lost key retires while a stolen one is revoked, anyone may pay to pin
-anyone's page, grants reach fetched records, an app is named by its own
-page, the store answers from an index, a detached daemon logs and stops
-on request, a relay is reached across subnets by address, and the gateway
-routes by host with its tables in redb. M19 is the browser: visual design,
-compose preview and pointer management, history and bookmarks, a view for
-blobs that are not images, blob download progress, price and pay, the
-passphrase field after a failed start, and `weft:` as a registered URL
-handler. See [`progress/`](progress/).
+The roadmap is complete and the backlog is empty of milestones. The
+browser has a design, remembers where it went, pays a relay from compose,
+repoints names, saves blobs, shows a pull, and opens `weft:` links from
+other browsers on Linux. What is left is listed in
+[`progress/BACKLOG.md`](progress/BACKLOG.md): named links in the
+renderer, a handler for macOS and Windows, a payment rail behind the
+voucher, and TLS at a reverse proxy. See [`progress/`](progress/).

@@ -1,15 +1,14 @@
 # Backlog
 
 Items with no milestone yet. Pull one into a `progress/M*.md` when it is
-scheduled. Everything here is the browser; M19 takes it whole.
+scheduled.
 
 | Item | Origin | Notes |
 |---|---|---|
-| Browser visual design | M3 review | First cut is functional and plain. Needs typography, spacing, a proper provenance panel, light and dark themes, and a real icon |
-| Compose preview and pointer management | M3 | Preview the rendered page before signing; list and repoint names |
-| History and bookmarks in the browser | M3 | Back is an in-memory trail |
-| Non-image blob view | M3 | Download affordance for blobs that are not images |
-| Browser price and pay | M7 | Publishing from the browser cannot pay a relay |
-| `weft:` URL handler registration | M6 | A challenge page in Firefox cannot launch weft-browser; the link is pasted by hand |
-| Passphrase field after a failed start | M10 | The start form keeps the typed passphrase after the daemon refuses it |
-| Blob download progress | M12 | The browser shows nothing while a large blob pulls |
+| Named links in the renderer | M19 smoke test | `render` keeps only `weft:<address>` and `https:` links; a `weft:author/name` link is dropped together with its text. Frozen since M3, worth reopening with a `Target` parse in `record_address` |
+| `weft:` handler on macOS and Windows | M19 | `weft-browser register` writes a desktop entry and runs `xdg-mime`; the other platforms need `CFBundleURLTypes` and a registry key, both behind a bundle |
+| Blob total before the pull ends | M19 | iroh-blobs reports offsets only; the bar counts bytes without a total. A `size` request on the relay wire would give the total up front |
+| Light theme screenshot | M19 | The stylesheet carries both palettes; only the dark one was seen. WebKitGTK follows the desktop portal and neither `GTK_THEME` nor the gsettings key flipped it on Hyprland |
+| Browser UI automation in the smoke test | M19 | Compose, store, history, and bookmark dialogs were exercised by their unit and store tests only; `/dev/uinput` is root only on this machine so no clicks were scripted |
+| Payment rail behind the voucher | M7, M18 | `Relay::settle` is the seam; the voucher is version 1 |
+| TLS in the gateway process | M4 | A reverse proxy's job by decision |
