@@ -39,11 +39,23 @@ struct Shared<R: Reads> {
     dns: OnceCell<Dns>,
 }
 
+pub type Watch = Arc<dyn Fn(Address, u64) + Send + Sync>;
+
+#[derive(Clone)]
+struct Watcher(Watch);
+
+impl core::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Watcher")
+    }
+}
+
 #[derive(Debug)]
 pub struct Resolver<R: Reads = Store> {
     shared: Arc<Shared<R>>,
     pulls: bool,
     meter: Option<Arc<AtomicU64>>,
+    watch: Option<Watcher>,
 }
 
 impl Resolver<Store> {
@@ -64,17 +76,37 @@ impl<R: Reads> Resolver<R> {
 
     fn build(home: Home, reads: R, client: OnceCell<Client>) -> Self {
         let shared = Shared { home, reads, client, dns: OnceCell::new() };
-        Self { shared: Arc::new(shared), pulls: true, meter: None }
+        Self { shared: Arc::new(shared), pulls: true, meter: None, watch: None }
     }
 
     #[must_use]
     pub fn offline(&self) -> Self {
-        Self { shared: Arc::clone(&self.shared), pulls: false, meter: self.meter.clone() }
+        Self {
+            shared: Arc::clone(&self.shared),
+            pulls: false,
+            meter: self.meter.clone(),
+            watch: self.watch.clone(),
+        }
     }
 
     #[must_use]
     pub fn metered(&self, meter: Arc<AtomicU64>) -> Self {
-        Self { shared: Arc::clone(&self.shared), pulls: self.pulls, meter: Some(meter) }
+        Self {
+            shared: Arc::clone(&self.shared),
+            pulls: self.pulls,
+            meter: Some(meter),
+            watch: self.watch.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn watched(&self, watch: Watch) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            pulls: self.pulls,
+            meter: self.meter.clone(),
+            watch: Some(Watcher(watch)),
+        }
     }
 
     fn pulled<T: Pulled>(&self, value: T) -> T {
@@ -124,10 +156,13 @@ impl<R: Reads> Resolver<R> {
         }
         let Some((client, relays)) = self.relays().await? else { return Ok(None) };
         for relay in &relays {
-            let Ok(Ok(data)) = timeout(BLOB_TIMEOUT, client.pull_blob(relay, &address)).await
-            else {
-                continue;
+            let mut on_progress = |done| {
+                if let Some(Watcher(watch)) = &self.watch {
+                    watch(address, done);
+                }
             };
+            let pull = client.pull_blob(relay, &address, &mut on_progress);
+            let Ok(Ok(data)) = timeout(BLOB_TIMEOUT, pull).await else { continue };
             let data = self.pulled(checked(address, data)?);
             self.reads().keep_blob(address, &data).await?;
             return Ok(Some(data));

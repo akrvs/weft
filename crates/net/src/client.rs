@@ -1,7 +1,9 @@
 use std::path::Path;
 
+use futures_util::StreamExt;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr};
+use iroh_blobs::api::downloader::DownloadProgressItem;
 use iroh_blobs::store::mem::MemStore;
 use iroh_blobs::{BlobsProtocol, Hash};
 use weft_core::{Address, PublicKey, Record};
@@ -57,7 +59,7 @@ impl Client {
         address: &Address,
         out: &Path,
     ) -> Result<u64> {
-        let hash = self.download(relay.into(), address).await?;
+        let hash = self.download(relay.into(), address, &mut |_| {}).await?;
         let abs = std::path::absolute(out).map_err(net)?;
         self.blobs.blobs().export(hash, abs).await.map_err(net)
     }
@@ -66,20 +68,37 @@ impl Client {
         &self,
         relay: impl Into<EndpointAddr>,
         address: &Address,
+        on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<Vec<u8>> {
-        let hash = self.download(relay.into(), address).await?;
+        let hash = self.download(relay.into(), address, on_progress).await?;
         let bytes = self.blobs.blobs().get_bytes(hash).await.map_err(net)?;
         Ok(bytes.to_vec())
     }
 
-    async fn download(&self, relay: EndpointAddr, address: &Address) -> Result<Hash> {
+    async fn download(
+        &self,
+        relay: EndpointAddr,
+        address: &Address,
+        on_progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Hash> {
         let hash = Hash::from_bytes(*address.bytes());
         let primed = if relay.ip_addrs().next().is_some() {
             Some(self.endpoint().connect(relay.clone(), iroh_blobs::ALPN).await.map_err(net)?)
         } else {
             None
         };
-        self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id)).await.map_err(net)?;
+        let progress = self.blobs.downloader(self.endpoint()).download(hash, Some(relay.id));
+        let mut items = progress.stream().await.map_err(net)?;
+        while let Some(item) = items.next().await {
+            match item {
+                DownloadProgressItem::Progress(done) => on_progress(done),
+                DownloadProgressItem::Error(e) => return Err(net(e)),
+                DownloadProgressItem::DownloadError => {
+                    return Err(Error::Net("download failed".to_owned()));
+                }
+                _ => {}
+            }
+        }
         drop(primed);
         Ok(hash)
     }

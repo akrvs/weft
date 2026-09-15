@@ -9,5 +9,5 @@ pub mod target;
 pub use dns::{Binding, Dns, Negative};
 pub use error::{Error, Result};
 pub use render::{Links, escape, render};
-pub use resolver::{Page, Resolver};
+pub use resolver::{Page, Resolver, Watch};
 pub use target::Target;

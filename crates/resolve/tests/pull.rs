@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
@@ -123,7 +123,15 @@ async fn a_missing_blob_is_pulled_once_and_kept() {
         matches!(offline.resolve(named, &LINKS).await, Err(Error::NoPointer(n)) if n == "home")
     );
     assert!(!blob_file.exists());
-    assert_eq!(resolver.blob(site.blob).await.unwrap().unwrap(), site.data);
+    let seen: Arc<Mutex<Vec<(Address, u64)>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let watched = resolver.watched(Arc::new(move |a, n| log.lock().unwrap().push((a, n))));
+    assert_eq!(watched.blob(site.blob).await.unwrap().unwrap(), site.data);
+    let seen: Vec<(Address, u64)> = std::mem::take(&mut *seen.lock().unwrap());
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|(a, _)| *a == site.blob));
+    assert!(seen.windows(2).all(|w| w[0].1 <= w[1].1));
+    assert_eq!(seen.last().unwrap().1, site.data.len() as u64);
     assert_eq!(offline.blob(site.blob).await.unwrap().unwrap(), site.data);
     assert_eq!(std::fs::read(&blob_file).unwrap(), site.data);
     assert!(resolver.blob(Address::of(b"nowhere")).await.unwrap().is_none());

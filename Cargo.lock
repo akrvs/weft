@@ -6392,6 +6392,7 @@ dependencies = [
 name = "weft-net"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "iroh",
  "iroh-blobs",
  "iroh-mdns-address-lookup",
