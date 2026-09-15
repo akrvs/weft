@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
+use weft_core::receipt::payment_hash;
 use weft_core::{
-    Address, Body, Device, Draft, Manifest, Pointer, PublicKey, Receipt, Record, SecretKey, Voucher,
+    Address, Body, Device, Draft, Manifest, Payment, Pointer, PublicKey, Receipt, Record,
+    SecretKey, Voucher,
 };
-use weft_net::relay::{cost, now};
-use weft_net::{Client, Pricing, Relay};
+use weft_net::relay::{INVOICE_TTL, cost, now};
+use weft_net::{Client, Fake, Pricing, Relay};
 
 const HOUR: Duration = Duration::from_secs(3600);
 
@@ -44,6 +46,10 @@ struct Net {
 
 impl Net {
     async fn start(allow: &[&SecretKey], rate: u64, banks: &[&SecretKey]) -> Self {
+        Self::start_with(allow, rate, banks, 0).await
+    }
+
+    async fn start_with(allow: &[&SecretKey], rate: u64, banks: &[&SecretKey], sats: u64) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "weft-pay-test-{}-{}-{}",
@@ -54,8 +60,11 @@ impl Net {
         let ep = endpoint().await;
         let allow: HashSet<_> = allow.iter().map(|k| k.public()).collect();
         let banks: HashSet<_> = banks.iter().map(|k| k.public()).collect();
-        let relay =
-            Relay::open(ep.clone(), &dir, allow, Pricing { rate, banks }, HOUR).await.unwrap();
+        let pricing = Pricing { rate, banks, sats };
+        let mut relay = Relay::open(ep.clone(), &dir, allow, pricing, HOUR).await.unwrap();
+        if sats > 0 {
+            relay = relay.with_node(std::sync::Arc::new(Fake::new(&dir).unwrap()));
+        }
         let router = relay.clone().spawn();
         let addr = router.endpoint().addr();
         Self { relay, router, addr, dir }
@@ -79,9 +88,20 @@ fn receipt(
     until: u64,
     voucher: Voucher,
 ) -> Record {
+    paid(signer, author, relay, records, until, Payment::Voucher(Box::new(voucher)))
+}
+
+fn paid(
+    signer: &SecretKey,
+    author: &SecretKey,
+    relay: PublicKey,
+    records: &[&Record],
+    until: u64,
+    payment: Payment,
+) -> Record {
     let mut addresses: Vec<Address> = records.iter().map(|r| r.address()).collect();
     addresses.sort();
-    Receipt { relay, records: addresses, until, voucher }
+    Receipt { relay, records: addresses, until, payment }
         .draft(&author.public(), &signer.public(), now())
         .sign(signer)
         .unwrap()
@@ -92,9 +112,10 @@ async fn price_is_published() {
     let bank = key(9);
     let net = Net::start(&[], 3, &[&bank]).await;
     let c = Client::from_endpoint(endpoint().await);
-    let (rate, banks) = c.price(net.addr.clone()).await.unwrap();
-    assert_eq!(rate, 3);
-    assert_eq!(banks, vec![bank.public()]);
+    let quote = c.price(net.addr.clone()).await.unwrap();
+    assert_eq!(quote.rate, 3);
+    assert_eq!(quote.banks, vec![bank.public()]);
+    assert_eq!(quote.sats, 0);
     c.close().await;
     net.stop().await;
 }
@@ -277,7 +298,7 @@ async fn receipts_are_refused_for_the_wrong_relay_bank_or_missing_record() {
         relay: key(7).public(),
         records: vec![page_record.address()],
         until,
-        voucher: elsewhere,
+        payment: Payment::Voucher(Box::new(elsewhere)),
     }
     .draft(&root.public(), &root.public(), now())
     .sign(&root)
@@ -311,7 +332,7 @@ async fn receipts_are_refused_for_the_wrong_relay_bank_or_missing_record() {
         relay: net.key(),
         records: vec![page_record.address()],
         until: 10,
-        voucher: past,
+        payment: Payment::Voucher(Box::new(past)),
     }
     .draft(&root.public(), &root.public(), 5)
     .sign(&root)
@@ -371,6 +392,87 @@ async fn relay_without_banks_takes_no_payment() {
         outcome.rejected.iter().any(|(_, why)| why.contains("takes no payment")),
         "{outcome:?}"
     );
+    c.close().await;
+    net.stop().await;
+}
+
+#[tokio::test]
+async fn a_preimage_pays_an_invoice_once_and_the_rest_is_refused() {
+    let root = key(1);
+    let net = Net::start_with(&[], 2, &[], 10).await;
+    let c = Client::from_endpoint(endpoint().await);
+    let quote = c.price(net.addr.clone()).await.unwrap();
+    assert_eq!(quote.sats, 10);
+    let page_record = page(&root, &root, &[b'x'; 3000], 2_000);
+    let until = now() + 3 * 86_400;
+    let need = cost(page_record.to_bytes().len() as u64, 3, 2).unwrap();
+
+    let offer = c.invoice(net.addr.clone(), need).await.unwrap();
+    assert!(offer.bolt11.starts_with("fake"));
+    assert!(offer.expires >= now() + INVOICE_TTL - 5);
+    let preimage = Fake::preimage(&net.dir, &offer.hash).unwrap();
+    assert_eq!(payment_hash(&preimage), offer.hash);
+    assert!(Fake::preimage(&net.dir, &[0; 32]).is_err());
+
+    let unknown = paid(&root, &root, net.key(), &[&page_record], until, Payment::Preimage([1; 32]));
+    let outcome = c.put(net.addr.clone(), &[page_record.clone(), unknown]).await.unwrap();
+    assert!(outcome.rejected.iter().any(|(_, why)| why.contains("unknown invoice")), "{outcome:?}");
+
+    let cheap = c.invoice(net.addr.clone(), need - 1).await.unwrap();
+    let cheap_preimage = Fake::preimage(&net.dir, &cheap.hash).unwrap();
+    let underpaid =
+        paid(&root, &root, net.key(), &[&page_record], until, Payment::Preimage(cheap_preimage));
+    let outcome = c.put(net.addr.clone(), &[page_record.clone(), underpaid]).await.unwrap();
+    assert!(outcome.rejected.iter().any(|(_, why)| why.contains("underpaid")), "{outcome:?}");
+
+    let receipt =
+        paid(&root, &root, net.key(), &[&page_record], until, Payment::Preimage(preimage));
+    let outcome = c.put(net.addr.clone(), &[page_record.clone(), receipt.clone()]).await.unwrap();
+    assert!(outcome.rejected.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.stored.len(), 2, "{outcome:?}");
+    assert_eq!(
+        c.get(net.addr.clone(), page_record.address()).await.unwrap(),
+        Some(page_record.clone())
+    );
+
+    let replay =
+        paid(&root, &root, net.key(), &[&page_record], until + 1, Payment::Preimage(preimage));
+    let outcome = c.put(net.addr.clone(), &[replay]).await.unwrap();
+    assert!(
+        outcome.rejected.iter().any(|(_, why)| why.contains("unknown invoice")),
+        "a settled invoice is gone: {outcome:?}"
+    );
+
+    let swept = net.relay.sweep(now() + INVOICE_TTL + 1).unwrap();
+    assert!(swept.records.is_empty(), "{swept:?}");
+    let stale =
+        paid(&root, &root, net.key(), &[&page_record], until, Payment::Preimage(cheap_preimage));
+    let outcome = c.put(net.addr.clone(), &[stale]).await.unwrap();
+    assert!(
+        outcome.rejected.iter().any(|(_, why)| why.contains("unknown invoice")),
+        "the sweep drops expired invoices: {outcome:?}"
+    );
+
+    for cents in [0, weft_net::wire::MAX_CENTS + 1] {
+        assert!(c.invoice(net.addr.clone(), cents).await.is_err());
+    }
+    c.close().await;
+    net.stop().await;
+}
+
+#[tokio::test]
+async fn a_relay_without_a_node_takes_no_lightning() {
+    let root = key(1);
+    let net = Net::start(&[], 1, &[]).await;
+    let c = Client::from_endpoint(endpoint().await);
+    let err = c.invoice(net.addr.clone(), 5).await.unwrap_err();
+    assert!(err.to_string().contains("no lightning"), "{err}");
+    let page_record = page(&root, &root, b"nope", 2_000);
+    let receipt =
+        paid(&root, &root, net.key(), &[&page_record], now() + 60, Payment::Preimage([1; 32]));
+    let outcome = c.put(net.addr.clone(), &[page_record, receipt]).await.unwrap();
+    assert!(outcome.stored.is_empty(), "{outcome:?}");
+    assert!(outcome.rejected.iter().any(|(_, why)| why.contains("unknown invoice")), "{outcome:?}");
     c.close().await;
     net.stop().await;
 }

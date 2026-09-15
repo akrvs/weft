@@ -186,7 +186,7 @@ absent or greater than `t`, and no verifying revoke by the same author
 cites it. A store enforces grants at the moment of each request. Records
 of a reserved kind are never readable or writable through a grant.
 
-## 11. Receipts and vouchers
+## 11. Receipts, vouchers, and preimages
 
 A voucher is money a bank signed. It is not a record. Its canonical map:
 
@@ -206,15 +206,24 @@ canonical map:
 
 | Key | Type | Rule |
 |---|---|---|
-| `relay` | bytes(32) | relay public key, equal to the voucher's `to` |
+| `relay` | bytes(32) | relay public key, equal to the voucher's `to` when a voucher pays |
 | `records` | array of bytes(32) | 1 to 64 hash addresses, sorted, unique, each also in `refs` |
 | `until` | uint | greater than the record's `created` |
 | `voucher` | bytes | an encoded voucher that verifies |
+| `preimage` | bytes(32) | the preimage of a Lightning invoice the relay issued |
+
+Exactly one of `voucher` and `preimage` is present; both or neither is a
+parse error. The payment id is the voucher id, or the hash address of
+`sha256(preimage)`, the invoice's payment hash. A relay settles a payment
+id at most once.
 
 Root or device signed. A receipt may pay for records by any author; the
-payer sponsors them. What a relay charges and when it sweeps is the relay's contract, in
-`relay.md`. The voucher rail is an experiment: vouchers are bearer
-instruments with no privacy and a bank is a plain key the relay trusts.
+payer sponsors them. What a relay charges, how it issues invoices, and
+when it sweeps is the relay's contract, in `relay.md`. The voucher rail is
+an experiment: vouchers are bearer instruments with no privacy and a bank
+is a plain key the relay trusts. The preimage rail is Lightning: the relay
+issues a BOLT11 invoice, any wallet pays it, and the preimage the wallet
+receives is the proof.
 
 ## 12. Login
 

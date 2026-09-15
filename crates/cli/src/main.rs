@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use weft_core::{
-    Access, Address, Body, Challenge, Draft, Grant, Manifest, Pointer, Proof, Receipt, Record,
-    Revoke, Voucher, verify,
+    Access, Address, Body, Challenge, Draft, Grant, Manifest, Payment, Pointer, Proof, Receipt,
+    Record, Revoke, Voucher, verify,
 };
 
 use weft_home::{Home, ROOT, Relay, Result, Store, fail, home, read_record};
@@ -75,12 +75,23 @@ enum Command {
     },
     Push {
         addresses: Vec<Address>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preimage")]
         pay: Option<PathBuf>,
+        #[arg(long)]
+        preimage: Option<String>,
+        #[arg(long)]
+        relay: Option<String>,
         #[arg(long, default_value = "30")]
         days: u64,
         #[arg(long = "as", default_value = ROOT)]
         signer: String,
+    },
+    Invoice {
+        addresses: Vec<Address>,
+        #[arg(long, default_value = "30")]
+        days: u64,
+        #[arg(long)]
+        relay: Option<String>,
     },
     Price,
     Receipts,
@@ -218,18 +229,28 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             }
             Ok(())
         }
-        Command::Push { addresses, pay: None, .. } => {
+        Command::Push { addresses, pay: None, preimage: None, .. } => {
             net::push(home, store, &addresses, None).await.map(drop)
         }
-        Command::Push { addresses, pay: Some(voucher), days, signer } => {
-            let paid = pay(home, store, &addresses, &voucher, days, &signer)?;
-            let receipt = paid.receipt.clone();
-            let stored = net::push(home, store, &addresses, Some(paid)).await?;
-            if !stored.contains(&receipt.address()) {
-                return fail("receipt refused, nothing kept");
-            }
-            store.put(&receipt)?;
-            Ok(())
+        Command::Push { addresses, pay: voucher, preimage, relay, days, signer } => {
+            let (relay, payment) = match (voucher, preimage) {
+                (Some(path), None) => {
+                    let voucher = Voucher::decode(&std::fs::read(path)?)?;
+                    let relay = net::pick_relay(home, None, Some(&voucher.to))?;
+                    (relay, Payment::Voucher(Box::new(voucher)))
+                }
+                (None, Some(hex)) => {
+                    let relay = net::pick_relay(home, relay.as_deref(), None)?;
+                    let preimage =
+                        weft_net::node::decode_preimage(&hex).map_err(|e| e.to_string())?;
+                    (relay, Payment::Preimage(preimage))
+                }
+                _ => return fail("pay with --pay <voucher> or --preimage <hex>, not both"),
+            };
+            push_paid(home, store, &addresses, relay, payment, days, &signer).await
+        }
+        Command::Invoice { addresses, days, relay } => {
+            net::invoice(home, store, &addresses, days, relay.as_deref()).await
         }
         Command::Price => net::price(home).await,
         Command::Receipts => receipts(home, store),
@@ -311,31 +332,50 @@ fn pay(
     home: &Home,
     store: &Store,
     addresses: &[Address],
-    voucher: &std::path::Path,
+    relay: Relay,
+    payment: Payment,
     days: u64,
     signer: &str,
 ) -> Result<net::Paid> {
     if addresses.is_empty() {
-        return fail("name the records the voucher pays for");
+        return fail("name the records the payment is for");
     }
-    if days == 0 || days > weft_net::relay::MAX_DAYS {
-        return fail(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
-    }
-    let voucher = Voucher::decode(&std::fs::read(voucher)?)?;
-    let id = relay_id(&voucher.to)?;
-    let relay =
-        home.relays()?.into_iter().find(|r| r.id == id).unwrap_or(Relay { id, addrs: Vec::new() });
+    net::check_days(days)?;
     let mut records = addresses.to_vec();
     records.sort_unstable();
     records.dedup();
     let until = home::now()?.saturating_add(days.saturating_mul(86_400));
-    let receipt = Receipt { relay: voucher.to, records, until, voucher };
+    let key = weft_core::PublicKey::from_bytes(relay.id.as_bytes())?;
+    let receipt = Receipt { relay: key, records, until, payment };
     receipt.check()?;
     let record = draft_own(home, store, signer, |root, signer, created| {
         receipt.draft(root, signer, created)
     })?;
-    say!("receipt {}  {} cents until {until}", record.address(), receipt.voucher.cents);
+    say!("receipt {}  {} until {until}", record.address(), paid_with(&receipt.payment));
     Ok(net::Paid { relay, receipt: record })
+}
+
+async fn push_paid(
+    home: &Home,
+    store: &Store,
+    addresses: &[Address],
+    relay: Relay,
+    payment: Payment,
+    days: u64,
+    signer: &str,
+) -> Result<()> {
+    let paid = pay(home, store, addresses, relay, payment, days, signer)?;
+    let receipt = paid.receipt.clone();
+    let stored = net::push(home, store, addresses, Some(paid)).await?;
+    if !stored.contains(&receipt.address()) {
+        return fail("receipt refused, nothing kept");
+    }
+    store.put(&receipt)?;
+    Ok(())
+}
+
+fn paid_with(payment: &Payment) -> String {
+    payment.cents().map_or_else(|| "lightning".to_owned(), |cents| format!("{cents} cents"))
 }
 
 fn receipts(home: &Home, store: &Store) -> Result<()> {
@@ -350,10 +390,10 @@ fn receipts(home: &Home, store: &Store) -> Result<()> {
     receipts.sort_by_key(|(r, _)| r.created());
     for (record, receipt) in receipts {
         say!(
-            "{}  {}  {} cents  {} records  until {}",
+            "{}  {}  {}  {} records  until {}",
             record.address(),
             relay_id(&receipt.relay)?,
-            receipt.voucher.cents,
+            paid_with(&receipt.payment),
             receipt.records.len(),
             receipt.until
         );
@@ -572,9 +612,14 @@ fn inspect(record: &Record) -> Result<()> {
             let r = Receipt::from_record(record)?;
             say!("relay   {}", relay_id(&r.relay)?);
             say!("until   {}", r.until);
-            say!("cents   {}", r.voucher.cents);
-            say!("bank    {}", r.voucher.bank.address());
-            say!("voucher {}", r.voucher.id());
+            match &r.payment {
+                Payment::Voucher(v) => {
+                    say!("cents   {}", v.cents);
+                    say!("bank    {}", v.bank.address());
+                    say!("voucher {}", v.id());
+                }
+                Payment::Preimage(_) => say!("invoice {}", r.payment.id()),
+            }
             for a in &r.records {
                 say!("pins    {a}");
             }

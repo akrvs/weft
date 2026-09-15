@@ -43,6 +43,7 @@ unknown fields.
 | `head` | `author`: bytes(32), `name`: text | name 1 to 64 bytes |
 | `price` | | |
 | `size` | `address`: bytes(32) | |
+| `invoice` | `cents`: uint | 1 to 1 000 000 000 |
 
 ## Responses
 
@@ -51,13 +52,21 @@ unknown fields.
 | `put` | `stored`: array of bytes(32); `rejected`: array of `[index, reason]` |
 | `get` | `record`: bytes, absent when unknown |
 | `head` | `pointer`: bytes, absent when unknown; `manifest`: bytes, absent when unknown |
-| `price` | `rate`: uint cents per KiB per day; `banks`: array of bytes(32), sorted |
+| `price` | `rate`: uint cents per KiB per day; `banks`: array of bytes(32), sorted; `sats`: uint sats per cent, 0 when the relay takes no Lightning |
 | `size` | `bytes`: uint, absent when the relay holds no complete blob at that hash |
+| `invoice` | `bolt11`: text, 1 to 4096 bytes; `hash`: bytes(32), the payment hash; `expires`: uint |
 | `error` | `why`: text |
 
 `head` always returns the newest manifest the relay holds for the author,
 whatever the name. Asking for the reserved name `manifest` is the way to
 fetch only the manifest.
+
+`invoice` asks the relay's Lightning node for an invoice of
+`cents * sats * 1000` msat and remembers the payment hash with `cents`
+for one hour, which is also the invoice's expiry. A relay with no node, or
+with `sats` 0, answers `error`. At most 4096 invoices are open at once;
+past that the relay answers `error` until some settle or expire. The
+payer pays the invoice with any wallet and puts the preimage in a receipt.
 
 ## Rules on put
 
@@ -74,16 +83,20 @@ fetch only the manifest.
 5. Records by an allowlisted author are stored at once. Records and
    manifests by anyone else wait for a receipt in the same batch. Those
    no receipt covers are rejected with `payment required`.
-6. A receipt is honoured when its `relay` is this relay, its voucher's
-   bank is one the relay trusts, the voucher id is not yet spent, `until`
-   is after now and at most 366 days ahead, every record it names, by
-   any author, is in the batch or already stored, and `cents` is at least
-   the cost. The cost is the sum over the named records of
-   `ceil(bytes / 1024) * days * rate`, bytes being the record plus its
-   blob, `days = ceil((until - now) / 86400)`. No change is given. The
-   voucher is then spent, the records, the manifests of their authors and
-   of the payer, and the receipt are stored, and each named record and
-   the receipt is pinned until `until`, or later if already pinned later.
+6. A receipt is honoured when its `relay` is this relay, its payment
+   covers the cost, its payment id is not yet spent, `until` is after now
+   and at most 366 days ahead, and every record it names, by any author,
+   is in the batch or already stored. A voucher covers the cost when its
+   bank is one the relay trusts and its `cents` is at least the cost. A
+   preimage covers the cost when `sha256(preimage)` is an open, unexpired
+   invoice this relay issued whose `cents` is at least the cost. The cost
+   is the sum over the named records of `ceil(bytes / 1024) * days *
+   rate`, bytes being the record plus its blob, `days = ceil((until -
+   now) / 86400)`. No change is given. The payment id is then spent, the
+   invoice if any is closed, the records, the manifests of their authors
+   and of the payer, and the receipt are stored, and each named record
+   and the receipt is pinned until `until`, or later if already pinned
+   later.
 7. A receipt by an allowlisted author is stored and nothing is charged.
 8. A manifest replaces the author's newest manifest only when its `seq`
    is higher. A pointer replaces the head for its author and name only
@@ -91,10 +104,11 @@ fetch only the manifest.
 
 ## Storage
 
-Records and indexes live in a redb database with seven tables: records by
+Records and indexes live in a redb database with eight tables: records by
 address, heads by author and name, newest manifest by author, pins by
-address holding `until` and the paying author, spent voucher ids, record
-addresses by author, and the blob each blob record names. The last two
+address holding `until` and the paying author, spent payment ids, open
+invoices by payment hash holding `cents` and `expires`, record addresses
+by author, and the blob each blob record names. The last two
 are derived from the records table on every write; an index written
 without them is rebuilt once when the relay opens it. Blobs live in an
 iroh-blobs file store beside it.
@@ -107,7 +121,7 @@ author is allowlisted, if it holds a pin that has not passed, or if it is
 the current manifest of an author one of whose records holds such a pin.
 Everything else goes, with its pin
 entry, the heads that pointed at it, and the manifest entry that named
-it. Spent voucher ids are kept forever.
+it. Expired invoices go too. Spent payment ids are kept forever.
 
 Blobs are collected by the blob store's own garbage collector on the same
 interval. Before each run the relay marks every blob in its blobs table;

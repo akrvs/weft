@@ -54,7 +54,11 @@
     <details id="pay">
       <summary>pay a relay to pin this page</summary>
       <table id="price"></table>
-      <textarea id="voucher" spellcheck="false" autocomplete="off" placeholder="voucher text from weft-bank mint, optional"></textarea>
+      <textarea id="payment" spellcheck="false" autocomplete="off" placeholder="voucher text from weft-bank mint, or the preimage of a paid invoice, optional"></textarea>
+      <div id="invoice-row">
+        <button id="invoice" type="button">lightning invoice</button>
+        <pre id="invoice-text"></pre>
+      </div>
     </details>
   </form>
   <pre id="publish-result"></pre>

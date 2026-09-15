@@ -8,7 +8,9 @@ publish.workspace = true
 
 [dependencies]
 weft-core = { path = "../core" }
+data-encoding.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 iroh.workspace = true
 iroh-blobs.workspace = true
 iroh-mdns-address-lookup.workspace = true

@@ -12,7 +12,9 @@ use clap::{Parser, Subcommand};
 use iroh::SecretKey;
 use tokio::signal::unix::{SignalKind, signal};
 use weft_core::{Address, PublicKey};
-use weft_net::{Net, Pricing, Relay};
+use weft_net::{Fake, Net, Node, Pricing, Relay};
+
+mod lnd;
 
 #[derive(Parser, Debug)]
 #[command(name = "weft-relay", version, about = "A cache with a contract")]
@@ -35,6 +37,13 @@ enum Command {
     Rate {
         cents: u64,
     },
+    Sats {
+        sats: u64,
+    },
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
     Bank {
         #[command(subcommand)]
         command: BankCommand,
@@ -47,6 +56,13 @@ enum Command {
 enum BankCommand {
     Add { address: Address },
     Remove { address: Address },
+}
+
+#[derive(Subcommand, Debug)]
+enum NodeCommand {
+    Fake,
+    Lnd { url: String },
+    None,
 }
 
 type Result<T> = core::result::Result<T, String>;
@@ -112,6 +128,35 @@ async fn run(dir: &Path, command: Command) -> Result<()> {
             println!("{cents} cents per KiB per day");
             Ok(())
         }
+        Command::Sats { sats } => {
+            keys(dir, "allow")?;
+            std::fs::write(dir.join("sats"), format!("{sats}\n")).map_err(|e| e.to_string())?;
+            println!("{sats} sats per cent");
+            Ok(())
+        }
+        Command::Node { command } => {
+            keys(dir, "allow")?;
+            let path = dir.join("node");
+            match command {
+                NodeCommand::Fake => std::fs::write(&path, "fake\n").map_err(|e| e.to_string())?,
+                NodeCommand::Lnd { url } => {
+                    lnd::Lnd::open(&url, dir)?;
+                    std::fs::write(&path, format!("lnd {url}\n")).map_err(|e| e.to_string())?;
+                }
+                NodeCommand::None => {
+                    if let Err(e) = std::fs::remove_file(&path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        return Err(e.to_string());
+                    }
+                }
+            }
+            match node(dir)? {
+                Some(n) => println!("node {n}"),
+                None => println!("no node"),
+            }
+            Ok(())
+        }
         Command::Bank { command: BankCommand::Add { address } } => {
             let mut set = keys(dir, "banks")?;
             set.insert(key_of(&address)?);
@@ -129,6 +174,11 @@ async fn run(dir: &Path, command: Command) -> Result<()> {
             banks.sort();
             for bank in banks {
                 println!("bank {}", bank.address());
+            }
+            println!("sats {} per cent", pricing.sats);
+            match node(dir)? {
+                Some(n) => println!("node {n}"),
+                None => println!("no node"),
             }
             Ok(())
         }
@@ -175,19 +225,47 @@ fn write_keys(dir: &Path, name: &str, set: &HashSet<PublicKey>) -> Result<()> {
     Ok(())
 }
 
+fn number(dir: &Path, name: &str) -> Result<u64> {
+    match std::fs::read_to_string(dir.join(name)) {
+        Ok(text) => text.trim().parse::<u64>().map_err(|e| format!("{name}: {e}")),
+        Err(_) => Ok(0),
+    }
+}
+
 fn pricing(dir: &Path) -> Result<Pricing> {
     let banks = keys(dir, "banks")?;
-    let rate = match std::fs::read_to_string(dir.join("rate")) {
-        Ok(text) => text.trim().parse::<u64>().map_err(|e| format!("rate: {e}"))?,
-        Err(_) => 0,
+    Ok(Pricing { rate: number(dir, "rate")?, banks, sats: number(dir, "sats")? })
+}
+
+fn node(dir: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(dir.join("node")) {
+        Ok(text) => Ok(Some(text.trim().to_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("node: {e}")),
+    }
+}
+
+fn open_node(dir: &Path) -> Result<Option<std::sync::Arc<dyn Node>>> {
+    let Some(line) = node(dir)? else { return Ok(None) };
+    let node: std::sync::Arc<dyn Node> = match line.split_once(' ') {
+        None if line == "fake" => {
+            std::sync::Arc::new(Fake::new(&dir.join("data")).map_err(|e| e.to_string())?)
+        }
+        Some(("lnd", url)) => std::sync::Arc::new(lnd::Lnd::open(url.trim(), dir)?),
+        _ => return Err(format!("node: unknown line {line:?}")),
     };
-    Ok(Pricing { rate, banks })
+    Ok(Some(node))
 }
 
 fn reload(dir: &Path, relay: &Relay) {
     match keys(dir, "allow").and_then(|allow| pricing(dir).map(|pricing| (allow, pricing))) {
         Ok((allow, pricing)) => {
-            eprintln!("reload: {} allowed authors, rate {}", allow.len(), pricing.rate);
+            eprintln!(
+                "reload: {} allowed authors, rate {}, sats {}",
+                allow.len(),
+                pricing.rate,
+                pricing.sats
+            );
             relay.reload(allow, pricing);
         }
         Err(e) => eprintln!("reload: {e}, keeping the old config"),
@@ -205,9 +283,13 @@ async fn serve(dir: &Path) -> Result<()> {
     let net = Net::from_env().map_err(|e| e.to_string())?;
     let endpoint = net.bind(Some(key)).await.map_err(|e| e.to_string())?;
     let every = Duration::from_secs(60);
-    let relay = Relay::open(endpoint, &dir.join("data"), allow, pricing, every)
+    let node = open_node(dir)?;
+    let mut relay = Relay::open(endpoint, &dir.join("data"), allow, pricing, every)
         .await
         .map_err(|e| e.to_string())?;
+    if let Some(node) = node {
+        relay = relay.with_node(node);
+    }
     println!("{}", relay.id());
     let sweeper = relay.sweeper(every);
     let router = relay.clone().spawn();

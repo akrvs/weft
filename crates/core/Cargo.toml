@@ -10,6 +10,7 @@ publish.workspace = true
 blake3.workspace = true
 data-encoding.workspace = true
 ed25519-dalek.workspace = true
+sha2.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

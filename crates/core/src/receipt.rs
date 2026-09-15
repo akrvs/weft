@@ -1,4 +1,5 @@
 use data_encoding::BASE64URL_NOPAD;
+use sha2::{Digest, Sha256};
 
 use crate::cbor::{self, Value};
 use crate::record::Body;
@@ -88,11 +89,61 @@ impl Voucher {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payment {
+    Voucher(Box<Voucher>),
+    Preimage([u8; 32]),
+}
+
+impl Payment {
+    pub fn id(&self) -> Address {
+        match self {
+            Self::Voucher(v) => v.id(),
+            Self::Preimage(p) => Address::hash(payment_hash(p)),
+        }
+    }
+
+    pub fn cents(&self) -> Option<u64> {
+        match self {
+            Self::Voucher(v) => Some(v.cents),
+            Self::Preimage(_) => None,
+        }
+    }
+
+    fn key(&self) -> &'static str {
+        match self {
+            Self::Voucher(_) => "voucher",
+            Self::Preimage(_) => "preimage",
+        }
+    }
+
+    fn value(&self) -> Value {
+        match self {
+            Self::Voucher(v) => Value::Bytes(v.encode()),
+            Self::Preimage(p) => Value::Bytes(p.to_vec()),
+        }
+    }
+
+    fn from_map(m: &[(String, Value)]) -> Result<Self> {
+        match (cbor::optional(m, "voucher"), cbor::optional(m, "preimage")) {
+            (Some(v), None) => Ok(Self::Voucher(Box::new(Voucher::decode(
+                v.as_bytes().ok_or(Error::Field("voucher"))?,
+            )?))),
+            (None, Some(p)) => Ok(Self::Preimage(cbor::bytes32(p, "preimage")?)),
+            _ => Err(Error::Field("payment")),
+        }
+    }
+}
+
+pub fn payment_hash(preimage: &[u8; 32]) -> [u8; 32] {
+    Sha256::digest(preimage).into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     pub relay: PublicKey,
     pub records: Vec<Address>,
     pub until: u64,
-    pub voucher: Voucher,
+    pub payment: Payment,
 }
 
 impl Receipt {
@@ -106,7 +157,9 @@ impl Receipt {
         if self.records.iter().any(|r| r.kind() != crate::address::Kind::Hash) {
             return Err(Error::Field("records"));
         }
-        if self.voucher.to != self.relay {
+        if let Payment::Voucher(v) = &self.payment
+            && v.to != self.relay
+        {
             return Err(Error::Field("relay"));
         }
         Ok(())
@@ -117,7 +170,7 @@ impl Receipt {
             ("records".to_owned(), Value::Array(addresses(&self.records))),
             ("relay".to_owned(), Value::Bytes(self.relay.bytes().to_vec())),
             ("until".to_owned(), Value::Uint(self.until)),
-            ("voucher".to_owned(), Value::Bytes(self.voucher.encode())),
+            (self.payment.key().to_owned(), self.payment.value()),
         ])
         .encode()
     }
@@ -125,7 +178,7 @@ impl Receipt {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let value = cbor::decode(body)?;
         let m = value.as_map().ok_or(Error::Encoding("receipt is not a map"))?;
-        cbor::only(m, &["records", "relay", "until", "voucher"])?;
+        cbor::only(m, &["preimage", "records", "relay", "until", "voucher"])?;
         let receipt = Self {
             relay: PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "relay")?, "relay")?)?,
             records: cbor::field(m, "records")?
@@ -135,9 +188,7 @@ impl Receipt {
                 .map(|v| cbor::bytes32(v, "records").map(Address::hash))
                 .collect::<Result<Vec<_>>>()?,
             until: cbor::field(m, "until")?.as_uint().ok_or(Error::Field("until"))?,
-            voucher: Voucher::decode(
-                cbor::field(m, "voucher")?.as_bytes().ok_or(Error::Field("voucher"))?,
-            )?,
+            payment: Payment::from_map(m)?,
         };
         receipt.check()?;
         Ok(receipt)

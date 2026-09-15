@@ -19,7 +19,7 @@ pub use identity::{PublicKey, SecretKey};
 pub use login::{Challenge, Login, Proof};
 pub use manifest::{Device, Manifest};
 pub use pointer::Pointer;
-pub use receipt::{Receipt, Voucher};
+pub use receipt::{Payment, Receipt, Voucher};
 pub use record::{Body, Draft, Record};
 pub use verify::{Verified, verify};
 

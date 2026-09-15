@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::missing_panics_doc)]
 
 use weft_core::cbor::Value;
-use weft_core::{Address, Body, Draft, Error, Receipt, SecretKey, Voucher, verify};
+use weft_core::receipt::payment_hash;
+use weft_core::{Address, Body, Draft, Error, Payment, Receipt, SecretKey, Voucher, verify};
 
 fn key(n: u8) -> SecretKey {
     SecretKey::from_seed([n; 32])
@@ -12,7 +13,12 @@ fn voucher(cents: u64) -> Voucher {
 }
 
 fn receipt(records: Vec<Address>, until: u64) -> Receipt {
-    Receipt { relay: key(7).public(), records, until, voucher: voucher(5) }
+    Receipt {
+        relay: key(7).public(),
+        records,
+        until,
+        payment: Payment::Voucher(Box::new(voucher(5))),
+    }
 }
 
 fn signed(receipt: &Receipt, created: u64) -> weft_core::Record {
@@ -110,9 +116,56 @@ fn receipt_rejects_bad_shapes() {
     .sign(&root)
     .unwrap();
     assert_eq!(verify(&no_ref, None), Err(Error::Field("refs")));
-    let forged =
-        Receipt { voucher: Voucher { cents: 999, ..voucher(5) }, ..receipt(vec![lo], 2_000) };
+    let forged = Receipt {
+        payment: Payment::Voucher(Box::new(Voucher { cents: 999, ..voucher(5) })),
+        ..receipt(vec![lo], 2_000)
+    };
     assert_eq!(verify(&signed(&forged, 1_000), None), Err(Error::Signature));
+}
+
+#[test]
+fn preimage_receipt_roundtrips_and_ids_by_payment_hash() {
+    let lo = Address::of(b"a");
+    let preimage = [3u8; 32];
+    let r = Receipt { payment: Payment::Preimage(preimage), ..receipt(vec![lo], 2_000) };
+    let record = signed(&r, 1_000);
+    assert_eq!(Receipt::from_record(&record).unwrap(), r);
+    assert_eq!(Receipt::decode(&r.encode()).unwrap(), r);
+    assert_eq!(r.payment.id(), Address::hash(payment_hash(&preimage)));
+    assert_ne!(r.payment.id(), Address::hash(preimage));
+    assert_eq!(r.payment.cents(), None);
+    let other = Receipt { relay: key(8).public(), ..r.clone() };
+    assert_eq!(Receipt::decode(&other.encode()).unwrap(), other);
+}
+
+#[test]
+fn receipt_carries_exactly_one_payment() {
+    let lo = Address::of(b"a");
+    let base = |payment: Vec<(String, Value)>| {
+        let mut m = vec![
+            ("records".to_owned(), Value::Array(vec![Value::Bytes(lo.bytes().to_vec())])),
+            ("relay".to_owned(), Value::Bytes(key(7).public().bytes().to_vec())),
+            ("until".to_owned(), Value::Uint(2_000)),
+        ];
+        m.extend(payment);
+        Value::Map(m).encode()
+    };
+    let voucher = ("voucher".to_owned(), Value::Bytes(voucher(5).encode()));
+    let preimage = ("preimage".to_owned(), Value::Bytes(vec![3; 32]));
+    assert_eq!(
+        Receipt::decode(&base(vec![voucher.clone(), preimage])),
+        Err(Error::Field("payment"))
+    );
+    assert_eq!(Receipt::decode(&base(vec![])), Err(Error::Field("payment")));
+    assert_eq!(
+        Receipt::decode(&base(vec![("preimage".to_owned(), Value::Bytes(vec![3; 31]))])),
+        Err(Error::Field("preimage"))
+    );
+    assert_eq!(
+        Receipt::decode(&base(vec![("preimage".to_owned(), Value::Text("x".into()))])),
+        Err(Error::Field("preimage"))
+    );
+    assert!(Receipt::decode(&base(vec![voucher])).is_ok());
 }
 
 #[test]

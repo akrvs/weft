@@ -5,6 +5,8 @@ mod blobs;
 mod drive;
 mod marks;
 mod register;
+#[cfg(target_os = "linux")]
+mod theme;
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -15,11 +17,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use data_encoding::HEXLOWER;
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Challenge, Grant, Pointer, Receipt, Record, Voucher, login};
+use weft_core::{Address, Challenge, Grant, Payment, Pointer, Receipt, Record, Voucher, login};
 use weft_home::{Home, Relay};
+use weft_net::node::decode_preimage;
 use weft_resolve::{Links, Page, Resolver, Target, render};
 use weft_store::{Local, socket_path};
 use zeroize::Zeroizing;
@@ -148,6 +152,7 @@ struct Price {
     relay: String,
     rate: Option<u64>,
     banks: Vec<String>,
+    sats: u64,
     error: Option<String>,
 }
 
@@ -157,15 +162,62 @@ async fn price(app: State<'_, App>) -> Result<Vec<Price>> {
     let client = app.resolver.client().await.map_err(|e| err(&e))?;
     let mut out = Vec::with_capacity(relays.len());
     for relay in relays {
-        let (rate, banks, error) = match client.price(&relay).await {
-            Ok((rate, banks)) => {
-                (Some(rate), banks.iter().map(|b| b.address().to_string()).collect(), None)
+        let (rate, banks, sats, error) = match client.price(&relay).await {
+            Ok(q) => {
+                let banks = q.banks.iter().map(|b| b.address().to_string()).collect();
+                (Some(q.rate), banks, q.sats, None)
             }
-            Err(e) => (None, Vec::new(), Some(e.to_string())),
+            Err(e) => (None, Vec::new(), 0, Some(e.to_string())),
         };
-        out.push(Price { relay: relay.to_string(), rate, banks, error });
+        out.push(Price { relay: relay.to_string(), rate, banks, sats, error });
     }
     Ok(out)
+}
+
+#[derive(Serialize)]
+struct Offer {
+    relay: String,
+    bolt11: String,
+    hash: String,
+    cents: u64,
+    sats: u64,
+    expires: u64,
+}
+
+fn check_days(days: u64) -> Result<()> {
+    if days == 0 || days > weft_net::relay::MAX_DAYS {
+        return Err(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn invoice(app: State<'_, App>, markdown: String, days: u64) -> Result<Offer> {
+    check_days(days)?;
+    let relays = app.resolver.home().relays().map_err(|e| err(&e))?;
+    let client = app.resolver.client().await.map_err(|e| err(&e))?;
+    for relay in relays {
+        let Ok(quote) = client.price(&relay).await else { continue };
+        if quote.sats == 0 {
+            continue;
+        }
+        let kib = (markdown.len() as u64).saturating_add(512).div_ceil(1024).saturating_add(1);
+        let cents = kib
+            .checked_mul(days)
+            .and_then(|k| k.checked_mul(quote.rate))
+            .ok_or("cost overflows")?
+            .max(1);
+        let offer = client.invoice(&relay, cents).await.map_err(|e| err(&e))?;
+        return Ok(Offer {
+            relay: relay.to_string(),
+            bolt11: offer.bolt11,
+            hash: HEXLOWER.encode(&offer.hash),
+            cents,
+            sats: cents.saturating_mul(quote.sats),
+            expires: offer.expires,
+        });
+    }
+    Err("no configured relay takes lightning".to_owned())
 }
 
 async fn with_manifest(app: &App, records: Vec<Record>) -> Result<Vec<Record>> {
@@ -203,28 +255,43 @@ async fn push_free(app: &App, records: Vec<Record>, report: &mut String) -> Resu
     Ok(())
 }
 
+fn relay_for(app: &App, wanted: Relay) -> Result<Relay> {
+    let relays = app.resolver.home().relays().map_err(|e| err(&e))?;
+    Ok(relays.into_iter().find(|r| r.id == wanted.id).unwrap_or(wanted))
+}
+
+fn payment(app: &App, pay: &str, relay: &str) -> Result<Option<(Relay, Payment)>> {
+    if pay.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(preimage) = decode_preimage(pay) {
+        if relay.is_empty() {
+            return Err("ask for an invoice first, so the relay is known".to_owned());
+        }
+        let relay = relay_for(app, relay.parse::<Relay>().map_err(|e| err(&e))?)?;
+        return Ok(Some((relay, Payment::Preimage(preimage))));
+    }
+    let voucher = Voucher::from_text(pay).map_err(|e| err(&e))?;
+    let relay = relay_for(app, Relay::from_key(&voucher.to).map_err(|e| err(&e))?)?;
+    Ok(Some((relay, Payment::Voucher(Box::new(voucher)))))
+}
+
 async fn push_paid(
     app: &App,
     records: Vec<Record>,
-    voucher: Voucher,
+    relay: Relay,
+    payment: Payment,
     days: u64,
     report: &mut String,
 ) -> Result<()> {
-    if days == 0 || days > weft_net::relay::MAX_DAYS {
-        return Err(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
-    }
-    let home = app.resolver.home();
-    let relays = home.relays().map_err(|e| err(&e))?;
-    let relay = match relays.into_iter().find(|r| r.is_key(&voucher.to)) {
-        Some(relay) => relay,
-        None => Relay::from_key(&voucher.to).map_err(|e| err(&e))?,
-    };
+    check_days(days)?;
+    let key = weft_core::PublicKey::from_bytes(relay.id.as_bytes()).map_err(|e| err(&e))?;
     let mut paid: Vec<Address> = records.iter().map(Record::address).collect();
     paid.sort_unstable();
     paid.dedup();
     let until = weft_home::now().map_err(|e| err(&e))?.saturating_add(days.saturating_mul(DAY));
-    let cents = voucher.cents;
-    let receipt = Receipt { relay: voucher.to, records: paid, until, voucher };
+    let cents = payment.cents().map_or_else(|| "lightning".to_owned(), |c| format!("{c} cents"));
+    let receipt = Receipt { relay: key, records: paid, until, payment };
     receipt.check().map_err(|e| err(&e))?;
     let body = receipt.encode();
     let store = app.resolver.reads();
@@ -236,7 +303,7 @@ async fn push_paid(
     outcome_lines(report, &relay, &outcome);
     if outcome.stored.contains(&signed.address()) {
         store.call(async |c| c.keep(&signed).await).await.map_err(|e| err(&e))?;
-        let _ = writeln!(report, "receipt {}  {cents} cents until {until}", signed.address());
+        let _ = writeln!(report, "receipt {}  {cents} until {until}", signed.address());
         Ok(())
     } else {
         Err(format!("{report}receipt refused, nothing kept"))
@@ -248,16 +315,12 @@ async fn publish(
     app: State<'_, App>,
     markdown: String,
     name: String,
-    voucher: String,
+    pay: String,
+    relay: String,
     days: u64,
 ) -> Result<String> {
     let name = name.trim();
-    let voucher = voucher.trim();
-    let paid = if voucher.is_empty() {
-        None
-    } else {
-        Some(Voucher::from_text(voucher).map_err(|e| err(&e))?)
-    };
+    let paid = payment(&app, pay.trim(), relay.trim())?;
     let body = markdown.into_bytes();
     let pointer = (!name.is_empty()).then_some(name);
     let records = app
@@ -271,7 +334,9 @@ async fn publish(
         let _ = writeln!(report, "{}  {}", record.kind(), record.address());
     }
     match paid {
-        Some(voucher) => push_paid(&app, records, voucher, days, &mut report).await?,
+        Some((relay, payment)) => {
+            push_paid(&app, records, relay, payment, days, &mut report).await?;
+        }
         None => push_free(&app, records, &mut report).await?,
     }
     Ok(report)
@@ -677,6 +742,7 @@ fn main() {
             identity,
             preview,
             price,
+            invoice,
             publish,
             names,
             point,
@@ -698,41 +764,44 @@ fn main() {
             stop_store,
             daemon_log
         ])
-        .setup(move |app| {
-            let handle = app.handle().clone();
-            let watch = move |address: Address, done: u64, total: Option<u64>| {
-                let _ = handle.emit("pull", Pull { address: address.to_string(), done, total });
-            };
-            let reads = Local::new(home.path().to_path_buf());
-            let marks = Marks::new(home.path());
-            let resolver = Resolver::new(home, reads).watched(Arc::new(watch));
-            app.manage(App {
-                resolver,
-                marks,
-                web: Mutex::new(None),
-                daemon: Mutex::new(None),
-                log: Arc::default(),
-            });
-            let window = tauri::window::WindowBuilder::new(app, "main")
-                .title("weft")
-                .inner_size(1100.0, 800.0)
-                .build()?;
-            let chrome = WebviewBuilder::new("chrome", WebviewUrl::App("index.html".into()));
-            let chrome = window.add_child(
-                chrome,
-                LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(1.0, 1.0),
-            )?;
-            frame(&chrome)?;
-            #[cfg(feature = "drive")]
-            if let Some(path) = std::env::var_os("WEFT_DRIVE") {
-                drive::start(app.handle().clone(), path.as_ref())?;
-            }
-            Ok(())
-        })
+        .setup(move |app| setup(app, home))
         .run(tauri::generate_context!());
     if let Err(e) = result {
         let _ = writeln!(std::io::stderr(), "error: {e}");
         std::process::exit(1);
     }
+}
+
+fn setup(app: &tauri::App, home: Home) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let handle = app.handle().clone();
+    let watch = move |address: Address, done: u64, total: Option<u64>| {
+        let _ = handle.emit("pull", Pull { address: address.to_string(), done, total });
+    };
+    let reads = Local::new(home.path().to_path_buf());
+    let marks = Marks::new(home.path());
+    let resolver = Resolver::new(home, reads).watched(Arc::new(watch));
+    app.manage(App {
+        resolver,
+        marks,
+        web: Mutex::new(None),
+        daemon: Mutex::new(None),
+        log: Arc::default(),
+    });
+    let window = tauri::window::WindowBuilder::new(app, "main")
+        .title("weft")
+        .inner_size(1100.0, 800.0)
+        .build()?;
+    let chrome = WebviewBuilder::new("chrome", WebviewUrl::App("index.html".into()));
+    #[cfg(target_os = "linux")]
+    let chrome = chrome.initialization_script(theme::script(theme::current()));
+    let chrome =
+        window.add_child(chrome, LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0))?;
+    frame(&chrome)?;
+    #[cfg(target_os = "linux")]
+    app.manage(theme::watch(&chrome));
+    #[cfg(feature = "drive")]
+    if let Some(path) = std::env::var_os("WEFT_DRIVE") {
+        drive::start(app.handle().clone(), path.as_ref())?;
+    }
+    Ok(())
 }

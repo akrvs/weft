@@ -44,7 +44,7 @@ shot() {
 
 ui=$repo/crates/browser/ui
 [[ $ui/dist/main.js -nt $ui/src/main.ts ]] || npm run --prefix "$ui" build >/dev/null
-cargo build --release -p weft -p weft-relay -p weft-bank -p weft-store --manifest-path "$repo/Cargo.toml"
+cargo build --release -p weft -p weft-relay -p weft-bank -p weft-store -p weft-gateway --manifest-path "$repo/Cargo.toml"
 cargo build --release -p weft-browser --features drive --manifest-path "$repo/Cargo.toml"
 
 export PATH=$bin:$PATH
@@ -59,6 +59,8 @@ weft-relay --dir "$run/relay" allow "$root_a" >/dev/null
 weft-bank --dir "$run/bank" init >/dev/null
 weft-relay --dir "$run/relay" bank add "$(weft-bank --dir "$run/bank" whoami)" >/dev/null
 weft-relay --dir "$run/relay" rate 1 >/dev/null
+weft-relay --dir "$run/relay" sats 10 >/dev/null
+weft-relay --dir "$run/relay" node fake >/dev/null
 weft-relay --dir "$run/relay" serve >"$run/relay.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 100); do grep -q '^online' "$run/relay.log" && break; sleep 0.2; done
@@ -86,6 +88,20 @@ for _ in $(seq 1 50); do
 done
 cmp -s "$run/big.bin" "$run/copy.bin" || { echo "the relay never served the blob" >&2; exit 1; }
 voucher=$(weft-bank --dir "$run/bank" mint --to "$relay_id" --cents 40 --out "$run/v.bin" | tail -1)
+
+root_c=$(WEFT_HOME=$run/c weft init | head -1)
+WEFT_HOME=$run/c weft relay add "$entry" >/dev/null
+WEFT_HOME=$run/c weft manifest >/dev/null
+printf '# Paid over lightning\n' >"$run/lit.md"
+lit=$(WEFT_HOME=$run/c weft sign "$run/lit.md" | address_of)
+WEFT_HOME=$run/c weft invoice "$lit" --days 2 >"$run/invoice.txt"
+grep -q '^invoice  2 cents  20 sats' "$run/invoice.txt"
+hash=$(awk '/^hash/ { print $2 }' "$run/invoice.txt")
+preimage=$(cat "$run/relay/data/preimages/$hash")
+WEFT_HOME=$run/c weft push "$lit" --preimage "$preimage" --days 2 >/dev/null
+WEFT_HOME=$run/c weft receipts | grep -q "lightning  1 records"
+! WEFT_HOME=$run/c weft push "$lit" --preimage "$preimage" --days 2 >/dev/null 2>&1
+WEFT_HOME=$run/b weft fetch "$lit" --out "$run/lit.copy" >/dev/null 2>&1
 
 WEFT_HOME=$run/b WEFT_DRIVE=$sock weft-browser "$root_a/home" >"$run/browser.log" 2>&1 &
 browser=$!
@@ -121,8 +137,14 @@ click back
 wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Hello from a'"
 click prov-line
 wait_js "!document.getElementById('prov-detail').hidden"
+ok "(() => { document.documentElement.dataset.theme = 'light'; return true; })()" >/dev/null
+sleep 0.5
+shot "$repo/docs/browser-home-light.png"
+ok "(() => { document.documentElement.dataset.theme = 'dark'; return true; })()" >/dev/null
 sleep 0.5
 shot "$repo/docs/browser-home.png"
+ok "(() => { delete document.documentElement.dataset.theme; return true; })()" >/dev/null
+cat "$ui/index.html" "$ui/style.css" "$ui/src/main.ts" | sha256sum | cut -d' ' -f1 >"$repo/docs/browser-home.sha256"
 
 click star
 wait_js "document.getElementById('star').textContent === 'bookmarked'"
@@ -139,10 +161,24 @@ set_value markdown "'# Notes from b\\n\\nwritten in compose'"
 wait_js "document.getElementById('preview').querySelector('h1')?.textContent === 'Notes from b'"
 set_value name "'notes'"
 set_value days "'7'"
-set_value voucher "'$voucher'"
+set_value payment "'$voucher'"
 submit publish
 wait_js "/stored [1-9]/.test(document.getElementById('publish-result').textContent)"
 expect "document.getElementById('publish-result').textContent.includes('rejected 0')" true
+expect "document.getElementById('publish-result').textContent.includes('40 cents until')" true
+
+set_value markdown "'# Lit from b\\n\\npaid over lightning'"
+set_value name "'lit'"
+set_value days "'3'"
+click invoice
+wait_js "/^hash [0-9a-f]{64}$/m.test(document.getElementById('invoice-text').textContent)"
+expect "document.getElementById('invoice-text').textContent.startsWith('6 cents  60 sats  expires ')" true
+hash=$(ok "document.getElementById('invoice-text').textContent.match(/hash ([0-9a-f]{64})/)[1]")
+set_value payment "'$(cat "$run/relay/data/preimages/$hash")'"
+submit publish
+wait_js "/stored [1-9]/.test(document.getElementById('publish-result').textContent)"
+expect "document.getElementById('publish-result').textContent.includes('rejected 0')" true
+expect "document.getElementById('publish-result').textContent.includes('lightning until')" true
 click compose-toggle
 
 click store-toggle
@@ -159,5 +195,28 @@ set_value address "'$root_b/notes'"
 submit go
 wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
 
+port=$((20000 + RANDOM % 20000))
+WEFT_HOME=$run/b weft-gateway --bind "127.0.0.1:$port" >"$run/gateway.log" 2>&1 &
+pids+=($!)
+for _ in $(seq 1 100); do curl -sf -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.2; done
+location=$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:$port/login")
+[[ $location == http://127.0.0.1:$port/login/* ]]
+challenge=$(curl -s "$location" | grep -o 'weft:login?c=[A-Za-z0-9_-]*' | head -1)
+[[ -n $challenge ]]
+set_value address "'$challenge'"
+submit go
+wait_js "document.getElementById('login').open"
+expect "document.getElementById('login-service').textContent" "http://127.0.0.1:$port"
+submit login-form
+wait_js "document.getElementById('login-result').textContent.includes('logged in at')"
+expect "document.getElementById('login-result').textContent.includes('$root_b')" true
+click login-cancel
+curl -si "$location" >"$run/claim.txt"
+grep -qi '^set-cookie: weft_session=' "$run/claim.txt"
+grep -q "$root_b" "$run/claim.txt"
+curl -s -o /dev/null -w '%{http_code}' "$location" | grep -q '^403$'
+
 echo "smoke: ok"
-echo "smoke: $(du -h "$repo/docs/browser-home.png" | cut -f1) docs/browser-home.png"
+for shot in browser-home browser-home-light; do
+    echo "smoke: $(du -h "$repo/docs/$shot.png" | cut -f1) docs/$shot.png"
+done

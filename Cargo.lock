@@ -6305,6 +6305,7 @@ name = "weft"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "data-encoding",
  "getrandom 0.3.4",
  "iroh",
  "tokio",
@@ -6328,10 +6329,12 @@ dependencies = [
 name = "weft-browser"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "gtk",
  "reqwest",
  "rustls",
  "serde",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tokio",
@@ -6351,6 +6354,7 @@ dependencies = [
  "data-encoding",
  "ed25519-dalek",
  "serde_json",
+ "sha2 0.10.9",
  "zeroize",
 ]
 
@@ -6393,7 +6397,9 @@ dependencies = [
 name = "weft-net"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "futures-util",
+ "getrandom 0.3.4",
  "iroh",
  "iroh-blobs",
  "iroh-mdns-address-lookup",
@@ -6407,7 +6413,12 @@ name = "weft-relay"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "data-encoding",
  "iroh",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
  "tokio",
  "weft-core",
  "weft-net",

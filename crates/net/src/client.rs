@@ -24,6 +24,20 @@ pub struct Head {
     pub manifest: Option<Record>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quote {
+    pub rate: u64,
+    pub banks: Vec<PublicKey>,
+    pub sats: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    pub bolt11: String,
+    pub hash: [u8; 32],
+    pub expires: u64,
+}
+
 #[derive(Debug)]
 pub struct Client {
     router: Router,
@@ -176,9 +190,16 @@ impl Client {
         }
     }
 
-    pub async fn price(&self, relay: impl Into<EndpointAddr>) -> Result<(u64, Vec<PublicKey>)> {
+    pub async fn price(&self, relay: impl Into<EndpointAddr>) -> Result<Quote> {
         match self.call(relay, &Request::Price).await? {
-            Response::Price { rate, banks } => Ok((rate, banks)),
+            Response::Price { rate, banks, sats } => Ok(Quote { rate, banks, sats }),
+            _ => Err(Error::Wire("unexpected response")),
+        }
+    }
+
+    pub async fn invoice(&self, relay: impl Into<EndpointAddr>, cents: u64) -> Result<Offer> {
+        match self.call(relay, &Request::Invoice { cents }).await? {
+            Response::Invoice { bolt11, hash, expires } => Ok(Offer { bolt11, hash, expires }),
             _ => Err(Error::Wire("unexpected response")),
         }
     }

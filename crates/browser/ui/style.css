@@ -1,35 +1,22 @@
 :root {
   color-scheme: light dark;
-  --bg: #f7f6f2;
-  --panel: #ffffff;
-  --fg: #1c1f26;
-  --muted: #6b7080;
-  --line: #d9d7d0;
-  --accent: #1f7ae0;
-  --accent-soft: #e3effc;
-  --ok: #1f8a4c;
-  --bad: #c0392b;
-  --warn: #f1c40f;
-  --code: #ecebe6;
+  --bg: light-dark(#f7f6f2, #15171c);
+  --panel: light-dark(#ffffff, #1c1f26);
+  --fg: light-dark(#1c1f26, #e8e4da);
+  --muted: light-dark(#6b7080, #9298a6);
+  --line: light-dark(#d9d7d0, #2e323b);
+  --accent: light-dark(#1f7ae0, #3ea6ff);
+  --accent-soft: light-dark(#e3effc, #1c2c40);
+  --ok: light-dark(#1f8a4c, #3ccf7a);
+  --bad: light-dark(#c0392b, #ff6b5b);
+  --warn: light-dark(#f1c40f, #e0b300);
+  --code: light-dark(#ecebe6, #232730);
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font: 15px/1.55 var(--sans);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #15171c;
-    --panel: #1c1f26;
-    --fg: #e8e4da;
-    --muted: #9298a6;
-    --line: #2e323b;
-    --accent: #3ea6ff;
-    --accent-soft: #1c2c40;
-    --ok: #3ccf7a;
-    --bad: #ff6b5b;
-    --warn: #e0b300;
-    --code: #232730;
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--fg); }
 .muted { color: var(--muted); }
@@ -102,7 +89,9 @@ button[type="submit"]:hover:not(:disabled) { color: #fff; filter: brightness(1.0
 #pay summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 #pay table { border-collapse: collapse; margin: 8px 0; font: 12.5px var(--mono); }
 #pay td { border: 1px solid var(--line); padding: 4px 8px; word-break: break-all; }
-#voucher { width: 100%; min-height: 56px; font: 12.5px var(--mono); padding: 8px; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 8px; }
+#payment { width: 100%; min-height: 56px; font: 12.5px var(--mono); padding: 8px; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 8px; }
+#invoice-row { display: flex; gap: 10px; align-items: flex-start; margin-top: 8px; }
+#invoice-text { margin: 0; font: 12.5px var(--mono); white-space: pre-wrap; word-break: break-all; }
 #publish-result { margin: 10px 0 0; font: 12.5px var(--mono); white-space: pre-wrap; }
 
 dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--fg); padding: 18px 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .25); font: 12.5px var(--mono); max-width: 90vw; max-height: 85vh; }

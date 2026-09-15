@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
 use weft_core::{
-    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Receipt, Record,
-    Revoke, SecretKey, Voucher, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Payment, Pointer, Receipt,
+    Record, Revoke, SecretKey, Voucher, verify,
 };
 use weft_home::{Home, Reads, Store};
 use weft_store::wire::{self, DOMAIN, MAX_BLOB, MAX_CHUNK, MAX_RECORD, Request, Response};
@@ -427,7 +427,12 @@ async fn receipt_is_signed_checked_and_not_stored() {
     let relay = key(8).public();
     let voucher = Voucher::mint(&bank, relay, 4, [9; 32]).unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let receipt = Receipt { relay, records: vec![note], until: now + 86_400, voucher };
+    let receipt = Receipt {
+        relay,
+        records: vec![note],
+        until: now + 86_400,
+        payment: Payment::Voucher(Box::new(voucher)),
+    };
     let record = b.receipt(receipt.encode()).await.unwrap();
     assert_eq!(record.kind(), "receipt");
     assert_eq!(record.author(), &w.root.public());

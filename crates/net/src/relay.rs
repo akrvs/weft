@@ -11,14 +11,17 @@ use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::fs::options::Options;
 use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use iroh_blobs::{BlobsProtocol, Hash};
-use weft_core::{Address, Body, Manifest, PublicKey, Receipt, Record, receipt, verify};
+use weft_core::receipt::payment_hash;
+use weft_core::{Address, Body, Manifest, Payment, PublicKey, Receipt, Record, receipt, verify};
 
 use crate::error::net;
-use crate::index::{Index, Settlement, Swept};
+use crate::index::{self, Index, Settlement, Swept};
+use crate::node::Node;
 use crate::wire::{self, Request, Response};
 use crate::{Error, Result};
 
 pub const MAX_DAYS: u64 = 366;
+pub const INVOICE_TTL: u64 = 3600;
 const DAY: u64 = 86_400;
 const KIB: u64 = 1024;
 
@@ -26,6 +29,7 @@ const KIB: u64 = 1024;
 pub struct Pricing {
     pub rate: u64,
     pub banks: HashSet<PublicKey>,
+    pub sats: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +44,7 @@ pub struct Relay {
     blobs: FsStore,
     config: Arc<RwLock<Arc<Config>>>,
     endpoint: Endpoint,
+    node: Option<Arc<dyn Node>>,
 }
 
 struct Pending {
@@ -96,7 +101,13 @@ impl Relay {
             .await
             .map_err(|e| Error::Store(e.to_string()))?;
         let config = Arc::new(RwLock::new(Arc::new(Config { allow, pricing })));
-        Ok(Self { index, blobs, config, endpoint })
+        Ok(Self { index, blobs, config, endpoint, node: None })
+    }
+
+    #[must_use]
+    pub fn with_node(mut self, node: Arc<dyn Node>) -> Self {
+        self.node = Some(node);
+        self
     }
 
     pub fn config(&self) -> Arc<Config> {
@@ -162,12 +173,36 @@ impl Relay {
                 let config = self.config();
                 let mut banks: Vec<_> = config.pricing.banks.iter().copied().collect();
                 banks.sort();
-                Response::Price { rate: config.pricing.rate, banks }
+                let sats = if self.node.is_some() { config.pricing.sats } else { 0 };
+                Response::Price { rate: config.pricing.rate, banks, sats }
             }
             Request::Size { address } => {
                 Response::Size { bytes: self.blob_size(&address).await.ok() }
             }
+            Request::Invoice { cents } => match self.invoice(cents).await {
+                Ok(response) => response,
+                Err(e) => Response::Error { why: e.to_string() },
+            },
         }
+    }
+
+    async fn invoice(&self, cents: u64) -> Result<Response> {
+        let sats = self.config().pricing.sats;
+        let node = match &self.node {
+            Some(node) if sats > 0 => node,
+            _ => return Err(Error::Refused("relay takes no lightning".to_owned())),
+        };
+        let msat = cents
+            .checked_mul(sats)
+            .and_then(|s| s.checked_mul(1000))
+            .ok_or_else(|| Error::Refused("amount overflows".to_owned()))?;
+        if self.index.open_invoices()? >= index::MAX_INVOICES {
+            return Err(Error::Refused("too many open invoices".to_owned()));
+        }
+        let expires = now().saturating_add(INVOICE_TTL);
+        let invoice = node.invoice(msat, INVOICE_TTL).await?;
+        self.index.issue(&invoice.hash, cents, expires, index::MAX_INVOICES)?;
+        Ok(Response::Invoice { bolt11: invoice.bolt11, hash: invoice.hash, expires })
     }
 
     async fn put(&self, records: Vec<Vec<u8>>, from: EndpointId) -> Response {
@@ -285,17 +320,32 @@ impl Relay {
             batch.stored.push(self.index.put(record)?);
             return Ok(());
         }
-        if batch.config.pricing.banks.is_empty() {
-            return Err(Error::Refused("relay takes no payment".to_owned()));
-        }
-        if !batch.config.pricing.banks.contains(&receipt.voucher.bank) {
-            return Err(Error::Refused("unknown bank".to_owned()));
-        }
-        let voucher = receipt.voucher.id();
-        if self.index.spent(&voucher)? {
-            return Err(Error::Refused("voucher already spent".to_owned()));
-        }
         let now = now();
+        let (cents, invoice) = match &receipt.payment {
+            Payment::Voucher(voucher) => {
+                if batch.config.pricing.banks.is_empty() {
+                    return Err(Error::Refused("relay takes no payment".to_owned()));
+                }
+                if !batch.config.pricing.banks.contains(&voucher.bank) {
+                    return Err(Error::Refused("unknown bank".to_owned()));
+                }
+                (voucher.cents, None)
+            }
+            Payment::Preimage(preimage) => {
+                let hash = payment_hash(preimage);
+                let Some((cents, expires)) = self.index.invoice(&hash)? else {
+                    return Err(Error::Refused("unknown invoice".to_owned()));
+                };
+                if expires < now {
+                    return Err(Error::Refused("invoice expired".to_owned()));
+                }
+                (cents, Some(hash))
+            }
+        };
+        let payment = receipt.payment.id();
+        if self.index.spent(&payment)? {
+            return Err(Error::Refused("payment already spent".to_owned()));
+        }
         if receipt.until <= now || receipt.until > now.saturating_add(MAX_DAYS * DAY) {
             return Err(Error::Refused("until out of range".to_owned()));
         }
@@ -317,10 +367,9 @@ impl Relay {
                 .and_then(|c| total.checked_add(c))
                 .ok_or_else(|| Error::Refused("cost overflows".to_owned()))?;
         }
-        if receipt.voucher.cents < total {
+        if cents < total {
             return Err(Error::Refused(format!(
-                "underpaid: {total} cents for {days} days, voucher {}",
-                receipt.voucher.cents
+                "underpaid: {total} cents for {days} days, paid {cents}"
             )));
         }
         covered.sort_unstable_by(|a, b| b.cmp(a));
@@ -337,7 +386,7 @@ impl Relay {
         let mut pins = receipt.records.clone();
         pins.push(record.address());
         let settlement =
-            Settlement { voucher, until: receipt.until, author: *record.author(), pins };
+            Settlement { payment, invoice, until: receipt.until, author: *record.author(), pins };
         let records: Vec<&Record> = records.iter().collect();
         self.index.commit(&records, Some(&settlement))?;
         batch.stored.extend(records.iter().map(|r| r.address()));

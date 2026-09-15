@@ -214,17 +214,17 @@ async fn reload_replaces_the_allow_list_and_pricing_for_the_next_batch() {
     assert_eq!(outcome.stored, vec![]);
     assert_eq!(outcome.rejected.len(), 1, "{outcome:?}");
     let price = client.price(net.addr.clone()).await.unwrap();
-    assert_eq!(price.0, 0);
+    assert_eq!(price.rate, 0);
 
     let allow: HashSet<_> = [root.public(), stranger.public()].into_iter().collect();
     let banks: HashSet<_> = [key(9).public()].into_iter().collect();
-    net.relay.reload(allow.clone(), Pricing { rate: 3, banks: banks.clone() });
+    net.relay.reload(allow.clone(), Pricing { rate: 3, banks: banks.clone(), sats: 0 });
     assert_eq!(net.relay.config().allow, allow);
     let outcome = client.put(net.addr.clone(), std::slice::from_ref(&record)).await.unwrap();
     assert_eq!(outcome.stored, vec![record.address()], "{outcome:?}");
     let price = client.price(net.addr.clone()).await.unwrap();
-    assert_eq!(price.0, 3);
-    assert_eq!(price.1, vec![key(9).public()]);
+    assert_eq!(price.rate, 3);
+    assert_eq!(price.banks, vec![key(9).public()]);
     net.relay.reload(HashSet::new(), Pricing::default());
     let swept = net.relay.sweep(weft_net::relay::now()).unwrap();
     assert_eq!(swept.records, vec![record.address()], "a delisted author's free records go");

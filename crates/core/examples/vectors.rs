@@ -3,8 +3,8 @@
 use serde_json::{Value, json};
 use weft_core::cbor::Value as Cbor;
 use weft_core::{
-    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Pointer, Proof, Receipt,
-    Record, Revoke, SecretKey, Voucher, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Payment, Pointer, Proof,
+    Receipt, Record, Revoke, SecretKey, Voucher, verify,
 };
 
 fn hex(b: &[u8]) -> String {
@@ -280,8 +280,14 @@ fn main() {
     let voucher = Voucher::mint(bank, relay.public(), 5, [7; 32]).unwrap();
     let mut records = vec![by_device.address(), blob.address()];
     records.sort();
-    let receipt =
-        Receipt { relay: relay.public(), records, until: at + 86_400, voucher: voucher.clone() };
+    let receipt = Receipt {
+        relay: relay.public(),
+        records,
+        until: at + 86_400,
+        payment: Payment::Voucher(Box::new(voucher.clone())),
+    };
+    let preimage = [9u8; 32];
+    let by_preimage = Receipt { payment: Payment::Preimage(preimage), ..receipt.clone() };
     let receipt_record = receipt.draft(&root.public(), &device.public(), at).sign(device).unwrap();
     let wrong_relay = Receipt { relay: keys[6].public(), ..receipt.clone() };
     let raw_receipt = |body: Cbor, refs: Vec<Address>| {
@@ -305,6 +311,7 @@ fn main() {
         &json!({
             "bank_seed": hex(&seeds[4]),
             "relay_seed": hex(&seeds[5]),
+            "preimage": { "hex": hex(&preimage), "hash": hex(&weft_core::receipt::payment_hash(&preimage)), "id": by_preimage.payment.id().to_string() },
             "vouchers": [
                 { "name": "five cents", "hex": hex(&voucher.encode()), "id": voucher.id().to_string(), "cents": 5 },
                 { "name": "forged cents", "hex": hex(&forged.encode()), "error": "signature invalid" },
@@ -323,7 +330,26 @@ fn main() {
                     ("until".into(), Cbor::Uint(at + 1)),
                     ("voucher".into(), Cbor::Bytes(voucher.encode())),
                 ]), vec![]), None),
-                entry("receipt forged voucher", &Receipt { voucher: forged, ..receipt.clone() }.draft(&root.public(), &root.public(), at).sign(root).unwrap(), None),
+                entry("receipt forged voucher", &Receipt { payment: Payment::Voucher(Box::new(forged)), ..receipt.clone() }.draft(&root.public(), &root.public(), at).sign(root).unwrap(), None),
+                entry("receipt by preimage", &by_preimage.draft(&root.public(), &device.public(), at).sign(device).unwrap(), Some(&manifest)),
+                entry("receipt both payments", &raw_receipt(Cbor::Map(vec![
+                    ("preimage".into(), Cbor::Bytes(preimage.to_vec())),
+                    ("records".into(), Cbor::Array(vec![Cbor::Bytes(by_device.address().bytes().to_vec())])),
+                    ("relay".into(), Cbor::Bytes(relay.public().bytes().to_vec())),
+                    ("until".into(), Cbor::Uint(at + 1)),
+                    ("voucher".into(), Cbor::Bytes(voucher.encode())),
+                ]), vec![by_device.address()]), None),
+                entry("receipt no payment", &raw_receipt(Cbor::Map(vec![
+                    ("records".into(), Cbor::Array(vec![Cbor::Bytes(by_device.address().bytes().to_vec())])),
+                    ("relay".into(), Cbor::Bytes(relay.public().bytes().to_vec())),
+                    ("until".into(), Cbor::Uint(at + 1)),
+                ]), vec![by_device.address()]), None),
+                entry("receipt short preimage", &raw_receipt(Cbor::Map(vec![
+                    ("preimage".into(), Cbor::Bytes(vec![9; 31])),
+                    ("records".into(), Cbor::Array(vec![Cbor::Bytes(by_device.address().bytes().to_vec())])),
+                    ("relay".into(), Cbor::Bytes(relay.public().bytes().to_vec())),
+                    ("until".into(), Cbor::Uint(at + 1)),
+                ]), vec![by_device.address()]), None),
                 entry("receipt unknown field", &raw_receipt(Cbor::Map(vec![
                     ("records".into(), Cbor::Array(vec![Cbor::Bytes(by_device.address().bytes().to_vec())])),
                     ("relay".into(), Cbor::Bytes(relay.public().bytes().to_vec())),

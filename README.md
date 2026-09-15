@@ -13,11 +13,11 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M20-yellow)
+![status](https://img.shields.io/badge/status-M21-yellow)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-139%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-146%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -42,7 +42,8 @@
 │              ends [nothing left behind but the browser]         │
 │              browser [pay, repoint, save, remember, register]   │
 │              drive [named links, a total, a scripted hand]      │
-│ status     : M20 — spec frozen · 10 crates · backlog thin       │
+│              rail [an invoice, a preimage, a portal, a login]   │
+│ status     : M21 — spec frozen · 10 crates · backlog thin       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,7 +73,10 @@ stranger's page for a few cents and sweeps it when the pin runs out. The
 relay is a cache with a contract. The browser trusts nothing it has not
 verified itself and says so on every page.
 
-![the browser open on a signed home page with the provenance panel expanded](docs/browser-home.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/browser-home.png">
+  <img alt="the browser open on a signed home page with the provenance panel expanded" src="docs/browser-home-light.png">
+</picture>
 
 ## [ Recon ] — the machine
 
@@ -318,25 +322,34 @@ A relay stores what its allowlist pushes for free. Everyone else pays.
 ```bash
 weft-relay rate 1 && weft-relay bank add <bank>   # cents per KiB per day, and who mints them
 weft-bank init && weft-bank mint --to <relay id> --cents 4 --out v.bin   # also prints the voucher as text
-weft price                                        # every relay's rate and banks
+weft price                                        # every relay's rate, banks, and sats per cent
 weft push <page> <pointer>                        # rejected: payment required
 weft push <page> <pointer> --pay v.bin --days 30  # a receipt rides in the batch, both records pin
 # or paste the voucher text into the browser's compose pane
+weft-relay sats 10 && weft-relay node lnd https://lnd:8080   # lnd.macaroon and lnd.pem in the relay dir
+weft-relay node fake                              # a node that writes each preimage to data/preimages/<hash>
+weft invoice <page> <pointer> --days 30           # cost in cents, a BOLT11 invoice, its payment hash
+weft push <page> <pointer> --preimage <hex> --relay <id> --days 30   # the wallet's preimage is the proof
+# or press "lightning invoice" in compose and paste the preimage where the voucher goes
 weft receipts                                     # what you paid, to whom, until when
-weft-relay rate 2 && kill -HUP $(pidof weft-relay) # allow, banks, and rate reload in place
+weft-relay rate 2 && kill -HUP $(pidof weft-relay) # allow, banks, rate, and sats reload in place
 weft-relay deny <root> && kill -HUP $(pidof weft-relay) # their free records go, paid pins stay
 ```
 
 A voucher is a bank signed note naming the relay it can be redeemed at, a
 few cents, and a nonce. A receipt is a record you sign naming the relay,
-the records you want kept, yours or anyone's, a date, and the voucher.
-The relay checks the bank, the spend, the date, and the price, then
+the records you want kept, yours or anyone's, a date, and either a
+voucher or the preimage of a Lightning invoice the relay issued. The relay
+checks the bank or the invoice, the spend, the date, and the price, then
 stores and pins, along with the manifests of the authors you sponsored.
 Every minute it drops every record that is neither allowlisted, pinned,
-nor the manifest of an author with a pinned record, and collects the
-blobs nothing names any more. A voucher spends once, a receipt the relay refuses is never
-kept, and the relay still never signs. The rail is a faucet, on purpose:
-the seam for real money is one function.
+nor the manifest of an author with a pinned record, collects the blobs
+nothing names any more, and forgets invoices nobody paid within the hour.
+A payment settles once, a receipt the relay refuses is never kept, and
+the relay still never signs. Settling a preimage is one hash against the
+relay's own invoice table; the node is asked only to issue, over LND's
+REST API with a macaroon and the node's own certificate as the only
+trusted root. The LND path has not been run against a live node.
 ## [ Login Flag ] — no account, no password, one signature
 
 ```bash
@@ -420,16 +433,16 @@ stored nowhere; every store and every relay refuses it.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt and voucher text · login · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest · pointer · grant · receipt with a voucher or a preimage · voucher text · login · verify
 crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait · addressed relay list
-crates/net/          weft-net: wire with size · client with pull progress and totals · relay handler · pricing · pins · sponsorship · sweep · blob GC · redb index · public or local network
+crates/net/          weft-net: wire with size and invoice · client with pull progress and totals · relay handler · pricing in cents and sats · Node trait with a fake · invoices · pins · sponsorship · sweep · blob GC · redb index · public or local network
 crates/resolve/      weft-resolve: target grammar with a text form · DNS over HTTPS with a positive and negative TTL cache · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
 crates/store/        weft-store: store wire · gate over every held record · names, point, receipt · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
-crates/relay/        weft-relay: init · allow · rate · bank · price · serve, printing its entry · SIGHUP reload
+crates/relay/        weft-relay: init · allow · rate · sats · bank · node fake or lnd · price · serve, printing its entry · SIGHUP reload
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
-crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · paid push · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark · history and bookmarks · compose with preview, price, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh
+crates/cli/          weft: commands over home, net, and resolve · device retire · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · quiet on a closed pipe
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh with a screenshot hash the tests check
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -455,11 +468,10 @@ cargo deny check
 
 ## [ Next Ops ]
 
-The roadmap is complete and the backlog is empty of milestones. The
-browser has a design, remembers where it went, pays a relay from compose,
-repoints names, saves blobs, shows a pull with its total, follows a link
-by name, opens `weft:` links from other browsers on Linux, and is driven
-end to end by a script. What is left is listed in
-[`progress/BACKLOG.md`](progress/BACKLOG.md): a handler for macOS and
-Windows, a payment rail behind the voucher, and TLS at a reverse proxy.
-See [`progress/`](progress/).
+The roadmap is complete. A relay takes Lightning next to the voucher, the
+browser follows the desktop's colour scheme on WebKitGTK and is
+screenshotted in both, the driven smoke test logs into a real gateway,
+and a test fails when the screenshots fall behind the UI. What is left is
+listed in [`progress/BACKLOG.md`](progress/BACKLOG.md): a handler for
+macOS and Windows, a run of the LND adapter against a live node, and TLS
+at a reverse proxy. See [`progress/`](progress/).

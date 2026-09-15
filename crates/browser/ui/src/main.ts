@@ -14,7 +14,8 @@ type Page = {
 
 type Identity = { root: string; devices: string[]; labels: string[]; relays: string[] };
 type Preview = { html: string; title: string | null };
-type Price = { relay: string; rate: number | null; banks: string[]; error: string | null };
+type Price = { relay: string; rate: number | null; banks: string[]; sats: number; error: string | null };
+type Offer = { relay: string; bolt11: string; hash: string; cents: number; sats: number; expires: number };
 type Head = { name: string; target: string; seq: number; address: string };
 type BlobView = { size: number; kind: "image" | "text" | "binary"; text: string | null };
 type Pull = { address: string; done: number; total: number | null };
@@ -379,7 +380,8 @@ async function showPrice(): Promise<void> {
     const prices = await invoke<Price[]>("price");
     for (const p of prices) {
       const rate = p.rate === null ? p.error ?? "unreachable" : `${p.rate} cents per KiB per day`;
-      table.append(row([short(p.relay, 32), rate, p.banks.map((b) => short(b)).join(" ")]));
+      const lightning = p.sats > 0 ? `${p.sats} sats per cent` : "no lightning";
+      table.append(row([short(p.relay, 32), rate, lightning, p.banks.map((b) => short(b)).join(" ")]));
     }
     if (prices.length === 0) table.append(row(["no relays configured"]));
   } catch (e) {
@@ -395,6 +397,29 @@ el("compose-toggle").addEventListener("click", () => {
   }
 });
 
+const payment = el<HTMLTextAreaElement>("payment");
+const invoiceText = el<HTMLPreElement>("invoice-text");
+
+el("invoice").addEventListener("click", async () => {
+  invoiceText.textContent = "asking...";
+  delete invoiceText.dataset.relay;
+  try {
+    const offer = await invoke<Offer>("invoice", {
+      markdown: markdown.value,
+      days: Number(el<HTMLInputElement>("days").value) || 0,
+    });
+    invoiceText.dataset.relay = offer.relay;
+    invoiceText.textContent = [
+      `${offer.cents} cents  ${offer.sats} sats  expires ${new Date(offer.expires * 1000).toISOString()}`,
+      `hash ${offer.hash}`,
+      offer.bolt11,
+      "pay it with any wallet, then paste the preimage above",
+    ].join("\n");
+  } catch (e) {
+    invoiceText.textContent = String(e);
+  }
+});
+
 el<HTMLFormElement>("publish").addEventListener("submit", async (event) => {
   event.preventDefault();
   const result = el("publish-result");
@@ -403,10 +428,13 @@ el<HTMLFormElement>("publish").addEventListener("submit", async (event) => {
     result.textContent = await invoke<string>("publish", {
       markdown: markdown.value,
       name: el<HTMLInputElement>("name").value,
-      voucher: el<HTMLTextAreaElement>("voucher").value,
+      pay: payment.value,
+      relay: invoiceText.dataset.relay ?? "",
       days: Number(el<HTMLInputElement>("days").value) || 0,
     });
-    el<HTMLTextAreaElement>("voucher").value = "";
+    payment.value = "";
+    invoiceText.textContent = "";
+    delete invoiceText.dataset.relay;
     void fillNames();
   } catch (e) {
     result.textContent = String(e);

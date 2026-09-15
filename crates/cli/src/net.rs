@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use data_encoding::HEXLOWER;
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
 use weft_net::Client;
 
@@ -23,17 +24,93 @@ pub struct Paid {
     pub receipt: Record,
 }
 
+pub fn check_days(days: u64) -> Result<()> {
+    if days == 0 || days > weft_net::relay::MAX_DAYS {
+        return fail(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
+    }
+    Ok(())
+}
+
+pub fn pick_relay(home: &Home, named: Option<&str>, key: Option<&PublicKey>) -> Result<Relay> {
+    let configured = home.relays()?;
+    let wanted = match (named, key) {
+        (Some(text), _) => text.parse::<Relay>()?,
+        (None, Some(key)) => Relay::from_key(key)?,
+        (None, None) => match configured.as_slice() {
+            [only] => return Ok(only.clone()),
+            [] => return fail("no relays configured; run `weft relay add <id>[@host:port]`"),
+            _ => return fail("several relays configured; name one with --relay <id>"),
+        },
+    };
+    Ok(configured.into_iter().find(|r| r.id == wanted.id).unwrap_or(wanted))
+}
+
 pub async fn price(home: &Home) -> Result<()> {
     let relays = relays(home)?;
     let client = client().await?;
     for relay in relays {
-        let (rate, banks) = client.price(&relay).await.map_err(|e| e.to_string())?;
-        say!("{relay}  {rate} cents per KiB per day");
-        for bank in banks {
+        let quote = client.price(&relay).await.map_err(|e| e.to_string())?;
+        let lightning = match quote.sats {
+            0 => "no lightning".to_owned(),
+            sats => format!("{sats} sats per cent"),
+        };
+        say!("{relay}  {} cents per KiB per day  {lightning}", quote.rate);
+        for bank in quote.banks {
             say!("  bank {}", bank.address());
         }
     }
     client.close().await;
+    Ok(())
+}
+
+pub async fn invoice(
+    home: &Home,
+    store: &Store,
+    addresses: &[Address],
+    days: u64,
+    relay: Option<&str>,
+) -> Result<()> {
+    if addresses.is_empty() {
+        return fail("name the records the invoice is for");
+    }
+    check_days(days)?;
+    let relay = pick_relay(home, relay, None)?;
+    let snap = store.snapshot()?;
+    let mut sizes = Vec::with_capacity(addresses.len());
+    for address in addresses {
+        let Some(record) = snap.find(*address) else {
+            return fail(format!("{address} is not in the local store"));
+        };
+        let mut size = record.to_bytes().len() as u64;
+        if let Body::Blob(blob) = record.body() {
+            let meta = std::fs::metadata(home.blob_path(blob))
+                .map_err(|_| format!("blob {blob} is not in the local store"))?;
+            size = size.saturating_add(meta.len());
+        }
+        sizes.push(size);
+    }
+    let client = client().await?;
+    let quote = client.price(&relay).await.map_err(|e| e.to_string())?;
+    if quote.sats == 0 {
+        client.close().await;
+        return fail(format!("{relay} takes no lightning"));
+    }
+    let cents = sizes
+        .iter()
+        .try_fold(0u64, |total, &size| {
+            weft_net::relay::cost(size, days, quote.rate).and_then(|c| total.checked_add(c))
+        })
+        .ok_or("cost overflows")?;
+    let offer = client.invoice(&relay, cents.max(1)).await.map_err(|e| e.to_string())?;
+    client.close().await;
+    say!(
+        "invoice  {cents} cents  {} sats  expires {}",
+        cents.saturating_mul(quote.sats),
+        offer.expires
+    );
+    say!("hash     {}", HEXLOWER.encode(&offer.hash));
+    say!("{}", offer.bolt11);
+    say!("pay it, then: weft push <addresses> --preimage <hex> --relay {} --days {days}", relay.id);
     Ok(())
 }
 

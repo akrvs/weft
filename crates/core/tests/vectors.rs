@@ -98,7 +98,14 @@ fn receipts() {
     let first = Record::from_bytes(&hex(v["records"][0]["hex"].as_str().unwrap())).unwrap();
     let receipt = weft_core::Receipt::from_record(&first).unwrap();
     assert_eq!(receipt.records.len(), 2);
-    assert_eq!(receipt.voucher.cents, 5);
+    assert_eq!(receipt.payment.cents(), Some(5));
+    let preimage: [u8; 32] = hex(v["preimage"]["hex"].as_str().unwrap()).try_into().unwrap();
+    let hash = weft_core::receipt::payment_hash(&preimage);
+    assert_eq!(hash.to_vec(), hex(v["preimage"]["hash"].as_str().unwrap()));
+    assert_eq!(
+        weft_core::Payment::Preimage(preimage).id().to_string(),
+        v["preimage"]["id"].as_str().unwrap()
+    );
 }
 
 fn check_records(v: &Value, manifest: &Manifest) {

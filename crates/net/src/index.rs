@@ -7,16 +7,19 @@ use redb::{
 };
 use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record};
 
-use crate::Result;
+use crate::{Error, Result};
 
 const RECORDS: TableDefinition<&[u8; 32], &[u8]> = TableDefinition::new("records");
 const HEADS: TableDefinition<&[u8], &[u8; 32]> = TableDefinition::new("heads");
 const MANIFESTS: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("manifests");
 const PINS: TableDefinition<&[u8; 32], (u64, &[u8; 32])> = TableDefinition::new("pins");
 const SPENT: TableDefinition<&[u8; 32], ()> = TableDefinition::new("spent");
+const INVOICES: TableDefinition<&[u8; 32], (u64, u64)> = TableDefinition::new("invoices");
 const AUTHORS: MultimapTableDefinition<&[u8; 32], &[u8; 32]> =
     MultimapTableDefinition::new("authors");
 const BLOBS: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("blobs");
+
+pub const MAX_INVOICES: u64 = 4096;
 
 #[derive(Debug)]
 pub struct Index {
@@ -25,7 +28,8 @@ pub struct Index {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settlement {
-    pub voucher: Address,
+    pub payment: Address,
+    pub invoice: Option<[u8; 32]>,
     pub until: u64,
     pub author: PublicKey,
     pub pins: Vec<Address>,
@@ -66,6 +70,7 @@ impl Index {
             tx.open_table(MANIFESTS)?;
             tx.open_table(PINS)?;
             tx.open_table(SPENT)?;
+            tx.open_table(INVOICES)?;
             let mut authors = tx.open_multimap_table(AUTHORS)?;
             let mut blobs = tx.open_table(BLOBS)?;
             if authors.is_empty()? && !store.is_empty()? {
@@ -121,10 +126,34 @@ impl Index {
         Ok(table.get(address.bytes())?.map(|v| v.value().0))
     }
 
-    pub fn spent(&self, voucher: &Address) -> Result<bool> {
+    pub fn spent(&self, payment: &Address) -> Result<bool> {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(SPENT)?;
-        Ok(table.get(voucher.bytes())?.is_some())
+        Ok(table.get(payment.bytes())?.is_some())
+    }
+
+    pub fn open_invoices(&self) -> Result<u64> {
+        let tx = self.db.begin_read()?;
+        Ok(tx.open_table(INVOICES)?.len()?)
+    }
+
+    pub fn issue(&self, hash: &[u8; 32], cents: u64, expires: u64, cap: u64) -> Result<()> {
+        let tx = self.db.begin_write()?;
+        {
+            let mut table = tx.open_table(INVOICES)?;
+            if table.len()? >= cap {
+                return Err(Error::Refused("too many open invoices".to_owned()));
+            }
+            table.insert(hash, (cents, expires))?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn invoice(&self, hash: &[u8; 32]) -> Result<Option<(u64, u64)>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(INVOICES)?;
+        Ok(table.get(hash)?.map(|v| v.value()))
     }
 
     pub fn put(&self, record: &Record) -> Result<Address> {
@@ -145,7 +174,10 @@ impl Index {
                     let current = pins.get(address.bytes())?.map_or(0, |v| v.value().0);
                     pins.insert(address.bytes(), (s.until.max(current), s.author.bytes()))?;
                 }
-                tx.open_table(SPENT)?.insert(s.voucher.bytes(), ())?;
+                tx.open_table(SPENT)?.insert(s.payment.bytes(), ())?;
+                if let Some(hash) = &s.invoice {
+                    tx.open_table(INVOICES)?.remove(hash)?;
+                }
             }
         }
         tx.commit()?;
@@ -268,6 +300,7 @@ impl<'a> Tables<'a> {
 
 fn sweep(tx: &WriteTransaction, now: u64, keep: &HashSet<PublicKey>) -> Result<Swept> {
     let mut tables = Tables::open(tx)?;
+    tx.open_table(INVOICES)?.retain(|_, (_, expires)| expires >= now)?;
     let mut pins = tx.open_table(PINS)?;
     let keep: HashSet<&[u8; 32]> = keep.iter().map(PublicKey::bytes).collect();
     let mut expired = Vec::new();
@@ -360,6 +393,36 @@ mod tests {
         assert_eq!(swept.records, vec![named.address()]);
         assert!(index.blobs().unwrap().is_empty(), "a swept record leaves the blobs table");
         assert!(index.record(&page.address()).unwrap().is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn open_invoices_are_capped_settled_once_and_swept_at_expiry() {
+        let dir = std::env::temp_dir().join(format!("weft-invoices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let index = Index::open(&dir.join("index.redb")).unwrap();
+        index.issue(&[1; 32], 5, 200, 2).unwrap();
+        index.issue(&[2; 32], 6, 100, 2).unwrap();
+        let full = index.issue(&[3; 32], 7, 300, 2).unwrap_err();
+        assert!(full.to_string().contains("too many open invoices"), "{full}");
+        assert_eq!(index.open_invoices().unwrap(), 2);
+        assert_eq!(index.invoice(&[1; 32]).unwrap(), Some((5, 200)));
+        let paid = Address::hash([9; 32]);
+        let settlement = Settlement {
+            payment: paid,
+            invoice: Some([1; 32]),
+            until: 500,
+            author: SecretKey::from_seed([4; 32]).public(),
+            pins: vec![],
+        };
+        index.commit(&[], Some(&settlement)).unwrap();
+        assert!(index.spent(&paid).unwrap());
+        assert_eq!(index.invoice(&[1; 32]).unwrap(), None);
+        index.sweep(150, &HashSet::new()).unwrap();
+        assert_eq!(index.invoice(&[2; 32]).unwrap(), None, "expired invoices are swept");
+        assert_eq!(index.open_invoices().unwrap(), 0);
+        index.issue(&[3; 32], 7, 300, 2).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

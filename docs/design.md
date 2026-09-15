@@ -125,10 +125,13 @@ acknowledging that a specific service is owed a specific amount, settled
 out of band through any rail. Authors pay relays to host, readers pay
 authors per article or month, readers pay relays for priority. None
 requires the reader to be identified beyond a possibly throwaway key.
-Version 1 settles through the voucher in `protocol.md`, a bearer token a
-bank the relay trusts has signed. A real rail, a Lightning preimage or an
-ecash token, replaces the voucher behind `Relay::settle` in a later
-version; nothing else in the protocol names the rail.
+Version 1 settles through two rails behind `Relay::settle`: the voucher in
+`protocol.md`, a bearer token a bank the relay trusts has signed, and a
+Lightning preimage, where the relay issues an invoice over its wire and
+the receipt carries the preimage any wallet hands back on payment. A relay
+verifies a preimage against the invoices it issued, offline, with one
+hash; its node is asked only to issue. Nothing else in the protocol names
+the rail.
 
 ### Trust and moderation
 
