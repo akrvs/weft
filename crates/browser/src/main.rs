@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod blobs;
+mod marks;
+mod register;
+
 use std::collections::VecDeque;
-use std::fmt::Write;
-use std::io::Read;
+use std::fmt::Write as _;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -11,12 +15,15 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
-use tauri::{LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
-use weft_core::{Address, Challenge, Grant, login};
-use weft_home::Home;
-use weft_resolve::{Links, Page, Resolver, Target};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, Webview, WebviewUrl, Window};
+use weft_core::{Address, Challenge, Grant, Pointer, Receipt, Record, Voucher, login};
+use weft_home::{Home, Relay};
+use weft_resolve::{Links, Page, Resolver, Target, render};
 use weft_store::{Local, socket_path};
 use zeroize::Zeroizing;
+
+use crate::blobs::Sniff;
+use crate::marks::Marks;
 
 const CHROME_HEIGHT: i32 = 88;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,11 +31,20 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 const START_POLL: Duration = Duration::from_millis(200);
 const LOG_BYTES: usize = 16 * 1024;
 
+const DAY: u64 = 86_400;
+
 struct App {
     resolver: Resolver<Local>,
+    marks: Marks,
     web: Mutex<Option<Webview>>,
     daemon: Mutex<Option<Child>>,
     log: Arc<Mutex<VecDeque<u8>>>,
+}
+
+#[derive(Serialize, Clone)]
+struct Pull {
+    address: String,
+    done: u64,
 }
 
 #[derive(Serialize)]
@@ -112,9 +128,133 @@ async fn revoke_grant(app: State<'_, App>, grant: String) -> Result<String> {
     Ok(revoked.map_err(|e| err(&e))?.to_string())
 }
 
+#[derive(Serialize)]
+struct Preview {
+    html: String,
+    title: Option<String>,
+}
+
 #[tauri::command]
-async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<String> {
+#[allow(clippy::needless_pass_by_value)]
+fn preview(markdown: String) -> Preview {
+    Preview { html: render(&markdown, &Links::WEFT), title: weft_resolve::render::title(&markdown) }
+}
+
+#[derive(Serialize)]
+struct Price {
+    relay: String,
+    rate: Option<u64>,
+    banks: Vec<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn price(app: State<'_, App>) -> Result<Vec<Price>> {
+    let relays = app.resolver.home().relays().map_err(|e| err(&e))?;
+    let client = app.resolver.client().await.map_err(|e| err(&e))?;
+    let mut out = Vec::with_capacity(relays.len());
+    for relay in relays {
+        let (rate, banks, error) = match client.price(&relay).await {
+            Ok((rate, banks)) => {
+                (Some(rate), banks.iter().map(|b| b.address().to_string()).collect(), None)
+            }
+            Err(e) => (None, Vec::new(), Some(e.to_string())),
+        };
+        out.push(Price { relay: relay.to_string(), rate, banks, error });
+    }
+    Ok(out)
+}
+
+async fn with_manifest(app: &App, records: Vec<Record>) -> Result<Vec<Record>> {
+    let root = app.resolver.home().root().map_err(|e| err(&e))?;
+    let mut push = records;
+    if let Some(manifest) = app.resolver.local_manifest_record(&root).await.map_err(|e| err(&e))? {
+        push.insert(0, manifest);
+    }
+    Ok(push)
+}
+
+fn outcome_lines(report: &mut String, relay: &Relay, outcome: &weft_net::client::PutOutcome) {
+    let _ = writeln!(
+        report,
+        "{relay}  stored {}  rejected {}",
+        outcome.stored.len(),
+        outcome.rejected.len()
+    );
+    for (_, why) in &outcome.rejected {
+        let _ = writeln!(report, "  {why}");
+    }
+}
+
+async fn push_free(app: &App, records: Vec<Record>, report: &mut String) -> Result<()> {
+    let relays = app.resolver.home().relays().map_err(|e| err(&e))?;
+    if relays.is_empty() {
+        return Ok(());
+    }
+    let push = with_manifest(app, records).await?;
+    let client = app.resolver.client().await.map_err(|e| err(&e))?;
+    for relay in &relays {
+        let outcome = client.put(relay, &push).await.map_err(|e| err(&e))?;
+        outcome_lines(report, relay, &outcome);
+    }
+    Ok(())
+}
+
+async fn push_paid(
+    app: &App,
+    records: Vec<Record>,
+    voucher: Voucher,
+    days: u64,
+    report: &mut String,
+) -> Result<()> {
+    if days == 0 || days > weft_net::relay::MAX_DAYS {
+        return Err(format!("days must be 1 to {}", weft_net::relay::MAX_DAYS));
+    }
+    let home = app.resolver.home();
+    let relays = home.relays().map_err(|e| err(&e))?;
+    let relay = match relays.into_iter().find(|r| r.is_key(&voucher.to)) {
+        Some(relay) => relay,
+        None => Relay::from_key(&voucher.to).map_err(|e| err(&e))?,
+    };
+    let mut paid: Vec<Address> = records.iter().map(Record::address).collect();
+    paid.sort_unstable();
+    paid.dedup();
+    let until = weft_home::now().map_err(|e| err(&e))?.saturating_add(days.saturating_mul(DAY));
+    let cents = voucher.cents;
+    let receipt = Receipt { relay: voucher.to, records: paid, until, voucher };
+    receipt.check().map_err(|e| err(&e))?;
+    let body = receipt.encode();
+    let store = app.resolver.reads();
+    let signed = store.call(async |c| c.receipt(body).await).await.map_err(|e| err(&e))?;
+    let mut push = with_manifest(app, records).await?;
+    push.push(signed.clone());
+    let client = app.resolver.client().await.map_err(|e| err(&e))?;
+    let outcome = client.put(&relay, &push).await.map_err(|e| err(&e))?;
+    outcome_lines(report, &relay, &outcome);
+    if outcome.stored.contains(&signed.address()) {
+        store.call(async |c| c.keep(&signed).await).await.map_err(|e| err(&e))?;
+        let _ = writeln!(report, "receipt {}  {cents} cents until {until}", signed.address());
+        Ok(())
+    } else {
+        Err(format!("{report}receipt refused, nothing kept"))
+    }
+}
+
+#[tauri::command]
+async fn publish(
+    app: State<'_, App>,
+    markdown: String,
+    name: String,
+    voucher: String,
+    days: u64,
+) -> Result<String> {
     let name = name.trim();
+    let voucher = voucher.trim();
+    let paid = if voucher.is_empty() {
+        None
+    } else {
+        Some(Voucher::from_text(voucher).map_err(|e| err(&e))?)
+    };
     let body = markdown.into_bytes();
     let pointer = (!name.is_empty()).then_some(name);
     let records = app
@@ -123,33 +263,121 @@ async fn publish(app: State<'_, App>, markdown: String, name: String) -> Result<
         .call(async |c| c.publish(body, pointer).await)
         .await
         .map_err(|e| err(&e))?;
-    let page = records.first().ok_or("store returned no records")?;
-    let mut report = format!("{}\n", page.address());
-    let home = app.resolver.home();
-    let relays = home.relays().map_err(|e| err(&e))?;
-    if !relays.is_empty() {
-        let root = home.root().map_err(|e| err(&e))?;
-        let client = app.resolver.client().await.map_err(|e| err(&e))?;
-        let mut push = records.clone();
-        if let Some(manifest) =
-            app.resolver.local_manifest_record(&root).await.map_err(|e| err(&e))?
-        {
-            push.insert(0, manifest);
-        }
-        for relay in &relays {
-            let outcome = client.put(relay, &push).await.map_err(|e| err(&e))?;
-            let _ = writeln!(
-                report,
-                "{relay}  stored {}  rejected {}",
-                outcome.stored.len(),
-                outcome.rejected.len()
-            );
-            for (_, why) in outcome.rejected {
-                let _ = writeln!(report, "  {why}");
-            }
-        }
+    let mut report = String::new();
+    for record in &records {
+        let _ = writeln!(report, "{}  {}", record.kind(), record.address());
+    }
+    match paid {
+        Some(voucher) => push_paid(&app, records, voucher, days, &mut report).await?,
+        None => push_free(&app, records, &mut report).await?,
     }
     Ok(report)
+}
+
+#[derive(Serialize)]
+struct Head {
+    name: String,
+    target: String,
+    seq: u64,
+    address: String,
+}
+
+#[tauri::command]
+async fn names(app: State<'_, App>) -> Result<Vec<Head>> {
+    let records =
+        app.resolver.reads().call(async |c| c.names().await).await.map_err(|e| err(&e))?;
+    let mut out = Vec::with_capacity(records.len());
+    for r in &records {
+        let p = Pointer::from_record(r).map_err(|e| err(&e))?;
+        out.push(Head {
+            name: p.name,
+            target: p.target.to_string(),
+            seq: p.seq,
+            address: r.address().to_string(),
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn point(app: State<'_, App>, name: String, target: String) -> Result<String> {
+    let target: Address = target.trim().parse().map_err(|e| err(&e))?;
+    let name = name.trim().to_owned();
+    let pointer = app
+        .resolver
+        .reads()
+        .call(async |c| c.point(&name, target).await)
+        .await
+        .map_err(|e| err(&e))?;
+    let mut report = format!("pointer  {}\n", pointer.address());
+    push_free(&app, vec![pointer], &mut report).await?;
+    Ok(report)
+}
+
+#[derive(Serialize)]
+struct BlobView {
+    size: u64,
+    kind: Sniff,
+    text: Option<String>,
+}
+
+async fn blob_bytes(app: &App, address: &str) -> Result<(Address, Vec<u8>)> {
+    let address: Address = address.trim().parse().map_err(|e| err(&e))?;
+    let data = app.resolver.blob(address).await.map_err(|e| err(&e))?.ok_or("blob not found")?;
+    Ok((address, data))
+}
+
+#[tauri::command]
+async fn blob_view(app: State<'_, App>, address: String) -> Result<BlobView> {
+    let (_, data) = blob_bytes(&app, &address).await?;
+    let kind = blobs::sniff(&data);
+    let text = (kind == Sniff::Text).then(|| String::from_utf8_lossy(&data).into_owned());
+    Ok(BlobView { size: data.len() as u64, kind, text })
+}
+
+#[tauri::command]
+async fn save_blob(app: State<'_, App>, address: String) -> Result<String> {
+    let (address, data) = blob_bytes(&app, &address).await?;
+    let dir = blobs::downloads().map_err(|e| err(&e))?;
+    let path = blobs::save(&dir, address, &data).map_err(|e| err(&e))?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn history(app: State<'_, App>) -> Result<Vec<(u64, String)>> {
+    app.marks.history().map_err(|e| err(&e))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn visit(app: State<'_, App>, target: String) -> Result<()> {
+    let now = weft_home::now().map_err(|e| err(&e))?;
+    app.marks.visit(&target, now).map_err(|e| err(&e))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_history(app: State<'_, App>) -> Result<()> {
+    app.marks.clear_history().map_err(|e| err(&e))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn bookmarks(app: State<'_, App>) -> Result<Vec<(String, String)>> {
+    app.marks.bookmarks().map_err(|e| err(&e))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn bookmark(app: State<'_, App>, target: String, title: String) -> Result<()> {
+    app.marks.bookmark(&target, title.trim()).map_err(|e| err(&e))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn unbookmark(app: State<'_, App>, target: String) -> Result<()> {
+    app.marks.unbookmark(&target).map_err(|e| err(&e))
 }
 
 #[derive(Serialize)]
@@ -407,17 +635,22 @@ async fn blob(app: &App, path: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("register") {
+        let code = match register::register() {
+            Ok(path) => {
+                let _ = writeln!(std::io::stdout(), "weft: links open here, {}", path.display());
+                0
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "error: {e}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     let home = Home::new(std::env::var_os("WEFT_HOME").map_or_else(Home::default_dir, Into::into));
-    let reads = Local::new(home.path().to_path_buf());
-    let app = App {
-        resolver: Resolver::new(home, reads),
-        web: Mutex::new(None),
-        daemon: Mutex::new(None),
-        log: Arc::default(),
-    };
     let result = tauri::Builder::default()
-        .manage(app)
         .register_asynchronous_uri_scheme_protocol("weft", |ctx, request, responder| {
             let handle = ctx.app_handle().clone();
             let path = request.uri().path().to_owned();
@@ -439,7 +672,19 @@ fn main() {
             resolve,
             initial,
             identity,
+            preview,
+            price,
             publish,
+            names,
+            point,
+            blob_view,
+            save_blob,
+            history,
+            visit,
+            clear_history,
+            bookmarks,
+            bookmark,
+            unbookmark,
             open_web,
             close_web,
             store_view,
@@ -450,7 +695,21 @@ fn main() {
             stop_store,
             daemon_log
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let watch = move |address: Address, done: u64| {
+                let _ = handle.emit("pull", Pull { address: address.to_string(), done });
+            };
+            let reads = Local::new(home.path().to_path_buf());
+            let marks = Marks::new(home.path());
+            let resolver = Resolver::new(home, reads).watched(Arc::new(watch));
+            app.manage(App {
+                resolver,
+                marks,
+                web: Mutex::new(None),
+                daemon: Mutex::new(None),
+                log: Arc::default(),
+            });
             let window = tauri::window::WindowBuilder::new(app, "main")
                 .title("weft")
                 .inner_size(1100.0, 800.0)
@@ -466,7 +725,7 @@ fn main() {
         })
         .run(tauri::generate_context!());
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        let _ = writeln!(std::io::stderr(), "error: {e}");
         std::process::exit(1);
     }
 }

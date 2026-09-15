@@ -14,6 +14,17 @@ pub struct Relay {
     pub addrs: Vec<SocketAddr>,
 }
 
+impl Relay {
+    pub fn from_key(key: &weft_core::PublicKey) -> Result<Self, Fail> {
+        let id = EndpointId::from_bytes(key.bytes()).map_err(|e| Fail(format!("relay id: {e}")))?;
+        Ok(Self { id, addrs: Vec::new() })
+    }
+
+    pub fn is_key(&self, key: &weft_core::PublicKey) -> bool {
+        self.id.as_bytes() == key.bytes()
+    }
+}
+
 impl FromStr for Relay {
     type Err = Fail;
 

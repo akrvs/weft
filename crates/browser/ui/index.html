@@ -8,17 +8,26 @@
 </head>
 <body>
 <header id="bar">
-  <button id="back" type="button" title="back">&#8592;</button>
+  <button id="back" type="button" title="back" disabled>&#8592;</button>
+  <button id="forward" type="button" title="forward" disabled>&#8594;</button>
   <form id="go">
     <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="address, author/name, domain, or https://">
   </form>
+  <button id="star" type="button" title="bookmark this page" disabled>bookmark</button>
+  <button id="history-toggle" type="button" title="history">history</button>
+  <button id="bookmarks-toggle" type="button" title="bookmarks">bookmarks</button>
   <button id="compose-toggle" type="button">compose</button>
   <button id="store-toggle" type="button">store</button>
   <button id="identity" type="button">identity</button>
 </header>
+<div id="pull" hidden><div id="pull-bar"></div><span id="pull-text"></span></div>
 <section id="provenance" hidden>
-  <span id="status"></span>
-  <dl>
+  <button id="prov-line" type="button">
+    <span id="status"></span>
+    <span id="p-short"></span>
+    <span id="prov-more">details</span>
+  </button>
+  <dl id="prov-detail" hidden>
     <dt>address</dt><dd id="p-address"></dd>
     <dt>kind</dt><dd id="p-kind"></dd>
     <dt>author</dt><dd id="p-author"></dd>
@@ -32,19 +41,39 @@
 <main id="content"></main>
 <section id="compose" hidden>
   <form id="publish">
-    <input id="name" type="text" spellcheck="false" autocomplete="off" placeholder="pointer name, optional">
-    <textarea id="markdown" placeholder="# title&#10;&#10;markdown body"></textarea>
-    <button type="submit">sign and push</button>
+    <div id="compose-grid">
+      <textarea id="markdown" placeholder="# title&#10;&#10;markdown body"></textarea>
+      <div id="preview"><p class="muted">preview</p></div>
+    </div>
+    <div id="compose-row">
+      <input id="name" type="text" list="name-list" spellcheck="false" autocomplete="off" placeholder="pointer name, optional">
+      <datalist id="name-list"></datalist>
+      <input id="days" type="number" min="1" max="366" value="30" title="days to pin">
+      <button type="submit">sign and push</button>
+    </div>
+    <details id="pay">
+      <summary>pay a relay to pin this page</summary>
+      <table id="price"></table>
+      <textarea id="voucher" spellcheck="false" autocomplete="off" placeholder="voucher text from weft-bank mint, optional"></textarea>
+    </details>
   </form>
   <pre id="publish-result"></pre>
 </section>
 <dialog id="who">
+  <h2>identity</h2>
   <pre id="who-text"></pre>
   <button id="who-close" type="button">close</button>
 </dialog>
 <dialog id="store">
   <h2>your store</h2>
   <table id="store-kinds"></table>
+  <h2>names</h2>
+  <table id="store-names"></table>
+  <form id="repoint">
+    <input id="repoint-name" type="text" list="name-list" spellcheck="false" autocomplete="off" placeholder="name">
+    <input id="repoint-target" type="text" spellcheck="false" autocomplete="off" placeholder="record address">
+    <button type="submit">point</button>
+  </form>
   <h2>active grants</h2>
   <table id="store-grants"></table>
   <form id="revoke" hidden>
@@ -63,6 +92,19 @@
   <h2 id="store-log-title" hidden>daemon log</h2>
   <pre id="store-log" hidden></pre>
   <button id="store-close" type="button">close</button>
+</dialog>
+<dialog id="history">
+  <h2>history</h2>
+  <table id="history-list"></table>
+  <div class="row">
+    <button id="history-clear" type="button">clear</button>
+    <button id="history-close" type="button">close</button>
+  </div>
+</dialog>
+<dialog id="bookmarks">
+  <h2>bookmarks</h2>
+  <table id="bookmarks-list"></table>
+  <button id="bookmarks-close" type="button">close</button>
 </dialog>
 <dialog id="login">
   <h2>log in</h2>
