@@ -182,6 +182,16 @@ async fn blob_round_trip() {
 
     let fetched = b.get(net.addr.clone(), record.address()).await.unwrap().unwrap();
     let Body::Blob(hash) = fetched.body() else { panic!() };
+    assert_eq!(b.size(net.addr.clone(), hash).await.unwrap(), Some(data.len() as u64));
+    assert_eq!(b.size(net.addr.clone(), &Address::of(b"nowhere")).await.unwrap(), None);
+    let mut seen = Vec::new();
+    let pulled = b
+        .pull_blob(net.addr.clone(), hash, &mut |done, total| seen.push((done, total)))
+        .await
+        .unwrap();
+    assert_eq!(pulled, data);
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|(_, t)| *t == Some(data.len() as u64)));
     let out = dir.join("out.bin");
     let size = b.fetch_blob(net.addr.clone(), hash, &out).await.unwrap();
     assert_eq!(size, data.len() as u64);
@@ -267,6 +277,7 @@ async fn blob_collection_spares_referenced_blobs_and_takes_swept_ones() {
         }
     }
     assert!(gone, "a swept record's blob is collected");
+    assert_eq!(a.size(net.addr.clone(), &blob).await.unwrap(), None);
 
     a.close().await;
     net.stop().await;

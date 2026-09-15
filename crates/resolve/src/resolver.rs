@@ -39,7 +39,7 @@ struct Shared<R: Reads> {
     dns: OnceCell<Dns>,
 }
 
-pub type Watch = Arc<dyn Fn(Address, u64) + Send + Sync>;
+pub type Watch = Arc<dyn Fn(Address, u64, Option<u64>) + Send + Sync>;
 
 #[derive(Clone)]
 struct Watcher(Watch);
@@ -156,9 +156,9 @@ impl<R: Reads> Resolver<R> {
         }
         let Some((client, relays)) = self.relays().await? else { return Ok(None) };
         for relay in &relays {
-            let mut on_progress = |done| {
+            let mut on_progress = |done, total| {
                 if let Some(Watcher(watch)) = &self.watch {
-                    watch(address, done);
+                    watch(address, done, total);
                 }
             };
             let pull = client.pull_blob(relay, &address, &mut on_progress);

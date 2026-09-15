@@ -164,6 +164,9 @@ impl Relay {
                 banks.sort();
                 Response::Price { rate: config.pricing.rate, banks }
             }
+            Request::Size { address } => {
+                Response::Size { bytes: self.blob_size(&address).await.ok() }
+            }
         }
     }
 

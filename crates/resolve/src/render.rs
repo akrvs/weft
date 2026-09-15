@@ -1,6 +1,8 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use weft_core::Address;
 
+use crate::Target;
+
 pub const MAX_INPUT: usize = weft_core::record::MAX_INLINE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,10 +103,10 @@ fn start(out: &mut String, tag: &Tag<'_>, suppress: &mut u32, links: &Links) {
                 *suppress = suppress.saturating_add(1);
                 return;
             }
-            if let Some(address) = record_address(dest_url) {
+            if let Some(target) = link_target(dest_url) {
                 out.push_str("<a href=\"");
                 out.push_str(links.record);
-                out.push_str(&address.to_string());
+                out.push_str(&target.to_string());
                 out.push_str("\">");
             } else if safe_web(dest_url) {
                 out.push_str("<a href=\"");
@@ -190,6 +192,14 @@ fn record_address(url: &str) -> Option<Address> {
     url.strip_prefix("weft:").and_then(|rest| rest.parse().ok())
 }
 
+fn link_target(url: &str) -> Option<Target> {
+    let rest = url.strip_prefix("weft:")?;
+    if rest.contains(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
 fn safe_web(url: &str) -> bool {
     url.starts_with("https://") && !url.contains(|c: char| c.is_control())
 }
@@ -267,6 +277,40 @@ mod tests {
         assert_eq!(render("[a](http://example.org)"), "<p></p>");
         assert_eq!(render("[a](weft:notanaddress)"), "<p></p>");
         assert_eq!(render("<mail@example.org>"), "<p></p>");
+        assert_eq!(render("[a](weft:login?c=AAAA)"), "<p></p>");
+    }
+
+    #[test]
+    fn named_links_keep_the_target_grammar() {
+        let author = weft_core::SecretKey::from_seed([7; 32]).public().address().to_string();
+        let hash = weft_core::Address::of(b"x").to_string();
+        assert_eq!(
+            render(&format!("[a](weft:{author}/blog)")),
+            format!("<p><a href=\"weft:{author}/blog\">a</a></p>")
+        );
+        assert_eq!(render("[a](weft:Example.COM)"), "<p><a href=\"weft:example.com\">a</a></p>");
+        assert_eq!(
+            render("[a](weft:example.com/posts)"),
+            "<p><a href=\"weft:example.com/posts\">a</a></p>"
+        );
+        assert_eq!(
+            render("[a](weft:example.com/home)"),
+            "<p><a href=\"weft:example.com\">a</a></p>"
+        );
+        for bad in [
+            format!("weft:{hash}/blog"),
+            format!("weft:{author}/a/b"),
+            format!("weft:{author}/"),
+            format!("weft:{author}/a\u{1}b"),
+            format!("weft: {author}/blog"),
+            "weft:ex ample.com".to_owned(),
+            "weft:-a.com/x".to_owned(),
+            "weft:".to_owned(),
+            format!("{author}/blog"),
+        ] {
+            assert_eq!(render(&format!("[a](<{bad}>)")), "<p></p>", "{bad}");
+        }
+        assert_eq!(render(&format!("![i](weft:{author}/blog)")), "<p></p>");
         assert_eq!(
             render("[x](https://a.org/\"onmouseover=\"alert(1))"),
             "<p><a href=\"https://a.org/&quot;onmouseover=&quot;alert(1)\" rel=\"noopener\">x</a></p>"

@@ -42,6 +42,7 @@ unknown fields.
 | `get` | `address`: bytes(32) | |
 | `head` | `author`: bytes(32), `name`: text | name 1 to 64 bytes |
 | `price` | | |
+| `size` | `address`: bytes(32) | |
 
 ## Responses
 
@@ -51,6 +52,7 @@ unknown fields.
 | `get` | `record`: bytes, absent when unknown |
 | `head` | `pointer`: bytes, absent when unknown; `manifest`: bytes, absent when unknown |
 | `price` | `rate`: uint cents per KiB per day; `banks`: array of bytes(32), sorted |
+| `size` | `bytes`: uint, absent when the relay holds no complete blob at that hash |
 | `error` | `why`: text |
 
 `head` always returns the newest manifest the relay holds for the author,

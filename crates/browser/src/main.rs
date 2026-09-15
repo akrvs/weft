@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 mod blobs;
+#[cfg(feature = "drive")]
+mod drive;
 mod marks;
 mod register;
 
@@ -45,6 +47,7 @@ struct App {
 struct Pull {
     address: String,
     done: u64,
+    total: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -697,8 +700,8 @@ fn main() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            let watch = move |address: Address, done: u64| {
-                let _ = handle.emit("pull", Pull { address: address.to_string(), done });
+            let watch = move |address: Address, done: u64, total: Option<u64>| {
+                let _ = handle.emit("pull", Pull { address: address.to_string(), done, total });
             };
             let reads = Local::new(home.path().to_path_buf());
             let marks = Marks::new(home.path());
@@ -721,6 +724,10 @@ fn main() {
                 LogicalSize::new(1.0, 1.0),
             )?;
             frame(&chrome)?;
+            #[cfg(feature = "drive")]
+            if let Some(path) = std::env::var_os("WEFT_DRIVE") {
+                drive::start(app.handle().clone(), path.as_ref())?;
+            }
             Ok(())
         })
         .run(tauri::generate_context!());

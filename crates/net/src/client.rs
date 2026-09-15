@@ -68,9 +68,11 @@ impl Client {
         &self,
         relay: impl Into<EndpointAddr>,
         address: &Address,
-        on_progress: &mut (dyn FnMut(u64) + Send),
+        on_progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
     ) -> Result<Vec<u8>> {
-        let hash = self.download(relay.into(), address, on_progress).await?;
+        let relay = relay.into();
+        let total = self.size(relay.clone(), address).await.ok().flatten();
+        let hash = self.download(relay, address, &mut |done| on_progress(done, total)).await?;
         let bytes = self.blobs.blobs().get_bytes(hash).await.map_err(net)?;
         Ok(bytes.to_vec())
     }
@@ -159,6 +161,17 @@ impl Client {
                 pointer: pointer.map(|b| Record::from_bytes(&b)).transpose()?,
                 manifest: manifest.map(|b| Record::from_bytes(&b)).transpose()?,
             }),
+            _ => Err(Error::Wire("unexpected response")),
+        }
+    }
+
+    pub async fn size(
+        &self,
+        relay: impl Into<EndpointAddr>,
+        address: &Address,
+    ) -> Result<Option<u64>> {
+        match self.call(relay, &Request::Size { address: *address }).await? {
+            Response::Size { bytes } => Ok(bytes),
             _ => Err(Error::Wire("unexpected response")),
         }
     }

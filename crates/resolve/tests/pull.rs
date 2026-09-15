@@ -16,6 +16,8 @@ use weft_resolve::{Error, Links, Resolver, Target};
 
 const LINKS: Links = Links { record: "/", blob: "/blob/" };
 
+type Seen = (Address, u64, Option<u64>);
+
 fn key(n: u8) -> SecretKey {
     SecretKey::from_seed([n; 32])
 }
@@ -123,13 +125,14 @@ async fn a_missing_blob_is_pulled_once_and_kept() {
         matches!(offline.resolve(named, &LINKS).await, Err(Error::NoPointer(n)) if n == "home")
     );
     assert!(!blob_file.exists());
-    let seen: Arc<Mutex<Vec<(Address, u64)>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
     let log = Arc::clone(&seen);
-    let watched = resolver.watched(Arc::new(move |a, n| log.lock().unwrap().push((a, n))));
+    let watched = resolver.watched(Arc::new(move |a, n, t| log.lock().unwrap().push((a, n, t))));
     assert_eq!(watched.blob(site.blob).await.unwrap().unwrap(), site.data);
-    let seen: Vec<(Address, u64)> = std::mem::take(&mut *seen.lock().unwrap());
+    let seen: Vec<Seen> = std::mem::take(&mut *seen.lock().unwrap());
     assert!(!seen.is_empty());
-    assert!(seen.iter().all(|(a, _)| *a == site.blob));
+    assert!(seen.iter().all(|(a, _, _)| *a == site.blob));
+    assert!(seen.iter().all(|(_, _, t)| *t == Some(site.data.len() as u64)));
     assert!(seen.windows(2).all(|w| w[0].1 <= w[1].1));
     assert_eq!(seen.last().unwrap().1, site.data.len() as u64);
     assert_eq!(offline.blob(site.blob).await.unwrap().unwrap(), site.data);

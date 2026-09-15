@@ -47,6 +47,17 @@ impl FromStr for Target {
     }
 }
 
+impl core::fmt::Display for Target {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Address(address) => write!(f, "{address}"),
+            Self::Named { author, name } => write!(f, "{}/{name}", author.address()),
+            Self::Domain { host, name } if name == HOME => f.write_str(host),
+            Self::Domain { host, name } => write!(f, "{host}/{name}"),
+        }
+    }
+}
+
 fn check_name(name: &str) -> Result<&str> {
     if name.is_empty() || name.len() > MAX_NAME {
         return Err(Error::Target("name length"));
@@ -150,6 +161,19 @@ mod tests {
         ] {
             assert!(matches!(bad.parse::<Target>(), Err(Error::Target("not a domain"))), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_text_form_round_trips() {
+        let (_, address) = key();
+        for text in
+            [address.as_str(), &format!("{address}/blog"), "example.com", "example.com/posts"]
+        {
+            let target: Target = text.parse().unwrap();
+            assert_eq!(target.to_string(), text);
+            assert_eq!(target.to_string().parse::<Target>().unwrap(), target);
+        }
+        assert_eq!("Example.COM./home".parse::<Target>().unwrap().to_string(), "example.com");
     }
 
     #[test]

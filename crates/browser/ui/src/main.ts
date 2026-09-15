@@ -17,7 +17,7 @@ type Preview = { html: string; title: string | null };
 type Price = { relay: string; rate: number | null; banks: string[]; error: string | null };
 type Head = { name: string; target: string; seq: number; address: string };
 type BlobView = { size: number; kind: "image" | "text" | "binary"; text: string | null };
-type Pull = { address: string; done: number };
+type Pull = { address: string; done: number; total: number | null };
 type Unlisten = () => void;
 
 declare global {
@@ -49,6 +49,7 @@ const forward = el<HTMLButtonElement>("forward");
 const star = el<HTMLButtonElement>("star");
 const pull = el<HTMLElement>("pull");
 const pullText = el<HTMLElement>("pull-text");
+const pullBar = el<HTMLElement>("pull-bar");
 const NOT_RUNNING = "weft-store is not running";
 const LOGIN = "weft:login?";
 
@@ -162,7 +163,15 @@ async function showPage(page: Page): Promise<void> {
 
 function showPull(p: Pull | null): void {
   pull.hidden = p === null;
-  pullText.textContent = p ? `pulling ${short(p.address, 16)}  ${bytes(p.done)}` : "";
+  if (!p) {
+    pullText.textContent = "";
+    return;
+  }
+  const known = p.total !== null && p.total > 0;
+  pull.classList.toggle("known", known);
+  pullBar.style.width = known ? `${Math.min(100, (100 * p.done) / (p.total as number))}%` : "";
+  const of = known ? ` of ${bytes(p.total as number)}` : "";
+  pullText.textContent = `pulling ${short(p.address, 16)}  ${bytes(p.done)}${of}`;
 }
 
 async function go(input: string, remember = true): Promise<void> {

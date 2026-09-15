@@ -49,6 +49,7 @@ button[type="submit"]:hover:not(:disabled) { color: #fff; filter: brightness(1.0
 
 #pull { position: relative; height: 22px; flex: none; background: var(--panel); border-bottom: 1px solid var(--line); overflow: hidden; }
 #pull-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 30%; background: var(--accent); opacity: .35; animation: slide 1.2s linear infinite; }
+#pull.known #pull-bar { animation: none; transition: width .2s linear; }
 #pull-text { position: relative; display: block; text-align: center; font: 12px var(--mono); line-height: 22px; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 

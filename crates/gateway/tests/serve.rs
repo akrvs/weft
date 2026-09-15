@@ -69,7 +69,9 @@ fn site() -> Site {
     let mut body = page.body.clone();
     let Body::Inline(ref mut bytes) = body else { unreachable!() };
     bytes.extend_from_slice(Address::of(b"other").to_string().as_bytes());
-    bytes.extend_from_slice(b")\n");
+    bytes.extend_from_slice(b")\n[y](weft:");
+    bytes.extend_from_slice(root.public().address().to_string().as_bytes());
+    bytes.extend_from_slice(b"/home)\n");
     let page = Draft { body, ..page }.sign(&root).unwrap();
     store.put(&page).unwrap();
     let pointer = Pointer { name: "home".into(), target: page.address(), seq: 1, prev: vec![] }
@@ -292,6 +294,7 @@ async fn serves_pages_blobs_and_names() {
     assert!(text.contains("<h1>Hello</h1>"));
     assert!(!text.contains("<script>"));
     assert!(text.contains(&format!("<a href=\"/{}\">x</a>", Address::of(b"other"))));
+    assert!(text.contains(&format!("<a href=\"/{root}/home\">y</a>")));
     assert!(text.contains("2023-11-14T22:13:20Z"));
 
     let r = request(&addr, "GET", &format!("/{root}/home")).await;

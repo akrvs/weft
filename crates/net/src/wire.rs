@@ -15,6 +15,7 @@ pub enum Request {
     Get { address: Address },
     Head { author: PublicKey, name: String },
     Price,
+    Size { address: Address },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum Response {
     Get { record: Option<Vec<u8>> },
     Head { pointer: Option<Vec<u8>>, manifest: Option<Vec<u8>> },
     Price { rate: u64, banks: Vec<PublicKey> },
+    Size { bytes: Option<u64> },
     Error { why: String },
 }
 
@@ -56,6 +58,12 @@ impl Request {
                 ("t".to_owned(), Value::Text("head".to_owned())),
             ],
             Self::Price => vec![("t".to_owned(), Value::Text("price".to_owned()))],
+            Self::Size { address } => {
+                vec![
+                    ("address".to_owned(), bytes32(address.bytes())),
+                    ("t".to_owned(), Value::Text("size".to_owned())),
+                ]
+            }
         };
         Value::Map(m).encode()
     }
@@ -101,6 +109,12 @@ impl Request {
             "price" => {
                 cbor::only(m, &["t"])?;
                 Ok(Self::Price)
+            }
+            "size" => {
+                cbor::only(m, &["address", "t"])?;
+                Ok(Self::Size {
+                    address: Address::hash(cbor::bytes32(cbor::field(m, "address")?, "address")?),
+                })
             }
             _ => Err(Error::Wire("unknown request type")),
         }
@@ -155,6 +169,11 @@ impl Response {
                 ("rate".to_owned(), Value::Uint(*rate)),
                 ("t".to_owned(), Value::Text("price".to_owned())),
             ],
+            Self::Size { bytes } => {
+                let mut m = vec![("t".to_owned(), Value::Text("size".to_owned()))];
+                m.extend(bytes.map(|b| ("bytes".to_owned(), Value::Uint(b))));
+                m
+            }
             Self::Error { why } => {
                 vec![
                     ("t".to_owned(), Value::Text("error".to_owned())),
@@ -218,6 +237,13 @@ impl Response {
                 let rate = cbor::field(m, "rate")?.as_uint().ok_or(CoreError::Field("rate"))?;
                 Ok(Self::Price { rate, banks })
             }
+            "size" => {
+                cbor::only(m, &["bytes", "t"])?;
+                let bytes = cbor::optional(m, "bytes")
+                    .map(|v| v.as_uint().ok_or(Error::Wire("bytes")))
+                    .transpose()?;
+                Ok(Self::Size { bytes })
+            }
             "error" => {
                 cbor::only(m, &["t", "why"])?;
                 Ok(Self::Error {
@@ -254,4 +280,36 @@ pub async fn recv(stream: &mut RecvStream) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await.map_err(net)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_round_trips_and_rejects_the_rest() {
+        let address = Address::of(b"blob");
+        let request = Request::Size { address };
+        assert_eq!(Request::decode(&request.encode()).unwrap(), request);
+        for response in [Response::Size { bytes: Some(300_000) }, Response::Size { bytes: None }] {
+            assert_eq!(Response::decode(&response.encode()).unwrap(), response);
+        }
+        let extra = Value::Map(vec![
+            ("address".to_owned(), bytes32(address.bytes())),
+            ("t".to_owned(), Value::Text("size".to_owned())),
+            ("x".to_owned(), Value::Uint(1)),
+        ]);
+        assert!(Request::decode(&extra.encode()).is_err());
+        let short = Value::Map(vec![
+            ("address".to_owned(), Value::Bytes(vec![0; 31])),
+            ("t".to_owned(), Value::Text("size".to_owned())),
+        ]);
+        assert!(Request::decode(&short.encode()).is_err());
+        let text = Value::Map(vec![
+            ("bytes".to_owned(), Value::Text("1".to_owned())),
+            ("t".to_owned(), Value::Text("size".to_owned())),
+        ]);
+        assert!(Response::decode(&text.encode()).is_err());
+    }
 }

@@ -10,6 +10,9 @@ publish.workspace = true
 name = "weft-browser"
 path = "src/main.rs"
 
+[features]
+drive = []
+
 [build-dependencies]
 tauri-build.workspace = true
 
