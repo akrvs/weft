@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use weft_core::{Address, Grant, Manifest, Pointer, PublicKey, Record, Revoke, verify};
+use weft_core::{Address, Grant, Manifest, Pointer, PublicKey, Record, Recovery, Revoke, verify};
 
 use crate::fail::{Result, fail};
 use crate::fs;
@@ -398,6 +398,19 @@ impl Snapshot {
         self.manifest_record(author).and_then(|r| Manifest::from_record(&r).ok())
     }
 
+    pub fn recovery_record(&self, author: &PublicKey) -> Option<Arc<Record>> {
+        let manifest = self.manifest(author);
+        let candidates: Vec<(Arc<Record>, Recovery)> = self
+            .valid(self.by(author, weft_core::recovery::KIND), manifest.as_ref())
+            .filter_map(|r| Recovery::from_record(&r).ok().map(|v| (r, v)))
+            .collect();
+        Recovery::head(candidates.iter().map(|(r, v)| (&**r, v)))
+            .map(|(r, _)| r.address())
+            .and_then(|address| {
+                candidates.into_iter().find(|(r, _)| r.address() == address).map(|(r, _)| r)
+            })
+    }
+
     pub fn pointers<'a>(
         &'a self,
         author: &PublicKey,
@@ -432,6 +445,7 @@ impl Snapshot {
 pub trait Reads: Send + Sync {
     fn record(&self, address: Address) -> impl Future<Output = Result<Option<Record>>> + Send;
     fn manifest(&self, author: PublicKey) -> impl Future<Output = Result<Option<Record>>> + Send;
+    fn recovery(&self, author: PublicKey) -> impl Future<Output = Result<Option<Record>>> + Send;
     fn pointers(
         &self,
         author: PublicKey,
@@ -449,6 +463,10 @@ impl Reads for Store {
 
     fn manifest(&self, author: PublicKey) -> impl Future<Output = Result<Option<Record>>> + Send {
         ready(self.snapshot().map(|snap| snap.manifest_record(&author).map(|r| (*r).clone())))
+    }
+
+    fn recovery(&self, author: PublicKey) -> impl Future<Output = Result<Option<Record>>> + Send {
+        ready(self.snapshot().map(|snap| snap.recovery_record(&author).map(|r| (*r).clone())))
     }
 
     fn pointers(

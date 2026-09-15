@@ -161,6 +161,10 @@ impl Relay {
                 Ok(record) => Response::Get { record },
                 Err(e) => Response::Error { why: e.to_string() },
             },
+            Request::Recovery { author } => match self.index.recovery(&author) {
+                Ok(record) => Response::Recovery { record: record.map(|r| r.to_bytes()) },
+                Err(e) => Response::Error { why: e.to_string() },
+            },
             Request::Head { author, name } => {
                 let pointer = self.index.head(&author, &name).map(|r| r.map(|r| r.to_bytes()));
                 let manifest = self.index.manifest(&author).map(|m| m.map(|(r, _)| r.to_bytes()));

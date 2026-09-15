@@ -30,6 +30,7 @@ pub enum Request {
     Receipt { body: Vec<u8> },
     Record { address: Address },
     Manifest { author: PublicKey },
+    Recovery { author: PublicKey },
     Pointers { author: PublicKey, name: String },
     Blob { address: Address, offset: u64 },
     Keep { record: Vec<u8> },
@@ -201,6 +202,12 @@ impl Request {
                     ("t".to_owned(), text("manifest")),
                 ]
             }
+            Self::Recovery { author } => {
+                vec![
+                    ("author".to_owned(), bytes(author.bytes())),
+                    ("t".to_owned(), text("recovery")),
+                ]
+            }
             Self::Pointers { author, name } => vec![
                 ("author".to_owned(), bytes(author.bytes())),
                 ("name".to_owned(), text(name)),
@@ -320,6 +327,10 @@ impl Request {
             "manifest" => {
                 cbor::only(m, &["author", "t"])?;
                 Ok(Self::Manifest { author: author(m)? })
+            }
+            "recovery" => {
+                cbor::only(m, &["author", "t"])?;
+                Ok(Self::Recovery { author: author(m)? })
             }
             "pointers" => {
                 cbor::only(m, &["author", "name", "t"])?;

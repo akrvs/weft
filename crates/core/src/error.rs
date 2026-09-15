@@ -12,6 +12,7 @@ pub enum Error {
     Expired,
     Limit(&'static str),
     Login(&'static str),
+    Threshold,
 }
 
 impl fmt::Display for Error {
@@ -27,6 +28,7 @@ impl fmt::Display for Error {
             Self::Expired => f.write_str("signer key outside its validity window"),
             Self::Limit(what) => write!(f, "limit exceeded: {what}"),
             Self::Login(why) => write!(f, "login: {why}"),
+            Self::Threshold => f.write_str("guardian signatures below threshold"),
         }
     }
 }

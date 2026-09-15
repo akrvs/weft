@@ -54,6 +54,7 @@ impl World {
                 expires: None,
             }],
             revoked: vec![],
+            guardians: None,
         };
         let store = Store::new(dir.clone());
         store.put(&manifest.draft(&root.public(), T0).sign(&root).unwrap()).unwrap();
@@ -632,6 +633,7 @@ fn wire_rejects_malformed_frames() {
     for round in [
         Request::Record { address: Address::of(b"r") },
         Request::Manifest { author: key(1).public() },
+        Request::Recovery { author: key(1).public() },
         Request::Pointers { author: key(1).public(), name: "home".into() },
         Request::Blob { address: Address::of(b"b"), offset: 7 },
         Request::Keep { record: vec![1, 2, 3] },
@@ -739,6 +741,7 @@ fn foreign() -> (SecretKey, Record, Record, Record) {
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     }
     .draft(&root.public(), T0)
     .sign(&root)
@@ -778,6 +781,7 @@ async fn reads_are_browser_only() {
     let mut c = w.client().await;
     refused(c.record(page.address()).await, "browser only");
     refused(c.manifest(root.public()).await, "browser only");
+    refused(c.recovery(root.public()).await, "browser only");
     refused(c.pointers(root.public(), "home").await, "browser only");
     refused(c.blob(Address::of(b"x")).await, "browser only");
     refused(c.keep(&manifest).await, "browser only");
@@ -833,6 +837,7 @@ async fn grants_cover_fetched_records_that_verify() {
         prev: Some(manifest.address()),
         devices: vec![],
         revoked: vec![key(8).public()],
+        guardians: None,
     }
     .draft(&root.public(), T0 + 5)
     .sign(&root)

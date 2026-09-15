@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weft_core::{Device, Manifest, PublicKey, SecretKey};
+use weft_core::{Device, Guardians, Manifest, PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
 use crate::fail::{Result, fail};
@@ -165,6 +165,7 @@ impl Home {
         &self,
         prev: Option<&Manifest>,
         prev_address: Option<weft_core::Address>,
+        guardians: Option<Guardians>,
     ) -> Result<Manifest> {
         let devices = self
             .devices()?
@@ -181,6 +182,7 @@ impl Home {
             prev: prev_address,
             devices,
             revoked: self.revoked()?,
+            guardians: guardians.or_else(|| prev.and_then(|p| p.guardians.clone())),
         };
         manifest.check(&self.root()?)?;
         Ok(manifest)

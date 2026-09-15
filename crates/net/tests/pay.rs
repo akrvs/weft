@@ -137,6 +137,7 @@ async fn stranger_pays_to_pin_and_sweep_drops_it() {
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     };
     let manifest_record = manifest.draft(&root.public(), 1_000).sign(&root).unwrap();
     let page_record = page(&root, &device, &[b'x'; 3000], 2_000);
@@ -247,6 +248,7 @@ async fn a_sponsor_pins_a_friends_page_and_the_sweep_keeps_the_friends_manifest(
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     };
     let manifest_record = manifest.draft(&root.public(), 1_000).sign(&root).unwrap();
     let page_record = page(&root, &device, b"a friend wrote this", 2_000);

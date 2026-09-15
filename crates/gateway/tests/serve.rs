@@ -491,6 +491,7 @@ async fn login_round_trip() {
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     };
     let manifest_record = manifest.draft(&root, 1).sign(&site.root).unwrap();
     let by_device = |c: &Challenge| Proof {
@@ -509,6 +510,7 @@ async fn login_round_trip() {
         prev: Some(manifest_record.address()),
         devices: vec![],
         revoked: vec![device.public()],
+        guardians: None,
     };
     Home::new(site.dir.clone())
         .store()

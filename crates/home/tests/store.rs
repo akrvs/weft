@@ -26,6 +26,7 @@ fn snapshots_see_every_writer_and_skip_files_that_lie() {
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     }
     .draft(&root.public(), 1)
     .sign(&root)

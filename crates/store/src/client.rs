@@ -132,6 +132,10 @@ impl Client {
         self.one(&Request::Manifest { author }).await
     }
 
+    pub async fn recovery(&mut self, author: PublicKey) -> Result<Option<Record>> {
+        self.one(&Request::Recovery { author }).await
+    }
+
     async fn one(&mut self, request: &Request) -> Result<Option<Record>> {
         match self.call(request).await? {
             Response::Get { record } => Ok(Some(Record::from_bytes(&record)?)),

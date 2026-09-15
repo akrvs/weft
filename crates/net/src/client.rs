@@ -164,6 +164,19 @@ impl Client {
         }
     }
 
+    pub async fn recovery(
+        &self,
+        relay: impl Into<EndpointAddr>,
+        author: PublicKey,
+    ) -> Result<Option<Record>> {
+        match self.call(relay, &Request::Recovery { author }).await? {
+            Response::Recovery { record } => {
+                Ok(record.map(|b| Record::from_bytes(&b)).transpose()?)
+            }
+            _ => Err(Error::Wire("unexpected response")),
+        }
+    }
+
     pub async fn head(
         &self,
         relay: impl Into<EndpointAddr>,

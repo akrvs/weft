@@ -9,7 +9,8 @@ use std::time::Duration;
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
-use weft_core::{Address, Body, Draft, Pointer, SecretKey};
+use weft_core::recovery::{self, Signature};
+use weft_core::{Address, Body, Draft, Guardians, Manifest, Pointer, Record, Recovery, SecretKey};
 use weft_home::{Home, Store};
 use weft_net::{Client, Pricing, Relay};
 use weft_resolve::{Error, Links, Resolver, Target};
@@ -188,6 +189,114 @@ async fn a_metered_handle_counts_only_pulled_bytes() {
     for d in site.dirs.iter().chain([&dir]) {
         let _ = std::fs::remove_dir_all(d);
     }
+}
+
+fn guarded(root: &SecretKey, guardian: &SecretKey) -> Record {
+    Manifest {
+        seq: 1,
+        prev: None,
+        devices: vec![],
+        revoked: vec![],
+        guardians: Some(Guardians { keys: vec![guardian.public()], threshold: 1 }),
+    }
+    .draft(&root.public(), 1_700_000_000)
+    .sign(root)
+    .unwrap()
+}
+
+fn recover(root: &SecretKey, to: &SecretKey, guardian: &SecretKey) -> Record {
+    let message = recovery::message(&root.public(), &to.public(), 1, &[]);
+    let sig =
+        Signature { key: guardian.public(), sig: guardian.sign_in(recovery::DOMAIN, &message) };
+    Recovery { to: to.public(), seq: 1, prev: vec![], sigs: vec![sig] }
+        .draft(&root.public(), 1_700_000_003)
+        .sign(to)
+        .unwrap()
+}
+
+fn home_page(author: &SecretKey, body: &[u8]) -> (Record, Record) {
+    let page = Draft {
+        author: author.public(),
+        signer: author.public(),
+        kind: "page".into(),
+        created: 1_700_000_001,
+        refs: vec![],
+        body: Body::Inline(body.to_vec()),
+    }
+    .sign(author)
+    .unwrap();
+    let pointer = Pointer { name: "home".into(), target: page.address(), seq: 1, prev: vec![] }
+        .draft(&author.public(), &author.public(), 1_700_000_002)
+        .sign(author)
+        .unwrap();
+    (page, pointer)
+}
+
+#[tokio::test]
+async fn a_recovered_author_redirects_to_the_new_root() {
+    let root = key(1);
+    let new = key(2);
+    let guardian = key(3);
+    let relay_dir = temp("relay-recovery");
+    let allow: HashSet<_> = [root.public(), new.public()].into_iter().collect();
+    let relay = Relay::open(endpoint(None).await, &relay_dir, allow, Pricing::default(), HOUR)
+        .await
+        .unwrap();
+    let router = relay.spawn();
+    let addr = router.endpoint().addr();
+    let publisher = Client::from_endpoint(endpoint(Some(&addr)).await);
+    let (old_page, old_pointer) = home_page(&root, b"# Old\n");
+    let (new_page, new_pointer) = home_page(&new, b"# New\n");
+    let records = [
+        guarded(&root, &guardian),
+        recover(&root, &new, &guardian),
+        old_page.clone(),
+        old_pointer,
+        new_page.clone(),
+        new_pointer,
+    ];
+    let outcome = publisher.put(addr.clone(), &records).await.unwrap();
+    assert_eq!(outcome.rejected, vec![], "{outcome:?}");
+    publisher.close().await;
+
+    let dir = temp("reader-recovery");
+    let home = Home::new(dir.clone());
+    let entry = weft_home::Relay { id: addr.id, addrs: addr.ip_addrs().copied().collect() };
+    home.add_relay(entry.to_string().parse().unwrap()).unwrap();
+    let store = home.store();
+    let resolver = Resolver::with_client(home, store, Client::from_endpoint(endpoint(None).await));
+    let target = Target::Named { author: root.public(), name: "home".into() };
+    let page = resolver.resolve(target, &LINKS).await.unwrap();
+    assert_eq!(page.author, new.public().address().to_string());
+    assert_eq!(page.address, new_page.address().to_string());
+    assert_eq!(resolver.offline().redirect(root.public()).await.unwrap(), new.public());
+    assert_eq!(resolver.redirect(new.public()).await.unwrap(), new.public());
+    let old = resolver.open(old_page.address(), &LINKS).await.unwrap();
+    assert_eq!(old.author, root.public().address().to_string());
+
+    router.shutdown().await.unwrap();
+    for d in [relay_dir, dir] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[tokio::test]
+async fn recovery_chains_stop_after_four_hops() {
+    let dir = temp("hops");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone());
+    let guardian = key(9);
+    let keys: Vec<SecretKey> = (1..=6).map(key).collect();
+    for pair in keys.windows(2).take(4) {
+        store.put(&guarded(&pair[0], &guardian)).unwrap();
+        store.put(&recover(&pair[0], &pair[1], &guardian)).unwrap();
+    }
+    assert_eq!(resolver.redirect(keys[0].public()).await.unwrap(), keys[4].public());
+    store.put(&guarded(&keys[4], &guardian)).unwrap();
+    store.put(&recover(&keys[4], &keys[5], &guardian)).unwrap();
+    assert!(matches!(resolver.redirect(keys[0].public()).await, Err(Error::Hops(_))));
+    assert_eq!(resolver.redirect(keys[1].public()).await.unwrap(), keys[5].public());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

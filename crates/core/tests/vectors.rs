@@ -174,3 +174,60 @@ fn login() {
     };
     assert!(proof.verify(service, now, Some(&older)).is_ok());
 }
+
+#[test]
+fn recovery() {
+    use weft_core::recovery::{self, Signature};
+    use weft_core::{Error, PublicKey, Recovery};
+    let v = load("recovery");
+    let plain = manifest();
+    let guarded_record = Record::from_bytes(&hex(v["manifest"]["hex"].as_str().unwrap())).unwrap();
+    assert_eq!(guarded_record.address().to_string(), v["manifest"]["address"].as_str().unwrap());
+    let guarded = Manifest::from_record(&guarded_record).unwrap();
+    let g = guarded.guardians.as_ref().unwrap();
+    assert_eq!(g.threshold, usize::try_from(v["threshold"].as_u64().unwrap()).unwrap());
+    let seeds: Vec<[u8; 32]> = v["guardian_seeds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| hex(s.as_str().unwrap()).try_into().unwrap())
+        .collect();
+    let mut expected: Vec<PublicKey> =
+        seeds.iter().map(|s| SecretKey::from_seed(*s).public()).collect();
+    expected.sort_unstable();
+    assert_eq!(g.keys, expected);
+    for r in v["records"].as_array().unwrap() {
+        let name = r["name"].as_str().unwrap();
+        let bytes = hex(r["hex"].as_str().unwrap());
+        let record = Record::from_bytes(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(record.to_bytes(), bytes, "{name}");
+        assert_eq!(record.address().to_string(), r["address"].as_str().unwrap(), "{name}");
+        let manifest = match r["manifest"].as_str() {
+            Some("guarded") => Some(&guarded),
+            Some("plain") => Some(&plain),
+            _ => None,
+        };
+        let result = verify(&record, manifest);
+        match r["error"].as_str() {
+            None => assert!(result.is_ok(), "{name}: {result:?}"),
+            Some(e) => assert_eq!(result.unwrap_err().to_string(), e, "{name}"),
+        }
+    }
+    let root = SecretKey::from_seed(hex(v["root_seed"].as_str().unwrap()).try_into().unwrap());
+    for m in v["bad_manifests"].as_array().unwrap() {
+        let decoded = Manifest::decode(&hex(m["hex"].as_str().unwrap()));
+        assert!(decoded.and_then(|m| m.check(&root.public())).is_err(), "{}", m["why"]);
+    }
+    let to = SecretKey::from_seed(hex(v["new_root_seed"].as_str().unwrap()).try_into().unwrap());
+    let message = recovery::message(&root.public(), &to.public(), 1, &[]);
+    assert_eq!(to_hex(&message), v["message"].as_str().unwrap());
+    let sigs = seeds
+        .iter()
+        .map(|s| SecretKey::from_seed(*s))
+        .map(|k| Signature { key: k.public(), sig: k.sign_in(recovery::DOMAIN, &message) })
+        .take(1)
+        .collect();
+    let one = Recovery { to: to.public(), seq: 1, prev: vec![], sigs };
+    let record = one.draft(&root.public(), 5).sign(&to).unwrap();
+    assert_eq!(verify(&record, Some(&guarded)).unwrap_err(), Error::Threshold);
+}

@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
-use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, verify};
+use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, Recovery, verify};
 use weft_home::{Home, Reads, Relay, Store};
 use weft_net::Client;
 
@@ -15,6 +15,7 @@ use crate::render::{Links, render};
 use crate::target::Target;
 
 pub const RELAY_TIMEOUT: Duration = Duration::from_secs(5);
+pub const MAX_HOPS: usize = 4;
 pub const BLOB_TIMEOUT: Duration = weft_home::store::PART_TTL;
 pub const DOH_ENV: &str = "WEFT_DOH";
 
@@ -248,7 +249,53 @@ impl<R: Reads> Resolver<R> {
         Err(Error::NotFound(address))
     }
 
+    pub async fn recovery(&self, author: &PublicKey) -> Result<Option<PublicKey>> {
+        let manifest = self.manifest(author).await?;
+        let mut candidates: Vec<(Record, Recovery)> = Vec::new();
+        let mut consider = |record: Record| {
+            if record.author() == author
+                && verify(&record, manifest.as_ref()).is_ok()
+                && let Ok(recovery) = Recovery::from_record(&record)
+            {
+                candidates.push((record, recovery));
+            }
+        };
+        if let Some(record) = self.reads().recovery(*author).await? {
+            consider(record);
+        }
+        if let Some((client, relays)) = self.relays().await? {
+            for relay in &relays {
+                if let Ok(Ok(Some(record))) =
+                    timeout(RELAY_TIMEOUT, client.recovery(relay, *author)).await
+                {
+                    consider(self.pulled(record));
+                }
+            }
+        }
+        let Some((record, recovery)) = Recovery::head(candidates.iter().map(|(r, v)| (r, v)))
+        else {
+            return Ok(None);
+        };
+        self.reads().keep(record).await?;
+        Ok(Some(recovery.to))
+    }
+
+    pub async fn redirect(&self, author: PublicKey) -> Result<PublicKey> {
+        let mut current = author;
+        for _ in 0..MAX_HOPS {
+            match self.recovery(&current).await? {
+                Some(to) => current = to,
+                None => return Ok(current),
+            }
+        }
+        if self.recovery(&current).await?.is_some() {
+            return Err(Error::Hops(author.address()));
+        }
+        Ok(current)
+    }
+
     pub async fn head(&self, author: PublicKey, name: &str) -> Result<Address> {
+        let author = self.redirect(author).await?;
         let manifest = self.manifest(&author).await?;
         let mut best: Option<(Record, Pointer)> = None;
         if let Some((client, relays)) = self.relays().await? {

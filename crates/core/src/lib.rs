@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod pointer;
 pub mod receipt;
 pub mod record;
+pub mod recovery;
 pub mod verify;
 
 pub use address::Address;
@@ -17,10 +18,11 @@ pub use error::Error;
 pub use grant::{Access, Grant, Revoke};
 pub use identity::{PublicKey, SecretKey};
 pub use login::{Challenge, Login, Proof};
-pub use manifest::{Device, Manifest};
+pub use manifest::{Device, Guardians, Manifest};
 pub use pointer::Pointer;
 pub use receipt::{Payment, Receipt, Voucher};
 pub use record::{Body, Draft, Record};
+pub use recovery::Recovery;
 pub use verify::{Verified, verify};
 
 pub type Result<T> = core::result::Result<T, Error>;

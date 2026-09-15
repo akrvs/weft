@@ -321,7 +321,7 @@ async fn page(
                 Error::NotFound(_) | Error::NoPointer(_) => {
                     return missing(&e.to_string(), hint);
                 }
-                Error::Dns(_) | Error::Binding(_) => StatusCode::NOT_FOUND,
+                Error::Dns(_) | Error::Binding(_) | Error::Hops(_) => StatusCode::NOT_FOUND,
                 Error::Core(_) | Error::Net(_) | Error::Text | Error::Blob(_) => {
                     StatusCode::BAD_GATEWAY
                 }

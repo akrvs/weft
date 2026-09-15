@@ -132,6 +132,7 @@ fn answer(gate: &Gate, app: &PublicKey, request: Request) -> Response {
         }
         Request::Record { address } => gate.record(app, address).map(found),
         Request::Manifest { author } => gate.manifest(app, &author).map(found),
+        Request::Recovery { author } => gate.recovery(app, &author).map(found),
         Request::Pointers { author, name } => gate.pointers(app, &author, &name).map(|records| {
             Response::Records { records: records.iter().map(Record::to_bytes).collect() }
         }),

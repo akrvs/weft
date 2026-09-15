@@ -2,9 +2,10 @@
 
 use serde_json::{Value, json};
 use weft_core::cbor::Value as Cbor;
+use weft_core::recovery::{self, Signature};
 use weft_core::{
-    Access, Address, Body, Challenge, Device, Draft, Grant, Manifest, Payment, Pointer, Proof,
-    Receipt, Record, Revoke, SecretKey, Voucher, verify,
+    Access, Address, Body, Challenge, Device, Draft, Grant, Guardians, Manifest, Payment, Pointer,
+    Proof, Receipt, Record, Recovery, Revoke, SecretKey, Voucher, verify,
 };
 
 fn hex(b: &[u8]) -> String {
@@ -118,6 +119,7 @@ fn main() {
             expires: Some(1_788_000_000),
         }],
         revoked: vec![stranger.public()],
+        guardians: None,
     };
     let manifest_record = manifest.draft(&root.public(), 1_756_000_000).sign(root).unwrap();
     let page = |signer: &SecretKey, created: u64| {
@@ -395,10 +397,11 @@ fn main() {
         login: login.clone(),
         manifest: manifest.cloned(),
     };
-    let other_manifest = Manifest { seq: 1, prev: None, devices: vec![], revoked: vec![] }
-        .draft(&keys[3].public(), at)
-        .sign(&keys[3])
-        .unwrap();
+    let other_manifest =
+        Manifest { seq: 1, prev: None, devices: vec![], revoked: vec![], guardians: None }
+            .draft(&keys[3].public(), at)
+            .sign(&keys[3])
+            .unwrap();
     let proof_entry = |name: &str, p: &Proof, service: &str, now: u64| {
         let result = p.verify(service, now, None);
         json!({
@@ -450,6 +453,113 @@ fn main() {
                 proof_entry("wrong service", &proof(&by_device, Some(&manifest_record)), "http://127.0.0.1:8081", at + 1),
                 proof_entry("expired", &proof(&by_device, Some(&manifest_record)), service, at + 300),
                 proof_entry("not a login record", &proof(&page(root, at), None), service, at + 1),
+            ]
+        }),
+    );
+
+    let guardians: Vec<&SecretKey> = {
+        let mut g = vec![&keys[4], &keys[5], &keys[6]];
+        g.sort_by_key(|k| k.public());
+        g
+    };
+    let new_root = &keys[3];
+    let guarded = Manifest {
+        seq: 2,
+        prev: Some(manifest_record.address()),
+        guardians: Some(Guardians {
+            keys: guardians.iter().map(|k| k.public()).collect(),
+            threshold: 2,
+        }),
+        ..manifest.clone()
+    };
+    let guarded_record = guarded.draft(&root.public(), at).sign(root).unwrap();
+    let recover = |to: &SecretKey, seq: u64, signers: &[&SecretKey], signer: &SecretKey| {
+        let msg = recovery::message(&root.public(), &to.public(), seq, &[]);
+        let mut sigs: Vec<Signature> = signers
+            .iter()
+            .map(|k| Signature { key: k.public(), sig: k.sign_in(recovery::DOMAIN, &msg) })
+            .collect();
+        sigs.sort_by_key(|s| s.key);
+        let r = Recovery { to: to.public(), seq, prev: vec![], sigs };
+        let mut d = r.draft(&root.public(), at + 10);
+        d.signer = signer.public();
+        d.sign(signer).unwrap()
+    };
+    let raw_recovery = |body: Cbor, signer: &SecretKey| {
+        Draft {
+            author: root.public(),
+            signer: signer.public(),
+            kind: "recovery".into(),
+            created: at + 10,
+            refs: vec![],
+            body: Body::Inline(body.encode()),
+        }
+        .sign(signer)
+        .unwrap()
+    };
+    let sig_map = |k: &SecretKey, msg: &[u8]| {
+        Cbor::Map(vec![
+            ("key".into(), Cbor::Bytes(k.public().bytes().to_vec())),
+            ("sig".into(), Cbor::Bytes(k.sign_in(recovery::DOMAIN, msg).to_vec())),
+        ])
+    };
+    let body_with = |to: &SecretKey, sigs: Vec<Cbor>| {
+        Cbor::Map(vec![
+            ("prev".into(), Cbor::Array(vec![])),
+            ("seq".into(), Cbor::Uint(1)),
+            ("sigs".into(), Cbor::Array(sigs)),
+            ("to".into(), Cbor::Bytes(to.public().bytes().to_vec())),
+        ])
+    };
+    let msg = recovery::message(&root.public(), &new_root.public(), 1, &[]);
+    let valid = recover(new_root, 1, &guardians[..2], new_root);
+    let mut tampered_body = Recovery::from_record(&valid).unwrap();
+    tampered_body.sigs[0].sig[0] ^= 1;
+    let tampered =
+        raw_recovery(weft_core::cbor::decode(&tampered_body.encode()).unwrap(), new_root);
+    let many: Vec<SecretKey> = (100u8..117).map(|n| SecretKey::from_seed([n; 32])).collect();
+    let mut many_sigs: Vec<Cbor> = many.iter().map(|k| sig_map(k, &msg)).collect();
+    many_sigs.sort_by_key(Cbor::encode);
+    let entry_with = |name: &str, record: &Record, manifest: Option<&Manifest>| {
+        let mut e = entry(name, record, manifest);
+        e["manifest"] =
+            json!(manifest.map(|m| if m.guardians.is_some() { "guarded" } else { "plain" }));
+        e
+    };
+    write(
+        "recovery",
+        &json!({
+            "root_seed": hex(&seeds[0]),
+            "new_root_seed": hex(&seeds[3]),
+            "guardian_seeds": [hex(&seeds[4]), hex(&seeds[5]), hex(&seeds[6])],
+            "threshold": 2,
+            "message": hex(&msg),
+            "manifest": { "hex": hex(&guarded_record.to_bytes()), "address": guarded_record.address().to_string() },
+            "records": [
+                entry_with("guarded manifest self-signed", &guarded_record, None),
+                entry_with("recovery at threshold", &valid, Some(&guarded)),
+                entry_with("recovery by every guardian", &recover(new_root, 1, &guardians, new_root), Some(&guarded)),
+                entry_with("recovery below threshold", &recover(new_root, 1, &guardians[..1], new_root), Some(&guarded)),
+                entry_with("recovery without manifest", &valid, None),
+                entry_with("recovery against a manifest without guardians", &valid, Some(&manifest)),
+                entry_with("recovery with a stranger", &recover(new_root, 1, &[guardians[0], stranger], new_root), Some(&guarded)),
+                entry_with("recovery signed by the old root", &recover(new_root, 1, &guardians[..2], root), Some(&guarded)),
+                entry_with("recovery to the old root", &recover(root, 1, &guardians[..2], root), Some(&guarded)),
+                entry_with("recovery to another key", &raw_recovery(body_with(device, vec![sig_map(guardians[0], &msg), sig_map(guardians[1], &msg)]), new_root), Some(&guarded)),
+                entry_with("recovery with a tampered guardian signature", &tampered, Some(&guarded)),
+                entry_with("recovery with a duplicate guardian", &raw_recovery(body_with(new_root, vec![sig_map(guardians[0], &msg), sig_map(guardians[0], &msg)]), new_root), Some(&guarded)),
+                entry_with("recovery with unsorted guardians", &raw_recovery(body_with(new_root, vec![sig_map(guardians[1], &msg), sig_map(guardians[0], &msg)]), new_root), Some(&guarded)),
+                entry_with("recovery with no signatures", &raw_recovery(body_with(new_root, vec![]), new_root), Some(&guarded)),
+                entry_with("recovery with seventeen signatures", &raw_recovery(body_with(new_root, many_sigs), new_root), Some(&guarded)),
+                entry_with("recovery with an unknown field", &raw_recovery(Cbor::Map(vec![("note".into(), Cbor::Text("x".into()))]), new_root), Some(&guarded)),
+            ],
+            "bad_manifests": [
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: vec![keys[6].public(), keys[4].public()], threshold: 1 }), ..guarded.clone() }.encode()), "why": "unsorted guardians" },
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: vec![root.public()], threshold: 1 }), ..guarded.clone() }.encode()), "why": "root as guardian" },
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: vec![keys[4].public()], threshold: 0 }), ..guarded.clone() }.encode()), "why": "zero threshold" },
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: vec![keys[4].public()], threshold: 2 }), ..guarded.clone() }.encode()), "why": "threshold above count" },
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: vec![], threshold: 1 }), ..guarded.clone() }.encode()), "why": "no guardians with a threshold" },
+                { "hex": hex(&Manifest { guardians: Some(Guardians { keys: many.iter().map(SecretKey::public).collect::<std::collections::BTreeSet<_>>().into_iter().collect(), threshold: 1 }), ..guarded.clone() }.encode()), "why": "seventeen guardians" },
             ]
         }),
     );

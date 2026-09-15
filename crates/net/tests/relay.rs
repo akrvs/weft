@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr};
-use weft_core::{Address, Body, Device, Draft, Manifest, Pointer, SecretKey, verify};
+use weft_core::recovery::{self, Signature};
+use weft_core::{
+    Address, Body, Device, Draft, Guardians, Manifest, Pointer, Recovery, SecretKey, verify,
+};
 use weft_net::{Client, Pricing, Relay};
 
 async fn endpoint() -> Endpoint {
@@ -65,6 +68,66 @@ fn rand_suffix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
+fn guarded(root: &SecretKey, guardians: &[&SecretKey], created: u64) -> weft_core::Record {
+    let mut keys: Vec<_> = guardians.iter().map(|k| k.public()).collect();
+    keys.sort_unstable();
+    Manifest {
+        seq: 1,
+        prev: None,
+        devices: vec![],
+        revoked: vec![],
+        guardians: Some(Guardians { keys, threshold: 1 }),
+    }
+    .draft(&root.public(), created)
+    .sign(root)
+    .unwrap()
+}
+
+fn recover(
+    root: &SecretKey,
+    to: &SecretKey,
+    seq: u64,
+    prev: Vec<Address>,
+    guardian: &SecretKey,
+    created: u64,
+) -> weft_core::Record {
+    let message = recovery::message(&root.public(), &to.public(), seq, &prev);
+    let sig =
+        Signature { key: guardian.public(), sig: guardian.sign_in(recovery::DOMAIN, &message) };
+    Recovery { to: to.public(), seq, prev, sigs: vec![sig] }
+        .draft(&root.public(), created)
+        .sign(to)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn recovery_heads_are_served_and_superseded() {
+    let root = key(1);
+    let g1 = key(5);
+    let g2 = key(6);
+    let net = Net::start(&[&root]).await;
+    let a = Client::from_endpoint(endpoint().await);
+    let first = recover(&root, &key(2), 1, vec![], &g1, 2_000);
+    let stranger = recover(&root, &key(2), 1, vec![], &key(9), 2_000);
+    let outcome = a
+        .put(net.addr.clone(), &[first.clone(), guarded(&root, &[&g1, &g2], 1_000), stranger])
+        .await
+        .unwrap();
+    assert_eq!(outcome.stored.len(), 2, "{outcome:?}");
+    assert!(outcome.rejected.iter().any(|(i, why)| *i == 2 && why.contains("not authorized")));
+    assert_eq!(a.recovery(net.addr.clone(), root.public()).await.unwrap().unwrap(), first);
+
+    let second = recover(&root, &key(3), 2, vec![first.address()], &g2, 1_500);
+    let stale = recover(&root, &key(4), 1, vec![], &g1, 9_000);
+    let outcome = a.put(net.addr.clone(), &[stale, second.clone()]).await.unwrap();
+    assert_eq!(outcome.rejected, vec![], "{outcome:?}");
+    assert_eq!(a.recovery(net.addr.clone(), root.public()).await.unwrap().unwrap(), second);
+    assert!(a.recovery(net.addr.clone(), key(7).public()).await.unwrap().is_none());
+
+    a.close().await;
+    net.stop().await;
+}
+
 #[tokio::test]
 async fn publish_fetch_and_resolve_across_two_clients() {
     let root = key(1);
@@ -84,6 +147,7 @@ async fn publish_fetch_and_resolve_across_two_clients() {
             expires: None,
         }],
         revoked: vec![],
+        guardians: None,
     };
     let manifest_record = manifest.draft(&root.public(), 1_000).sign(&root).unwrap();
     let page_record = page(&root, &device, b"<h1>weft</h1>", 2_000);
@@ -133,6 +197,7 @@ async fn publish_fetch_and_resolve_across_two_clients() {
         prev: Some(manifest_record.address()),
         devices: vec![],
         revoked: vec![device.public()],
+        guardians: None,
     };
     let revoking_record = revoking.draft(&root.public(), 3_000).sign(&root).unwrap();
     a.put(net.addr.clone(), &[revoking_record]).await.unwrap();

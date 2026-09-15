@@ -1,6 +1,6 @@
 use crate::{
-    Address, Challenge, Error, Grant, Manifest, Pointer, Receipt, Record, Result, Revoke, grant,
-    login, manifest, pointer, receipt,
+    Address, Challenge, Error, Grant, Manifest, Pointer, Receipt, Record, Recovery, Result, Revoke,
+    grant, login, manifest, pointer, receipt, recovery,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,9 +32,14 @@ pub fn verify(record: &Record, manifest: Option<&Manifest>) -> Result<Verified> 
         login::KIND => {
             Challenge::from_record(record)?;
         }
+        recovery::KIND => {
+            let recovery = Recovery::from_record(record)?;
+            let manifest = manifest.ok_or(Error::Unauthorized)?;
+            recovery.authorize(record.author(), manifest)?;
+        }
         _ => {}
     }
-    if !record.self_signed() {
+    if !record.self_signed() && record.kind() != recovery::KIND {
         let manifest = manifest.ok_or(Error::Unauthorized)?;
         manifest.authorizes(record.signer(), record.created())?;
     }

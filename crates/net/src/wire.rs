@@ -16,6 +16,7 @@ pub enum Request {
     Put { records: Vec<Vec<u8>> },
     Get { address: Address },
     Head { author: PublicKey, name: String },
+    Recovery { author: PublicKey },
     Price,
     Size { address: Address },
     Invoice { cents: u64 },
@@ -26,6 +27,7 @@ pub enum Response {
     Put { stored: Vec<Address>, rejected: Vec<(u64, String)> },
     Get { record: Option<Vec<u8>> },
     Head { pointer: Option<Vec<u8>>, manifest: Option<Vec<u8>> },
+    Recovery { record: Option<Vec<u8>> },
     Price { rate: u64, banks: Vec<PublicKey>, sats: u64 },
     Size { bytes: Option<u64> },
     Invoice { bolt11: String, hash: [u8; 32], expires: u64 },
@@ -60,6 +62,10 @@ impl Request {
                 ("author".to_owned(), bytes32(author.bytes())),
                 ("name".to_owned(), Value::Text(name.clone())),
                 ("t".to_owned(), Value::Text("head".to_owned())),
+            ],
+            Self::Recovery { author } => vec![
+                ("author".to_owned(), bytes32(author.bytes())),
+                ("t".to_owned(), Value::Text("recovery".to_owned())),
             ],
             Self::Price => vec![("t".to_owned(), Value::Text("price".to_owned()))],
             Self::Size { address } => {
@@ -114,6 +120,12 @@ impl Request {
                 }
                 Ok(Self::Head { author, name })
             }
+            "recovery" => {
+                cbor::only(m, &["author", "t"])?;
+                let author =
+                    PublicKey::from_bytes(&cbor::bytes32(cbor::field(m, "author")?, "author")?)?;
+                Ok(Self::Recovery { author })
+            }
             "price" => {
                 cbor::only(m, &["t"])?;
                 Ok(Self::Price)
@@ -160,6 +172,13 @@ impl Response {
             ],
             Self::Get { record } => {
                 let mut m = vec![("t".to_owned(), Value::Text("get".to_owned()))];
+                m.extend(
+                    opt_bytes(record.as_ref()).into_iter().map(|(_, v)| ("record".to_owned(), v)),
+                );
+                m
+            }
+            Self::Recovery { record } => {
+                let mut m = vec![("t".to_owned(), Value::Text("recovery".to_owned()))];
                 m.extend(
                     opt_bytes(record.as_ref()).into_iter().map(|(_, v)| ("record".to_owned(), v)),
                 );
@@ -241,6 +260,10 @@ impl Response {
             "get" => {
                 cbor::only(m, &["record", "t"])?;
                 Ok(Self::Get { record: bytes("record").transpose()? })
+            }
+            "recovery" => {
+                cbor::only(m, &["record", "t"])?;
+                Ok(Self::Recovery { record: bytes("record").transpose()? })
             }
             "head" => {
                 cbor::only(m, &["manifest", "pointer", "t"])?;

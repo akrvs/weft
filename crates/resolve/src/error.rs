@@ -2,6 +2,8 @@ use core::fmt;
 
 use weft_core::Address;
 
+use crate::resolver::MAX_HOPS;
+
 #[derive(Debug)]
 pub enum Error {
     Core(weft_core::Error),
@@ -14,6 +16,7 @@ pub enum Error {
     Blob(Address),
     NoPointer(String),
     Text,
+    Hops(Address),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -31,6 +34,7 @@ impl fmt::Display for Error {
             Self::Blob(address) => write!(f, "blob {address} does not hash to its address"),
             Self::NoPointer(name) => write!(f, "no valid pointer named {name}"),
             Self::Text => f.write_str("page body is not utf-8"),
+            Self::Hops(author) => write!(f, "{author} recovered more than {MAX_HOPS} times"),
         }
     }
 }

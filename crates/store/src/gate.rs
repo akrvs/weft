@@ -284,6 +284,11 @@ impl Gate {
         Ok(self.home.store().snapshot()?.manifest_record(author).map(|r| r.to_bytes()))
     }
 
+    pub fn recovery(&self, app: &PublicKey, author: &PublicKey) -> Result<Option<Vec<u8>>> {
+        self.privileged(app)?;
+        Ok(self.home.store().snapshot()?.recovery_record(author).map(|r| r.to_bytes()))
+    }
+
     pub fn pointers(&self, app: &PublicKey, author: &PublicKey, name: &str) -> Result<Vec<Record>> {
         self.privileged(app)?;
         let snap = self.home.store().snapshot()?;

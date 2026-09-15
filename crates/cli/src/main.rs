@@ -481,7 +481,8 @@ fn manifest(home: &Home, store: &Store) -> Result<()> {
         .filter(|r| r.author() == &root && r.kind() == weft_core::manifest::KIND)
         .filter_map(|r| Manifest::from_record(&r).ok().map(|m| (r.address(), m)))
         .max_by_key(|(_, m)| m.seq);
-    let next = home.manifest(prev.as_ref().map(|(_, m)| m), prev.as_ref().map(|(a, _)| *a))?;
+    let next =
+        home.manifest(prev.as_ref().map(|(_, m)| m), prev.as_ref().map(|(a, _)| *a), None)?;
     let key = home.open(ROOT, &home::passphrase(false)?)?;
     let created = home::now()?;
     let record = next.draft(&root, created).sign(&key)?;

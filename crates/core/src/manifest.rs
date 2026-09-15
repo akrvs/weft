@@ -5,6 +5,7 @@ use crate::{Address, Draft, Error, PublicKey, Record, Result};
 pub const KIND: &str = "manifest";
 pub const MAX_DEVICES: usize = 256;
 pub const MAX_LABEL: usize = 64;
+pub const MAX_GUARDIANS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
@@ -15,17 +16,35 @@ pub struct Device {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guardians {
+    pub keys: Vec<PublicKey>,
+    pub threshold: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub seq: u64,
     pub prev: Option<Address>,
     pub devices: Vec<Device>,
     pub revoked: Vec<PublicKey>,
+    pub guardians: Option<Guardians>,
 }
 
 impl Manifest {
     pub fn check(&self, root: &PublicKey) -> Result<()> {
         if self.devices.len() > MAX_DEVICES || self.revoked.len() > MAX_DEVICES {
             return Err(Error::Limit("devices"));
+        }
+        if let Some(g) = &self.guardians {
+            if g.keys.is_empty() || g.keys.len() > MAX_GUARDIANS {
+                return Err(Error::Limit("guardians"));
+            }
+            if !strictly_sorted(g.keys.iter()) || g.keys.binary_search(root).is_ok() {
+                return Err(Error::Field("guardians"));
+            }
+            if g.threshold == 0 || g.threshold > g.keys.len() {
+                return Err(Error::Field("threshold"));
+            }
         }
         if !strictly_sorted(self.devices.iter().map(|d| &d.key)) {
             return Err(Error::Field("devices"));
@@ -92,6 +111,13 @@ impl Manifest {
             ),
             ("seq".to_owned(), Value::Uint(self.seq)),
         ];
+        if let Some(g) = &self.guardians {
+            m.push((
+                "guardians".to_owned(),
+                Value::Array(g.keys.iter().map(|k| Value::Bytes(k.bytes().to_vec())).collect()),
+            ));
+            m.push(("threshold".to_owned(), Value::Uint(g.threshold as u64)));
+        }
         if let Some(p) = self.prev {
             m.push(("prev".to_owned(), Value::Bytes(p.bytes().to_vec())));
         }
@@ -101,8 +127,22 @@ impl Manifest {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let value = cbor::decode(body)?;
         let m = value.as_map().ok_or(Error::Encoding("manifest is not a map"))?;
-        cbor::only(m, &["devices", "prev", "revoked", "seq"])?;
+        cbor::only(m, &["devices", "guardians", "prev", "revoked", "seq", "threshold"])?;
         let seq = cbor::field(m, "seq")?.as_uint().ok_or(Error::Field("seq"))?;
+        let guardians = match (cbor::optional(m, "guardians"), cbor::optional(m, "threshold")) {
+            (None, None) => None,
+            (Some(g), Some(t)) => Some(Guardians {
+                keys: g
+                    .as_array()
+                    .ok_or(Error::Field("guardians"))?
+                    .iter()
+                    .map(|v| cbor::bytes32(v, "guardians").and_then(|b| PublicKey::from_bytes(&b)))
+                    .collect::<Result<Vec<_>>>()?,
+                threshold: usize::try_from(t.as_uint().ok_or(Error::Field("threshold"))?)
+                    .map_err(|_| Error::Field("threshold"))?,
+            }),
+            _ => return Err(Error::Field("threshold")),
+        };
         let prev = match cbor::optional(m, "prev") {
             Some(v) => Some(Address::hash(cbor::bytes32(v, "prev")?)),
             None => None,
@@ -119,7 +159,7 @@ impl Manifest {
             .iter()
             .map(|v| cbor::bytes32(v, "revoked").and_then(|b| PublicKey::from_bytes(&b)))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { seq, prev, devices, revoked })
+        Ok(Self { seq, prev, devices, revoked, guardians })
     }
 
     pub fn draft(&self, root: &PublicKey, created: u64) -> Draft {

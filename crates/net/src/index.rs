@@ -5,13 +5,14 @@ use redb::{
     Database, MultimapTable, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
     ReadableTable, ReadableTableMetadata, Table, TableDefinition, WriteTransaction,
 };
-use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record};
+use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, Recovery};
 
 use crate::{Error, Result};
 
 const RECORDS: TableDefinition<&[u8; 32], &[u8]> = TableDefinition::new("records");
 const HEADS: TableDefinition<&[u8], &[u8; 32]> = TableDefinition::new("heads");
 const MANIFESTS: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("manifests");
+const RECOVERIES: TableDefinition<&[u8; 32], &[u8; 32]> = TableDefinition::new("recoveries");
 const PINS: TableDefinition<&[u8; 32], (u64, &[u8; 32])> = TableDefinition::new("pins");
 const SPENT: TableDefinition<&[u8; 32], ()> = TableDefinition::new("spent");
 const INVOICES: TableDefinition<&[u8; 32], (u64, u64)> = TableDefinition::new("invoices");
@@ -68,6 +69,7 @@ impl Index {
             let store = tx.open_table(RECORDS)?;
             tx.open_table(HEADS)?;
             tx.open_table(MANIFESTS)?;
+            tx.open_table(RECOVERIES)?;
             tx.open_table(PINS)?;
             tx.open_table(SPENT)?;
             tx.open_table(INVOICES)?;
@@ -105,6 +107,17 @@ impl Index {
         drop(table);
         drop(tx);
         Ok(self.record(&addr)?.and_then(|r| Manifest::from_record(&r).ok().map(|m| (r, m))))
+    }
+
+    pub fn recovery(&self, author: &PublicKey) -> Result<Option<Record>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(RECOVERIES)?;
+        let Some(addr) = table.get(author.bytes())?.map(|v| Address::hash(*v.value())) else {
+            return Ok(None);
+        };
+        drop(table);
+        drop(tx);
+        self.record(&addr)
     }
 
     pub fn head(&self, author: &PublicKey, name: &str) -> Result<Option<Record>> {
@@ -213,6 +226,7 @@ struct Tables<'a> {
     store: Records<'a>,
     heads: Heads<'a>,
     manifests: Manifests<'a>,
+    recoveries: Manifests<'a>,
     authors: Authors<'a>,
     blobs: Blobs<'a>,
 }
@@ -240,6 +254,7 @@ impl<'a> Tables<'a> {
             store: tx.open_table(RECORDS)?,
             heads: tx.open_table(HEADS)?,
             manifests: tx.open_table(MANIFESTS)?,
+            recoveries: tx.open_table(RECOVERIES)?,
             authors: tx.open_multimap_table(AUTHORS)?,
             blobs: tx.open_table(BLOBS)?,
         })
@@ -275,6 +290,19 @@ impl<'a> Tables<'a> {
                 self.heads.insert(key.as_slice(), address.bytes())?;
             }
         }
+        if let Ok(v) = Recovery::from_record(record) {
+            let current =
+                self.recoveries.get(record.author().bytes())?.map(|v| Address::hash(*v.value()));
+            let current = match current {
+                Some(a) => stored(&self.store, &a)?
+                    .and_then(|r| Recovery::from_record(&r).ok().map(|w| (r, w))),
+                None => None,
+            };
+            if current.as_ref().is_none_or(|(r, w)| Recovery::compare((record, &v), (r, w)).is_gt())
+            {
+                self.recoveries.insert(record.author().bytes(), address.bytes())?;
+            }
+        }
         Ok(())
     }
 
@@ -286,6 +314,9 @@ impl<'a> Tables<'a> {
         }
         if self.manifests.get(author)?.is_some_and(|m| dropped.contains(m.value())) {
             self.manifests.remove(author)?;
+        }
+        if self.recoveries.get(author)?.is_some_and(|m| dropped.contains(m.value())) {
+            self.recoveries.remove(author)?;
         }
         let lower: &[u8] = author;
         let upper = after(author);

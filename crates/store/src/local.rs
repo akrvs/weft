@@ -71,6 +71,10 @@ impl Reads for Local {
         Ok(self.call(async |c| c.manifest(author).await).await?)
     }
 
+    async fn recovery(&self, author: PublicKey) -> weft_home::Result<Option<Record>> {
+        Ok(self.call(async |c| c.recovery(author).await).await?)
+    }
+
     async fn pointers(&self, author: PublicKey, name: &str) -> weft_home::Result<Vec<Record>> {
         Ok(self.call(async |c| c.pointers(author, name).await).await?)
     }
