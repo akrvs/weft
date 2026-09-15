@@ -13,8 +13,7 @@ use iroh::SecretKey;
 use tokio::signal::unix::{SignalKind, signal};
 use weft_core::{Address, PublicKey};
 use weft_net::{Fake, Net, Node, Pricing, Relay};
-
-mod lnd;
+use weft_relay::lnd;
 
 #[derive(Parser, Debug)]
 #[command(name = "weft-relay", version, about = "A cache with a contract")]

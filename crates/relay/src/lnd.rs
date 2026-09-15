@@ -1,7 +1,13 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use data_encoding::{BASE64, HEXLOWER};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{CertificateError, DigitallySignedStruct, SignatureScheme};
 use serde::Deserialize;
 use weft_net::node::{Invoice, Issued, Node};
 use weft_net::wire::MAX_BOLT11;
@@ -14,6 +20,65 @@ pub struct Lnd {
     url: String,
     macaroon: String,
     client: reqwest::Client,
+}
+
+#[derive(Debug)]
+struct Pinned {
+    cert: CertificateDer<'static>,
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if end_entity.as_ref() == self.cert.as_ref() {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(CertificateError::ApplicationVerificationFailure))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
+pub fn pinned(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
+    let cert = CertificateDer::from_pem_slice(pem).map_err(|e| format!("lnd.pem: {e}"))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let algorithms = provider.signature_verification_algorithms;
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map(|b| {
+            b.dangerous()
+                .with_custom_certificate_verifier(Arc::new(Pinned { cert, algorithms }))
+                .with_no_client_auth()
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -32,10 +97,8 @@ impl Lnd {
             .map_err(|e| format!("lnd.macaroon: {e}"))
             .map(|bytes| HEXLOWER.encode(&bytes))?;
         let pem = std::fs::read(dir.join("lnd.pem")).map_err(|e| format!("lnd.pem: {e}"))?;
-        let cert = reqwest::Certificate::from_pem(&pem).map_err(|e| format!("lnd.pem: {e}"))?;
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
-            .tls_certs_only([cert])
+            .use_preconfigured_tls(pinned(&pem)?)
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)
@@ -84,6 +147,13 @@ impl Node for Lnd {
     }
 }
 
-fn net(e: impl std::fmt::Display) -> weft_net::Error {
-    weft_net::Error::Net(e.to_string())
+fn net(e: impl std::error::Error) -> weft_net::Error {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(inner) = source {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    weft_net::Error::Net(text)
 }
