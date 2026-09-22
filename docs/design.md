@@ -61,20 +61,20 @@ ships all three in a single client.
 
 ## Layers
 
-| Layer | Name | At 0.1 |
+| Layer | Name | Status |
 |---|---|---|
 | L7 | Applications: the browser, later feeds and publishing tools | browser shipped |
 | L6 | Payments: signed receipts, settlement through any rail | shipped, two rails, relays only |
 | L5 | Personal store: the user's log plus scoped, revocable grants | shipped |
-| L4 | Naming: petnames, DNS bridged names, pluggable registries | raw and DNS shipped, petnames deferred |
+| L4 | Naming: petnames, DNS bridged names, pluggable registries | raw, DNS, and petnames shipped |
 | L3 | Delivery: DHT discovery, relays, direct peers | relays shipped, DHT and gossip deferred |
 | L2 | Content: signed, content addressed records and pointers | shipped |
 | L1 | Identity: keypairs, device subkeys, rotation, claims | keys, devices, recovery shipped; rotation and claims deferred |
 | L0 | Transport: IP, QUIC, TLS 1.3 | reused |
 
-### Status at 0.1
+### Status
 
-Every promise this document makes, against the code at `v0.1.0`. Shipped
+Every promise this document makes, against the code on `main`. Shipped
 means the rule is in `protocol.md` or `relay.md` and a test exercises it.
 Partial means part of the promise. Deferred means no code and a row in
 `progress/BACKLOG.md`.
@@ -89,7 +89,7 @@ Partial means part of the promise. Deferred means no code and a row in
 | Selective disclosure claims | deferred | login proves the key alone, `protocol.md` 12 |
 | Raw addresses with a version byte and checksum | shipped | `protocol.md` 3 |
 | DNS bridged names over DNSSEC or DoH | shipped | `_weft` TXT over DoH, `weft-resolve` |
-| Petnames | deferred | kind reserved, `protocol.md` 9 |
+| Petnames | shipped | `protocol.md` 14; the reader's own list, import only |
 | Relays as caches with a contract | shipped | `relay.md`, `weft-net`, `weft-relay` |
 | Direct peers | partial | relays dialed by address, mDNS on a LAN; readers never dial each other |
 | DHT discovery of hashes and keys | deferred | iroh discovery finds a relay by id; no Kademlia mapping |
@@ -98,7 +98,7 @@ Partial means part of the promise. Deferred means no code and a row in
 | Receipts, an author pays a relay to host | shipped | `protocol.md` 11, vouchers and Lightning preimages |
 | A reader pays an author, or a relay for priority | deferred | |
 | Web of trust from follows and endorsements | deferred | |
-| Label lists in the labeler model | deferred | kind reserved, `protocol.md` 9 |
+| Label lists in the labeler model | shipped | `protocol.md` 15; the browser hides, blurs, warns, highlights |
 | No delete, revocation records clients honor | shipped, changed | revocation is retroactive; retire keeps a key's earlier records, `protocol.md` 7 |
 | HTTPS gateway with provenance in a header bar | shipped | `weft-gateway` |
 | Challenge response login with no account | shipped | `protocol.md` 12, gateway `/login` |
@@ -268,6 +268,7 @@ Shipped after the roadmap, each closing what the one before left open.
 | M21 | Lightning preimages as the second rail, the portal theme |
 | M22 | Guardians and recovery, an open kind namespace, LND in regtest |
 | M23 | Apache-2.0, this status table, the `v0.1.0` release, a recorded demo |
+| M24 | Petnames in the address bar, label lists the browser acts on |
 
 ## Review findings, 2026-09-03
 

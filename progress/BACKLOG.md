@@ -9,8 +9,9 @@ scheduled.
 | Recovery in the browser | M22 | `weft recover sign` and `finish` are CLI only; a guardian dialog would show the old and new root and sign with the root key through the daemon, which today never opens the root |
 | Theme fallback on a live desktop without a portal | M22 | `theme.rs` picks GSettings then GTK when the portal answers nothing; the mapping is unit tested and the code compiled, but this box has a portal, so neither fallback has stamped a running window |
 | TLS in the gateway process | M4 | A reverse proxy's job by decision |
-| Petnames | design.md 4.3 | Kind reserved in `protocol.md` 9. Local names over keys, shareable as signed lists, resolved by the address bar before DNS |
-| Label lists | design.md 4.7 | Kind reserved in `protocol.md` 9. Signed lists that tag records or keys; the browser subscribes and hides, blurs, warns, or highlights |
+| Label authoring in the browser | M24 | Labelers publish with `weft label`; the browser only follows and acts |
+| Labels refreshed on a timer | M24 | Page hits read the local store; labeler heads are pulled on follow and on the refresh button only |
+| Pointers for granted apps | M24 | An app granted `petname` or `label` can `put` a list but not `point` it; `point` stays browser only |
 | Web of trust | design.md 4.7 | Follows and endorsements as signed records, a trust distance the browser and relays can rate limit on |
 | Selective disclosure claims | design.md 4.1 | Login proves the key alone; a claim format and an issuer are both missing |
 | Root rotation | design.md 4.1 | A successor manifest signed by both roots. Recovery covers a lost root only |

@@ -11,12 +11,14 @@
   <button id="back" type="button" title="back" disabled>&#8592;</button>
   <button id="forward" type="button" title="forward" disabled>&#8594;</button>
   <form id="go">
-    <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="address, author/name, domain, or https://">
+    <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="petname, address, author/name, domain, or https://">
   </form>
   <button id="star" type="button" title="bookmark this page" disabled>bookmark</button>
   <button id="history-toggle" type="button" title="history">history</button>
   <button id="bookmarks-toggle" type="button" title="bookmarks">bookmarks</button>
   <button id="compose-toggle" type="button">compose</button>
+  <button id="names-toggle" type="button">names</button>
+  <button id="labels-toggle" type="button">labels</button>
   <button id="store-toggle" type="button">store</button>
   <button id="identity" type="button">identity</button>
 </header>
@@ -24,6 +26,7 @@
 <section id="provenance" hidden>
   <button id="prov-line" type="button">
     <span id="status"></span>
+    <span id="p-pet"></span>
     <span id="p-short"></span>
     <span id="prov-more">details</span>
   </button>
@@ -31,6 +34,8 @@
     <dt>address</dt><dd id="p-address"></dd>
     <dt>kind</dt><dd id="p-kind"></dd>
     <dt>author</dt><dd id="p-author"></dd>
+    <dt>petname</dt><dd><span id="p-petname"></span><form id="name-author" hidden><input id="name-author-name" type="text" spellcheck="false" autocomplete="off" placeholder="your name for this author"><button type="submit">name</button></form></dd>
+    <dt>labels</dt><dd id="p-labels"></dd>
     <dt>signer</dt><dd id="p-signer"></dd>
     <dt>created</dt><dd id="p-created"></dd>
     <dt>served by</dt><dd id="p-source"></dd>
@@ -38,6 +43,7 @@
   </dl>
 </section>
 <section id="unsigned" hidden>unsigned page from the old web. nothing below this line is verified.</section>
+<section id="labeled" hidden><span id="labeled-text"></span><button id="labeled-reveal" type="button" hidden>show anyway</button></section>
 <main id="content"></main>
 <section id="compose" hidden>
   <form id="publish">
@@ -96,6 +102,45 @@
   <h2 id="store-log-title" hidden>daemon log</h2>
   <pre id="store-log" hidden></pre>
   <button id="store-close" type="button">close</button>
+</dialog>
+<dialog id="names">
+  <h2>your petnames</h2>
+  <p class="muted">type a petname in the address bar. the list stays in your store until you push it.</p>
+  <table id="names-list"></table>
+  <form id="names-add">
+    <input id="names-add-name" type="text" spellcheck="false" autocomplete="off" placeholder="petname">
+    <input id="names-add-key" type="text" spellcheck="false" autocomplete="off" placeholder="key address">
+    <button type="submit">add</button>
+  </form>
+  <form id="names-import">
+    <input id="names-import-key" type="text" spellcheck="false" autocomplete="off" placeholder="copy names from a key or petname">
+    <button type="submit">import</button>
+  </form>
+  <pre id="names-result"></pre>
+  <button id="names-close" type="button">close</button>
+</dialog>
+<dialog id="labels">
+  <h2>labelers you follow</h2>
+  <table id="labelers-list"></table>
+  <form id="labelers-add">
+    <input id="labelers-add-key" type="text" spellcheck="false" autocomplete="off" placeholder="labeler key or petname">
+    <button type="submit">follow</button>
+    <button id="labels-refresh" type="button">refresh</button>
+  </form>
+  <h2>what a label does</h2>
+  <table id="actions-list"></table>
+  <form id="actions-set">
+    <input id="actions-value" type="text" spellcheck="false" autocomplete="off" placeholder="label value">
+    <select id="actions-action">
+      <option value="hide">hide</option>
+      <option value="blur">blur</option>
+      <option value="warn">warn</option>
+      <option value="highlight">highlight</option>
+    </select>
+    <button type="submit">set</button>
+  </form>
+  <pre id="labels-result"></pre>
+  <button id="labels-close" type="button">close</button>
 </dialog>
 <dialog id="history">
   <h2>history</h2>

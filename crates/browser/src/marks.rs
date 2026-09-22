@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+use weft_core::{Address, PublicKey};
 use weft_home::{Result, fail, fs};
 
 pub const DIR: &str = "browser";
@@ -8,6 +10,39 @@ pub const BOOKMARKS: &str = "bookmarks";
 pub const MAX_HISTORY: usize = 1024;
 pub const MAX_TITLE: usize = 128;
 pub const MAX_TARGET: usize = 2048;
+pub const LABELERS: &str = "labelers";
+pub const ACTIONS: &str = "actions";
+pub const MAX_LABELERS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Highlight,
+    Warn,
+    Blur,
+    Hide,
+}
+
+impl Action {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "highlight" => Some(Self::Highlight),
+            "warn" => Some(Self::Warn),
+            "blur" => Some(Self::Blur),
+            "hide" => Some(Self::Hide),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Highlight => "highlight",
+            Self::Warn => "warn",
+            Self::Blur => "blur",
+            Self::Hide => "hide",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Marks {
@@ -89,6 +124,62 @@ impl Marks {
         self.write(BOOKMARKS, &lines)
     }
 
+    pub fn labelers(&self) -> Result<Vec<PublicKey>> {
+        Ok(self
+            .read(LABELERS)?
+            .lines()
+            .filter_map(|l| l.parse::<Address>().ok())
+            .filter(|a| a.kind() == weft_core::address::Kind::Key)
+            .filter_map(|a| PublicKey::from_bytes(a.bytes()).ok())
+            .take(MAX_LABELERS)
+            .collect())
+    }
+
+    pub fn subscribe(&self, key: &PublicKey) -> Result<bool> {
+        let mut keys = self.labelers()?;
+        if keys.contains(key) {
+            return Ok(false);
+        }
+        if keys.len() >= MAX_LABELERS {
+            return fail(format!("at most {MAX_LABELERS} labelers"));
+        }
+        keys.push(*key);
+        self.write_labelers(&keys)?;
+        Ok(true)
+    }
+
+    pub fn unsubscribe(&self, key: &PublicKey) -> Result<()> {
+        let keys: Vec<PublicKey> = self.labelers()?.into_iter().filter(|k| k != key).collect();
+        self.write_labelers(&keys)
+    }
+
+    fn write_labelers(&self, keys: &[PublicKey]) -> Result<()> {
+        let lines: Vec<String> = keys.iter().map(|k| k.address().to_string()).collect();
+        self.write(LABELERS, &lines)
+    }
+
+    pub fn actions(&self) -> Result<Vec<(String, Action)>> {
+        Ok(self
+            .read(ACTIONS)?
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .filter_map(|(v, a)| Action::parse(a).map(|a| (v.to_owned(), a)))
+            .collect())
+    }
+
+    pub fn set_action(&self, value: &str, action: Option<Action>) -> Result<()> {
+        if !weft_core::record::valid_kind(value) {
+            return fail("a label value is 1 to 32 bytes of a-z, 0-9, _");
+        }
+        let mut actions: Vec<(String, Action)> =
+            self.actions()?.into_iter().filter(|(v, _)| v != value).collect();
+        actions.extend(action.map(|a| (value.to_owned(), a)));
+        actions.sort_unstable();
+        let lines: Vec<String> =
+            actions.iter().map(|(v, a)| format!("{v}\t{}", a.name())).collect();
+        self.write(ACTIONS, &lines)
+    }
+
     fn others(&self, target: &str) -> Result<Vec<String>> {
         Ok(self
             .read(BOOKMARKS)?
@@ -160,5 +251,50 @@ mod tests {
         assert!(m.bookmark("x", &"t".repeat(MAX_TITLE + 1)).is_err());
         assert!(m.visit(&"x".repeat(MAX_TARGET + 1), 1).is_err());
         assert_eq!(m.bookmarks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn labelers_dedup_cap_and_skip_junk() {
+        let m = marks("labelers");
+        let key = |n: u8| weft_core::SecretKey::from_seed([n; 32]).public();
+        assert!(m.labelers().unwrap().is_empty());
+        assert!(m.subscribe(&key(1)).unwrap());
+        assert!(!m.subscribe(&key(1)).unwrap());
+        assert!(m.subscribe(&key(2)).unwrap());
+        assert_eq!(m.labelers().unwrap(), vec![key(1), key(2)]);
+        m.unsubscribe(&key(1)).unwrap();
+        assert_eq!(m.labelers().unwrap(), vec![key(2)]);
+        for n in 3..=65u8 {
+            m.subscribe(&key(n)).unwrap();
+        }
+        assert!(m.subscribe(&key(200)).is_err());
+        let path = m.dir.join(LABELERS);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("junk\n");
+        text.push_str(&Address::of(b"x").to_string());
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(m.labelers().unwrap().len(), MAX_LABELERS);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn actions_replace_by_value_and_reject_bad_values() {
+        let m = marks("actions");
+        m.set_action("spam", Some(Action::Hide)).unwrap();
+        m.set_action("nsfw", Some(Action::Blur)).unwrap();
+        m.set_action("spam", Some(Action::Warn)).unwrap();
+        assert_eq!(
+            m.actions().unwrap(),
+            vec![("nsfw".to_owned(), Action::Blur), ("spam".to_owned(), Action::Warn)]
+        );
+        m.set_action("nsfw", None).unwrap();
+        assert_eq!(m.actions().unwrap(), vec![("spam".to_owned(), Action::Warn)]);
+        assert!(m.set_action("no-go", Some(Action::Hide)).is_err());
+        assert!(m.set_action("", Some(Action::Hide)).is_err());
+        assert!(m.set_action("a\tb", Some(Action::Hide)).is_err());
+        assert_eq!(Action::parse("shout"), None);
+        assert!(Action::Hide > Action::Blur && Action::Blur > Action::Warn);
+        assert!(Action::Warn > Action::Highlight);
     }
 }

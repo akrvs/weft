@@ -10,7 +10,14 @@ type Page = {
   name: string;
   html: string;
   blob: string | null;
+  petname: string | null;
+  hits: Hit[];
+  treatment: Action | null;
 };
+
+type Action = "hide" | "blur" | "warn" | "highlight";
+type Hit = { value: string; labeler: string; by: string | null; action: Action | null };
+type Labeler = { key: string; petname: string | null; labels: number | null; error: string | null };
 
 type Identity = { root: string; devices: string[]; labels: string[]; relays: string[] };
 type Preview = { html: string; title: string | null };
@@ -51,6 +58,11 @@ const star = el<HTMLButtonElement>("star");
 const pull = el<HTMLElement>("pull");
 const pullText = el<HTMLElement>("pull-text");
 const pullBar = el<HTMLElement>("pull-bar");
+const labeled = el<HTMLElement>("labeled");
+const labeledText = el<HTMLElement>("labeled-text");
+const reveal = el<HTMLButtonElement>("labeled-reveal");
+const nameAuthor = el<HTMLFormElement>("name-author");
+const VERB: Record<Action, string> = { hide: "hidden", blur: "blurred", warn: "warning", highlight: "highlighted" };
 const NOT_RUNNING = "weft-store is not running";
 const LOGIN = "weft:login?";
 
@@ -59,6 +71,7 @@ let at = -1;
 let current = "";
 let currentTitle = "";
 let bookmarked = new Set<string>();
+let held: Page | null = null;
 
 function short(s: string, n = 24): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
@@ -142,6 +155,44 @@ function showBlob(page: Page, view: BlobView): void {
   content.append(panel);
 }
 
+function describe(hits: Hit[]): string {
+  return hits.map((h) => `${h.value} by ${h.by ?? short(h.labeler, 16)}`).join(", ");
+}
+
+function clearLabels(): void {
+  labeled.hidden = true;
+  labeled.className = "";
+  reveal.hidden = true;
+  content.classList.remove("blurred");
+  held = null;
+}
+
+function showLabels(page: Page): boolean {
+  clearLabels();
+  el("p-labels").textContent = page.hits.length > 0 ? describe(page.hits) : "none";
+  if (page.hits.length === 0) return true;
+  labeled.hidden = false;
+  labeled.className = page.treatment ?? "";
+  labeledText.textContent = `${page.treatment ? VERB[page.treatment] : "labeled"}: ${describe(page.hits)}`;
+  if (page.treatment === "hide") {
+    reveal.hidden = false;
+    held = page;
+    return false;
+  }
+  if (page.treatment === "blur") content.classList.add("blurred");
+  return true;
+}
+
+async function showBody(page: Page): Promise<void> {
+  if (page.blob) {
+    content.innerHTML = "";
+    showBlob(page, await invoke<BlobView>("blob_view", { address: page.blob }));
+  } else {
+    content.innerHTML = page.html;
+  }
+  currentTitle = content.querySelector("h1")?.textContent?.trim() ?? "";
+}
+
 async function showPage(page: Page): Promise<void> {
   el("p-address").textContent = page.address;
   el("p-kind").textContent = page.kind;
@@ -150,16 +201,16 @@ async function showPage(page: Page): Promise<void> {
   el("p-created").textContent = new Date(page.created * 1000).toISOString();
   el("p-source").textContent = page.source;
   el("p-name").textContent = page.name;
+  el("p-pet").textContent = page.petname ?? "";
+  el("p-petname").textContent = page.petname ?? "none";
+  nameAuthor.hidden = page.petname !== null;
+  nameAuthor.dataset.key = page.author;
   el("p-short").textContent = `${page.kind}  ${short(page.author)}  ${page.source}`;
   setStatus(page.author === page.signer ? "signed by root key" : "signed by an authorized device", true);
   unsigned.hidden = true;
-  if (page.blob) {
-    content.innerHTML = "";
-    showBlob(page, await invoke<BlobView>("blob_view", { address: page.blob }));
-  } else {
-    content.innerHTML = page.html;
-  }
-  currentTitle = content.querySelector("h1")?.textContent?.trim() ?? "";
+  content.innerHTML = "";
+  currentTitle = "";
+  if (showLabels(page)) await showBody(page);
 }
 
 function showPull(p: Pull | null): void {
@@ -197,6 +248,7 @@ async function go(input: string, remember = true): Promise<void> {
     await invoke("open_web", { url: value });
     provenance.hidden = true;
     unsigned.hidden = false;
+    clearLabels();
     content.innerHTML = "";
     void invoke("visit", { target: value }).catch(() => undefined);
     return;
@@ -208,6 +260,8 @@ async function go(input: string, remember = true): Promise<void> {
   } catch (e) {
     content.innerHTML = "";
     unsigned.hidden = true;
+    clearLabels();
+    el("p-pet").textContent = "";
     el("p-short").textContent = "";
     setStatus(String(e), false);
     if (String(e).includes(NOT_RUNNING)) await openStore(value);
@@ -238,6 +292,11 @@ el("prov-line").addEventListener("click", () => {
 });
 
 content.addEventListener("click", (event) => {
+  if (content.classList.contains("blurred")) {
+    event.preventDefault();
+    content.classList.remove("blurred");
+    return;
+  }
   const anchor = (event.target as HTMLElement).closest("a");
   if (!anchor) return;
   event.preventDefault();
@@ -650,6 +709,162 @@ loginForm.addEventListener("submit", async (event) => {
   }
 });
 el("login-cancel").addEventListener("click", () => loginDialog.close());
+
+reveal.addEventListener("click", () => {
+  const page = held;
+  reveal.hidden = true;
+  held = null;
+  if (page) void showBody(page);
+});
+
+nameAuthor.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await invoke<string>("add_petname", {
+      name: el<HTMLInputElement>("name-author-name").value,
+      key: nameAuthor.dataset.key ?? "",
+    });
+    el<HTMLInputElement>("name-author-name").value = "";
+    await go(current, false);
+  } catch (e) {
+    el("p-petname").textContent = String(e);
+  }
+});
+
+const namesDialog = el<HTMLDialogElement>("names");
+const namesResult = el<HTMLPreElement>("names-result");
+
+async function openNames(): Promise<void> {
+  const list = el<HTMLTableElement>("names-list");
+  list.replaceChildren();
+  try {
+    const entries = await invoke<[string, string][]>("petnames");
+    for (const [name, key] of entries) {
+      const remove = button("remove", async () => {
+        try {
+          namesResult.textContent = await invoke<string>("remove_petname", { name });
+        } catch (e) {
+          namesResult.textContent = String(e);
+        }
+        await openNames();
+      });
+      const tr = row([name, key, remove]);
+      tr.addEventListener("click", () => {
+        namesDialog.close();
+        void go(name);
+      });
+      list.append(tr);
+    }
+    if (entries.length === 0) list.append(row(["no petnames yet"]));
+  } catch (e) {
+    list.append(row([String(e)]));
+  }
+  if (!namesDialog.open) namesDialog.showModal();
+}
+
+el("names-toggle").addEventListener("click", () => {
+  namesResult.textContent = "";
+  void openNames();
+});
+el("names-close").addEventListener("click", () => namesDialog.close());
+el<HTMLFormElement>("names-add").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    namesResult.textContent = await invoke<string>("add_petname", {
+      name: el<HTMLInputElement>("names-add-name").value,
+      key: el<HTMLInputElement>("names-add-key").value,
+    });
+  } catch (e) {
+    namesResult.textContent = String(e);
+  }
+  await openNames();
+});
+el<HTMLFormElement>("names-import").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  namesResult.textContent = "pulling...";
+  try {
+    namesResult.textContent = await invoke<string>("import_petnames", {
+      key: el<HTMLInputElement>("names-import-key").value,
+    });
+  } catch (e) {
+    namesResult.textContent = String(e);
+  }
+  await openNames();
+});
+
+const labelsDialog = el<HTMLDialogElement>("labels");
+const labelsResult = el<HTMLPreElement>("labels-result");
+
+async function openLabels(): Promise<void> {
+  const labelers = el<HTMLTableElement>("labelers-list");
+  const actions = el<HTMLTableElement>("actions-list");
+  labelers.replaceChildren();
+  actions.replaceChildren();
+  try {
+    const entries = await invoke<Labeler[]>("labelers");
+    for (const l of entries) {
+      const state = l.error ?? (l.labels === null ? "nothing pulled yet" : `${l.labels} labels`);
+      const drop = button("unfollow", async () => {
+        await invoke("unsubscribe", { labeler: l.key });
+        await openLabels();
+      });
+      labelers.append(row([l.petname ?? "", l.key, state, drop]));
+    }
+    if (entries.length === 0) labelers.append(row(["no labelers followed"]));
+    const set = await invoke<[string, Action][]>("actions");
+    for (const [value, action] of set) {
+      const drop = button("remove", async () => {
+        await invoke("set_action", { value, action: "none" });
+        await openLabels();
+      });
+      actions.append(row([value, action, drop]));
+    }
+    if (set.length === 0) actions.append(row(["no actions set; labels show as a note"]));
+  } catch (e) {
+    labelers.append(row([String(e)]));
+  }
+  if (!labelsDialog.open) labelsDialog.showModal();
+}
+
+el("labels-toggle").addEventListener("click", () => {
+  labelsResult.textContent = "";
+  void openLabels();
+});
+el("labels-close").addEventListener("click", () => labelsDialog.close());
+el<HTMLFormElement>("labelers-add").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  labelsResult.textContent = "pulling...";
+  try {
+    labelsResult.textContent = await invoke<string>("subscribe", {
+      labeler: el<HTMLInputElement>("labelers-add-key").value,
+    });
+  } catch (e) {
+    labelsResult.textContent = String(e);
+  }
+  await openLabels();
+});
+el("labels-refresh").addEventListener("click", async () => {
+  labelsResult.textContent = "pulling...";
+  try {
+    labelsResult.textContent = await invoke<string>("refresh_labels");
+  } catch (e) {
+    labelsResult.textContent = String(e);
+  }
+  await openLabels();
+});
+el<HTMLFormElement>("actions-set").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await invoke("set_action", {
+      value: el<HTMLInputElement>("actions-value").value,
+      action: el<HTMLSelectElement>("actions-action").value,
+    });
+    labelsResult.textContent = "";
+  } catch (e) {
+    labelsResult.textContent = String(e);
+  }
+  await openLabels();
+});
 
 void loadBookmarks();
 void invoke<string | null>("initial").then((value) => {

@@ -13,13 +13,13 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M23-yellow)
+![status](https://img.shields.io/badge/status-M24-yellow)
 ![release](https://img.shields.io/badge/release-v0.1.0-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-156%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-164%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -47,7 +47,8 @@
 │              rail [an invoice, a preimage, a portal, a login]   │
 │              recover [guardians hand a lost root to a new one]  │
 │              release [a license, a tag, a two minute film]      │
-│ status     : M23 — v0.1.0 · 10 crates · Apache-2.0 · filmed     │
+│              names [a word you chose, a label you follow]       │
+│ status     : M24 — petnames · label lists · 10 crates           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -422,6 +423,30 @@ the head for at most four hops before naming anything under the author.
 Guardians supersede a recovery with a higher sequence. A compromised root
 is out of scope: it can still rewrite its own guardian list.
 
+## [ Name Flag ] — a word you chose, a label you follow
+
+```bash
+weft petname add alice <key>                # your word for a key, a signed list kept in your store
+weft petname import <friend>                # pull a friend's published list, copy what you lack
+weft petname list                           # alice  <key>
+weft label add <record or key> spam         # as a labeler: one more signed statement in your list
+weft push                                   # labels and names leave the store only when you push
+weft label list <labeler>                   # anyone pulls a labeler's current list
+```
+
+A petname is 1 to 32 bytes of `a-z0-9-`, starting with a letter, so it
+never parses as an address and, holding no dot, never shadows a domain.
+The address bar reads `alice` and `alice/blog` through your own list and
+no one else's: an import copies entries, it never trusts a friend's list
+live. Pages cannot link a petname and the gateway answers 404 for one.
+A label list is a labeler's signed statements about record addresses and
+keys, a key label covering every record its author signs. The browser's
+labels dialog follows labelers and maps each value to hide, blur, warn,
+or highlight; the strongest wins, an unmapped value shows as a note, and
+a hidden page stays one click away. Both lists are whole snapshots behind
+the pointers `petnames` and `labels`, so the relay, the store, and every
+pull path carry them unchanged.
+
 ## [ Persistence ] — posture
 
 - `#![forbid(unsafe_code)]` in every crate, clippy pedantic, `unwrap`
@@ -476,21 +501,24 @@ is out of scope: it can still rewrite its own guardian list.
   browser starts takes its passphrase on a pipe, never on a command line,
   exits with the browser unless told to stay, and then stops only for the
   browser key, from the store dialog or `weft-store stop`.
+- Petnames resolve through the reader's own list alone, read from the
+  local store, never pulled. A list counts only when its record's author
+  is the key whose pointer names it.
 - `cargo-deny` gates advisories, licenses, and sources in CI.
 
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest with guardians · pointer · grant · receipt with a voucher or a preimage · voucher text · login · recovery · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest with guardians · pointer · grant · receipt with a voucher or a preimage · voucher text · login · recovery · petname and label lists · verify
 crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait with recovery heads · addressed relay list
 crates/net/          weft-net: wire with size, invoice, and recovery · client with pull progress and totals · relay handler · pricing in cents and sats · Node trait with a fake · invoices · pins · sponsorship · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar with a text form · DNS over HTTPS with a positive and negative TTL cache · recovery redirects under a hop cap · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
+crates/resolve/      weft-resolve: target grammar with petnames and a text form · own petnames and anyone's label list · DNS over HTTPS with a positive and negative TTL cache · recovery redirects under a hop cap · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
 crates/store/        weft-store: store wire · gate over every held record · names, point, receipt, recovery · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · sats · bank · node fake or lnd with a pinned certificate · price · serve, printing its entry · SIGHUP reload · lnd.sh regtest and a live test
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
-crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · drive.sh helpers · smoke.sh with a screenshot hash the tests check · demo.sh recording the loop
+crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · petname add, remove, list, import · label add, remove, list · quiet on a closed pipe
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · petnames in the provenance panel · names and labels dialogs · labels that hide, blur, warn, highlight · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · drive.sh helpers · smoke.sh with a screenshot hash the tests check · demo.sh recording the loop
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -519,10 +547,10 @@ crates/browser/demo.sh                      # records target/demo/weft-0.1.mp4 a
 
 ## [ Next Ops ]
 
-`v0.1.0` is tagged, licensed under Apache-2.0, and filmed. The roadmap in
-[`docs/design.md`](docs/design.md) is complete, and its status table says
-which of the document's promises the code kept, kept in part, or deferred.
-The deferred ones are rows in [`progress/BACKLOG.md`](progress/BACKLOG.md);
-the first two worth a milestone are petnames and label lists, the one empty
-layer, both already reserved kinds. Everything else waits for a reader who
-is not the author. See [`progress/`](progress/).
+`v0.1.0` is tagged, licensed under Apache-2.0, and filmed, and the naming
+layer is no longer empty: petnames open in the address bar and label lists
+decide what the browser shows. The status table in
+[`docs/design.md`](docs/design.md) says which promises the code kept; the
+rest are rows in [`progress/BACKLOG.md`](progress/BACKLOG.md). The next
+layer on the same pattern is a web of trust, follows and endorsements as
+signed lists. See [`progress/`](progress/).

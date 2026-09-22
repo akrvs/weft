@@ -3,6 +3,7 @@
 mod blobs;
 #[cfg(feature = "drive")]
 mod drive;
+mod lists;
 mod marks;
 mod register;
 #[cfg(target_os = "linux")]
@@ -24,7 +25,7 @@ use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, Webview, Webv
 use weft_core::{Address, Challenge, Grant, Payment, Pointer, Receipt, Record, Voucher, login};
 use weft_home::{Home, Relay};
 use weft_net::node::decode_preimage;
-use weft_resolve::{Links, Page, Resolver, Target, render};
+use weft_resolve::{Links, Resolver, Target, render};
 use weft_store::{Local, socket_path};
 use zeroize::Zeroizing;
 
@@ -69,9 +70,10 @@ fn err(e: &impl ToString) -> String {
 }
 
 #[tauri::command]
-async fn resolve(app: State<'_, App>, input: String) -> Result<Page> {
+async fn resolve(app: State<'_, App>, input: String) -> Result<lists::View> {
     let target: Target = input.parse().map_err(|e| err(&e))?;
-    app.resolver.resolve(target, &Links::WEFT).await.map_err(|e| err(&e))
+    let page = app.resolver.resolve(target, &Links::WEFT).await.map_err(|e| err(&e))?;
+    lists::annotate(&app, page).await
 }
 
 #[tauri::command]
@@ -762,7 +764,17 @@ fn main() {
             login,
             start_store,
             stop_store,
-            daemon_log
+            daemon_log,
+            lists::petnames,
+            lists::add_petname,
+            lists::remove_petname,
+            lists::import_petnames,
+            lists::labelers,
+            lists::subscribe,
+            lists::unsubscribe,
+            lists::refresh_labels,
+            lists::actions,
+            lists::set_action
         ])
         .setup(move |app| setup(app, home))
         .run(tauri::generate_context!());

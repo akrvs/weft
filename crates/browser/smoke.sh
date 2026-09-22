@@ -31,9 +31,11 @@ root_a=$(WEFT_HOME=$run/a weft init | head -1)
 WEFT_HOME=$run/a weft device add laptop >/dev/null
 root_b=$(WEFT_HOME=$run/b weft init | head -1)
 WEFT_HOME=$run/b weft device add laptop >/dev/null
+root_l=$(WEFT_HOME=$run/l weft init | head -1)
 
 weft-relay --dir "$run/relay" init >/dev/null
 weft-relay --dir "$run/relay" allow "$root_a" >/dev/null
+weft-relay --dir "$run/relay" allow "$root_l" >/dev/null
 weft-bank --dir "$run/bank" init >/dev/null
 weft-relay --dir "$run/relay" bank add "$(weft-bank --dir "$run/bank" whoami)" >/dev/null
 weft-relay --dir "$run/relay" rate 1 >/dev/null
@@ -47,6 +49,7 @@ entry=$(awk '/^entry/ { print $2 }' "$run/relay.log")
 entry=${entry:-$relay_id}
 WEFT_HOME=$run/a weft relay add "$entry" >/dev/null
 WEFT_HOME=$run/b weft relay add "$entry" >/dev/null
+WEFT_HOME=$run/l weft relay add "$entry" >/dev/null
 
 address_of() { local line; line=$(tail -1); line=${line##*/}; echo "${line%.weft}"; }
 WEFT_HOME=$run/a weft manifest >/dev/null
@@ -58,7 +61,11 @@ big=$(WEFT_HOME=$run/a weft sign "$run/big.bin" --kind file --as laptop | addres
 printf '# Hello from a\n\nread the [blog](weft:%s/blog) or pull the [big file](weft:%s).\n' "$root_a" "$big" >"$run/home.md"
 home_a=$(WEFT_HOME=$run/a weft sign "$run/home.md" --as laptop | address_of)
 WEFT_HOME=$run/a weft point home "$home_a" --as laptop >/dev/null
+WEFT_HOME=$run/a weft petname add alice "$root_a" --as laptop >/dev/null
 WEFT_HOME=$run/a weft push >/dev/null
+WEFT_HOME=$run/l weft manifest >/dev/null
+WEFT_HOME=$run/l weft label add "$blog" spam >/dev/null
+WEFT_HOME=$run/l weft push >/dev/null
 WEFT_HOME=$run/b weft manifest >/dev/null
 for _ in $(seq 1 50); do
     WEFT_HOME=$run/b weft fetch "$big" --out "$run/copy.bin" >/dev/null 2>&1 && break
@@ -70,6 +77,9 @@ voucher=$(weft-bank --dir "$run/bank" mint --to "$relay_id" --cents 40 --out "$r
 root_c=$(WEFT_HOME=$run/c weft init | head -1)
 WEFT_HOME=$run/c weft relay add "$entry" >/dev/null
 WEFT_HOME=$run/c weft manifest >/dev/null
+WEFT_HOME=$run/c weft petname import "$root_a" | grep -q '^added   alice'
+WEFT_HOME=$run/c weft petname list | grep -qx "alice  $root_a"
+WEFT_HOME=$run/c weft label list "$root_l" | grep -qx "spam  $blog"
 printf '# Paid over lightning\n' >"$run/lit.md"
 lit=$(WEFT_HOME=$run/c weft sign "$run/lit.md" | address_of)
 WEFT_HOME=$run/c weft invoice "$lit" --days 2 >"$run/invoice.txt"
@@ -113,6 +123,17 @@ expect "window.__pulls.at(-1).done" 3000000
 
 click back
 wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Hello from a'"
+click names-toggle
+set_value names-import-key "'$root_a'"
+submit names-import
+wait_js "document.getElementById('names-list').textContent.includes('alice')"
+expect "document.getElementById('names-result').textContent.includes('added  alice')" true
+click names-close
+set_value address "'alice'"
+submit go
+wait_js "document.getElementById('p-name').textContent === 'alice/home by petname'"
+expect "document.getElementById('p-pet').textContent" "alice"
+expect "document.getElementById('content').querySelector('h1')?.textContent" "Hello from a"
 click prov-line
 wait_js "!document.getElementById('prov-detail').hidden"
 ok "(() => { document.documentElement.dataset.theme = 'light'; return true; })()" >/dev/null
@@ -127,11 +148,43 @@ cat "$ui/index.html" "$ui/style.css" "$ui/src/main.ts" | sha256sum | cut -d' ' -
 click star
 wait_js "document.getElementById('star').textContent === 'bookmarked'"
 click bookmarks-toggle
-wait_js "document.getElementById('bookmarks-list').textContent.includes('$root_a/home')"
+wait_js "document.getElementById('bookmarks-list').textContent.includes('Hello from aalice')"
 click bookmarks-close
 click history-toggle
 wait_js "document.getElementById('history-list').textContent.includes('$root_a/blog')"
 click history-close
+
+label_action() {
+    click labels-toggle
+    set_value actions-value "'$1'"
+    set_value actions-action "'$2'"
+    submit actions-set
+    wait_js "document.getElementById('actions-list').textContent.includes('$2')"
+    click labels-close
+}
+click labels-toggle
+set_value labelers-add-key "'$root_l'"
+submit labelers-add
+wait_js "document.getElementById('labels-result').textContent.includes('1 labels')"
+click labels-close
+label_action spam hide
+set_value address "'alice/blog'"
+submit go
+wait_js "!document.getElementById('labeled').hidden"
+expect "document.getElementById('labeled').className" "hide"
+expect "document.getElementById('labeled-text').textContent.startsWith('hidden: spam by ')" true
+expect "document.getElementById('content').innerHTML" ""
+[[ -z ${SMOKE_SHOTS:-} ]] || shot "$browser" "$SMOKE_SHOTS/hidden.png"
+click labeled-reveal
+wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
+label_action spam blur
+set_value address "'alice/blog'"
+submit go
+wait_js "document.getElementById('content').classList.contains('blurred') && document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
+[[ -z ${SMOKE_SHOTS:-} ]] || shot "$browser" "$SMOKE_SHOTS/blurred.png"
+click content
+expect "!document.getElementById('content').classList.contains('blurred')" true
+
 
 click compose-toggle
 wait_js "!document.getElementById('compose').hidden && document.getElementById('price').textContent.includes('1 cents')"
@@ -193,6 +246,7 @@ curl -si "$location" >"$run/claim.txt"
 grep -qi '^set-cookie: weft_session=' "$run/claim.txt"
 grep -q "$root_b" "$run/claim.txt"
 curl -s -o /dev/null -w '%{http_code}' "$location" | grep -q '^403$'
+curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/alice" | grep -q '^404$'
 
 echo "smoke: ok"
 for shot in browser-home browser-home-light; do
