@@ -1,7 +1,9 @@
-# Weft design, draft 0.1
+# Weft design, version 0.1
 
 Context for the protocol in `protocol.md`. Written 2026-09-02, revised
-2026-09-03 with the review findings listed at the end.
+2026-09-03 with the review findings listed at the end, and brought level
+with the code on 2026-09-22 for the 0.1 release. The prose is the vision.
+The status table under the layers says what the code does today.
 
 ## Summary
 
@@ -59,16 +61,55 @@ ships all three in a single client.
 
 ## Layers
 
-| Layer | Name | Status |
+| Layer | Name | At 0.1 |
 |---|---|---|
-| L7 | Applications: the browser, later feeds and publishing tools | new |
-| L6 | Payments: signed receipts, settlement through any rail | later |
-| L5 | Personal store: the user's log plus scoped, revocable grants | new |
-| L4 | Naming: petnames, DNS bridged names, pluggable registries | new |
-| L3 | Delivery: DHT discovery, relays, direct peers | new |
-| L2 | Content: signed, content addressed records and pointers | new |
-| L1 | Identity: keypairs, device subkeys, rotation, claims | new |
+| L7 | Applications: the browser, later feeds and publishing tools | browser shipped |
+| L6 | Payments: signed receipts, settlement through any rail | shipped, two rails, relays only |
+| L5 | Personal store: the user's log plus scoped, revocable grants | shipped |
+| L4 | Naming: petnames, DNS bridged names, pluggable registries | raw and DNS shipped, petnames deferred |
+| L3 | Delivery: DHT discovery, relays, direct peers | relays shipped, DHT and gossip deferred |
+| L2 | Content: signed, content addressed records and pointers | shipped |
+| L1 | Identity: keypairs, device subkeys, rotation, claims | keys, devices, recovery shipped; rotation and claims deferred |
 | L0 | Transport: IP, QUIC, TLS 1.3 | reused |
+
+### Status at 0.1
+
+Every promise this document makes, against the code at `v0.1.0`. Shipped
+means the rule is in `protocol.md` or `relay.md` and a test exercises it.
+Partial means part of the promise. Deferred means no code and a row in
+`progress/BACKLOG.md`.
+
+| Promise | Status | Where |
+|---|---|---|
+| Signed, content addressed records; pointers with a Lamport sequence | shipped | `protocol.md` 4, 6; `weft-core` |
+| Root key, device keys, manifest, revocation, retire | shipped | `protocol.md` 5, 7 |
+| Social recovery through guardians | shipped | `protocol.md` 13 |
+| Root rotation by a successor manifest signed by both roots | deferred | recovery replaces a lost root only |
+| Root in a hardware token or enclave | deferred | passphrase encrypted file, `weft-home` |
+| Selective disclosure claims | deferred | login proves the key alone, `protocol.md` 12 |
+| Raw addresses with a version byte and checksum | shipped | `protocol.md` 3 |
+| DNS bridged names over DNSSEC or DoH | shipped | `_weft` TXT over DoH, `weft-resolve` |
+| Petnames | deferred | kind reserved, `protocol.md` 9 |
+| Relays as caches with a contract | shipped | `relay.md`, `weft-net`, `weft-relay` |
+| Direct peers | partial | relays dialed by address, mDNS on a LAN; readers never dial each other |
+| DHT discovery of hashes and keys | deferred | iroh discovery finds a relay by id; no Kademlia mapping |
+| Gossip between relays | deferred | |
+| Personal store as a log, grants that sever on revoke | shipped | `protocol.md` 10, `store.md`, `weft-store` |
+| Receipts, an author pays a relay to host | shipped | `protocol.md` 11, vouchers and Lightning preimages |
+| A reader pays an author, or a relay for priority | deferred | |
+| Web of trust from follows and endorsements | deferred | |
+| Label lists in the labeler model | deferred | kind reserved, `protocol.md` 9 |
+| No delete, revocation records clients honor | shipped, changed | revocation is retroactive; retire keeps a key's earlier records, `protocol.md` 7 |
+| HTTPS gateway with provenance in a header bar | shipped | `weft-gateway` |
+| Challenge response login with no account | shipped | `protocol.md` 12, gateway `/login` |
+| Browser opens HTTPS pages with the unsigned label | shipped | `weft-browser` |
+| Signed snapshot of an HTTPS page | deferred | |
+| Native renderer for signed records | shipped | CommonMark, no raw HTML |
+| One address bar for every tier | shipped | `Target` in `weft-resolve` |
+| Provenance panel | shipped | `weft-browser` |
+| Identity switcher with throwaways | deferred | one identity per home |
+| Personal store as a first class view | shipped | names, grants, repoint |
+| Publish from anywhere | partial | compose with preview, `weft sign`; no drag and drop |
 
 ### Identity
 
@@ -207,6 +248,27 @@ adversary; a token or sale; mobile before desktop; live streaming.
 | M6 | Challenge response login | log in with no account and no password |
 | M7 | Payments experiment | pay a relay a few cents to host a page |
 
+Shipped after the roadmap, each closing what the one before left open.
+
+| Milestone | Deliverable |
+|---|---|
+| M8 | The store daemon is the one process that signs |
+| M9 | Every read the browser renders crosses the store socket |
+| M10 | Store hardening: capped cache, pooled reads, fresh browser key |
+| M11 | The gateway reads through the store socket, sessions survive restarts |
+| M12 | Reads that fetch: a blob the store lacks is pulled from a relay |
+| M13 | Fetch hardening: anonymous readers never make a gateway pull |
+| M14 | Byte budgets per identity, SIGHUP reloads on relay and gateway |
+| M15 | Relay hygiene: sweep by pins, blob GC, no dead receipts |
+| M16 | Sweep and protect set as table lookups, budgets survive restarts |
+| M17 | `WEFT_NET=local`, cache cap, detached daemon, capped sessions |
+| M18 | Retire instead of revoke, pins for any author, `Host` routing |
+| M19 | The browser: themes, compose, history, bookmarks, blobs, handler |
+| M20 | Named links, blob totals, a driven smoke test with screenshots |
+| M21 | Lightning preimages as the second rail, the portal theme |
+| M22 | Guardians and recovery, an open kind namespace, LND in regtest |
+| M23 | Apache-2.0, this status table, the `v0.1.0` release, a recorded demo |
+
 ## Review findings, 2026-09-03
 
 - A device signed pointer could point readers at a stale manifest that
@@ -233,6 +295,9 @@ adversary; a token or sale; mobile before desktop; live streaming.
 - Streaming payments versus aggregated receipts.
 - When a consensus backed name registry is justified.
 - The project's real name.
+
+Each waits for readers and authors who are not the author of this
+document. The 0.1 release exists to find them.
 
 Settled: social recovery through guardians named in the manifest,
 `protocol.md` section 13; record kinds are an open namespace with a
