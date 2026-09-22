@@ -408,3 +408,152 @@ async fn a_label_list_is_pulled_kept_and_bound_to_its_author() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+fn follow(store: &Store, author: &SecretKey, keys: &[&SecretKey]) {
+    use weft_core::{Follows, follow};
+    let mut list = Follows::default();
+    for k in keys {
+        list.insert(k.public()).unwrap();
+    }
+    for r in own(author, |a| list.draft(a, a, 1_700_000_009), follow::POINTER) {
+        store.put(&r).unwrap();
+    }
+}
+
+fn many(tag: u8, n: u32) -> Vec<SecretKey> {
+    (0..n)
+        .map(|i| {
+            let mut seed = [tag; 32];
+            seed[..4].copy_from_slice(&i.to_le_bytes());
+            SecretKey::from_seed(seed)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn trust_is_the_shortest_follow_distance_up_to_three() {
+    let dir = temp("trust");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone()).offline();
+    let [me, amy, bob, cat, dan, eve] = [10, 11, 12, 13, 14, 15].map(key);
+    follow(&store, &me, &[&amy, &eve]);
+    follow(&store, &amy, &[&bob, &me]);
+    follow(&store, &bob, &[&cat, &eve]);
+    follow(&store, &cat, &[&dan]);
+    let trust = resolver.trust(me.public()).await.unwrap();
+    let distance = |k: &SecretKey| trust.distance(&k.public());
+    assert_eq!(
+        [&me, &amy, &bob, &cat, &eve].map(distance),
+        [Some(0), Some(1), Some(2), Some(3), Some(1)]
+    );
+    assert_eq!(distance(&dan), None);
+    assert_eq!(trust.path(&cat.public()), [&me, &amy, &bob, &cat].map(SecretKey::public));
+    assert_eq!(trust.path(&me.public()), [me.public()]);
+    assert!(trust.path(&dan.public()).is_empty());
+    assert_eq!(trust.counts(), [1, 2, 1, 1]);
+    assert_eq!(trust.lists(), 4);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_bad_list_is_skipped_but_the_readers_own_fails_the_walk() {
+    use weft_core::follow;
+    let dir = temp("trust-bad");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone()).offline();
+    let [me, a, b, c, thief] = [20, 21, 22, 23, 24].map(key);
+    follow(&store, &me, &[&a, &b]);
+    follow(&store, &b, &[&c]);
+    let theirs = own(&b, |k| weft_core::Follows::default().draft(k, k, 1), follow::POINTER);
+    let stolen =
+        Pointer { name: follow::POINTER.into(), target: theirs[0].address(), seq: 1, prev: vec![] }
+            .draft(&a.public(), &a.public(), 1_700_000_011)
+            .sign(&a)
+            .unwrap();
+    store.put(&theirs[0]).unwrap();
+    store.put(&stolen).unwrap();
+    let trust = resolver.trust(me.public()).await.unwrap();
+    assert_eq!(trust.distance(&a.public()), Some(1));
+    assert_eq!(trust.distance(&c.public()), Some(2));
+    let stolen =
+        Pointer { name: follow::POINTER.into(), target: theirs[0].address(), seq: 2, prev: vec![] }
+            .draft(&thief.public(), &thief.public(), 1_700_000_012)
+            .sign(&thief)
+            .unwrap();
+    store.put(&stolen).unwrap();
+    assert!(matches!(
+        resolver.trust(thief.public()).await,
+        Err(Error::Binding("list authored by another key"))
+    ));
+    let alone = resolver.trust(key(25).public()).await.unwrap();
+    assert_eq!(alone.counts(), [1, 0, 0, 0]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_walk_reads_at_most_the_list_budget() {
+    use weft_resolve::trust::MAX_LISTS;
+    let dir = temp("trust-budget");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone()).offline();
+    let me = key(30);
+    let near = many(31, 512);
+    let mut far = many(32, 512);
+    far.sort_by(|x, y| x.public().bytes().cmp(y.public().bytes()));
+    let (first, last) = (key(33), key(34));
+    follow(&store, &me, &near.iter().collect::<Vec<_>>());
+    follow(&store, &near[0], &far.iter().collect::<Vec<_>>());
+    follow(&store, &far[0], &[&first]);
+    follow(&store, &far[511], &[&last]);
+    let trust = resolver.trust(me.public()).await.unwrap();
+    assert_eq!(trust.lists(), MAX_LISTS);
+    assert_eq!(trust.counts(), [1, 512, 512, 1]);
+    assert_eq!(trust.distance(&first.public()), Some(3));
+    assert_eq!(trust.distance(&last.public()), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_recovered_key_passes_its_distance_to_the_new_root() {
+    let dir = temp("trust-recovery");
+    let store = Store::new(dir.clone());
+    let resolver = Resolver::new(Home::new(dir.clone()), store.clone()).offline();
+    let [me, old, new, guardian, z] = [40, 41, 42, 43, 44].map(key);
+    follow(&store, &me, &[&old]);
+    store.put(&guarded(&old, &guardian)).unwrap();
+    store.put(&recover(&old, &new, &guardian)).unwrap();
+    follow(&store, &new, &[&z]);
+    let trust = resolver.trust(me.public()).await.unwrap();
+    assert_eq!(trust.distance(&new.public()), Some(1));
+    assert_eq!(trust.distance(&z.public()), Some(2));
+    assert_eq!(trust.path(&z.public()), [&me, &old, &new, &z].map(SecretKey::public));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_online_walk_pulls_and_keeps_the_lists_it_reads() {
+    use weft_core::{Follows, follow};
+    let site = publish().await;
+    let (resolver, dir) = reader(&site).await;
+    let me = key(50);
+    let friend = key(51);
+    let mut theirs = Follows::default();
+    theirs.insert(friend.public()).unwrap();
+    let records = own(&site.root, |a| theirs.draft(a, a, 1_700_000_009), follow::POINTER);
+    let publisher = Client::from_endpoint(endpoint(Some(&site.addr)).await);
+    let outcome = publisher.put(site.addr.clone(), &records).await.unwrap();
+    assert_eq!(outcome.rejected, vec![], "{outcome:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publisher.close().await;
+    follow(&resolver.home().store(), &me, &[&site.root]);
+    let local = resolver.offline().trust(me.public()).await.unwrap();
+    assert_eq!(local.distance(&friend.public()), None);
+    let pulled = resolver.trust(me.public()).await.unwrap();
+    assert_eq!(pulled.distance(&friend.public()), Some(2));
+    site.router.shutdown().await.unwrap();
+    let kept = resolver.offline().trust(me.public()).await.unwrap();
+    assert_eq!(kept.distance(&friend.public()), Some(2));
+    for d in site.dirs.iter().chain([&dir]) {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

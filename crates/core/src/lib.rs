@@ -3,6 +3,7 @@
 pub mod address;
 pub mod cbor;
 pub mod error;
+pub mod follow;
 pub mod grant;
 pub mod identity;
 pub mod label;
@@ -17,6 +18,7 @@ pub mod verify;
 
 pub use address::Address;
 pub use error::Error;
+pub use follow::Follows;
 pub use grant::{Access, Grant, Revoke};
 pub use identity::{PublicKey, SecretKey};
 pub use label::{Label, Labels};

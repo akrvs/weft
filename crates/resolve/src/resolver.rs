@@ -6,8 +6,8 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use weft_core::{
-    Address, Body, Labels, Manifest, Petnames, Pointer, PublicKey, Record, Recovery, label,
-    petname, verify,
+    Address, Body, Follows, Labels, Manifest, Petnames, Pointer, PublicKey, Record, Recovery,
+    follow, label, petname, verify,
 };
 use weft_home::{Home, Reads, Relay, Store};
 use weft_net::Client;
@@ -16,6 +16,7 @@ use crate::dns::Dns;
 use crate::error::{Error, Result};
 use crate::render::{Links, render};
 use crate::target::Target;
+use crate::trust::{MAX_DISTANCE, Trust};
 
 pub const RELAY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_HOPS: usize = 4;
@@ -341,6 +342,15 @@ impl<R: Reads> Resolver<R> {
         decode: fn(&Record) -> weft_core::Result<T>,
     ) -> Result<Option<T>> {
         let author = self.redirect(author).await?;
+        self.list_at(author, name, decode).await
+    }
+
+    async fn list_at<T>(
+        &self,
+        author: PublicKey,
+        name: &str,
+        decode: fn(&Record) -> weft_core::Result<T>,
+    ) -> Result<Option<T>> {
         let address = match self.head(author, name).await {
             Ok(address) => address,
             Err(Error::NoPointer(_)) => return Ok(None),
@@ -372,6 +382,46 @@ impl<R: Reads> Resolver<R> {
 
     pub async fn labels(&self, labeler: PublicKey) -> Result<Option<Labels>> {
         self.list(labeler, label::POINTER, Labels::from_record).await
+    }
+
+    pub async fn follows_of(&self, author: PublicKey) -> Result<Option<Follows>> {
+        self.list(author, follow::POINTER, Follows::from_record).await
+    }
+
+    pub async fn trust(&self, root: PublicKey) -> Result<Trust> {
+        let mut trust = Trust::new(root);
+        let mut frontier = vec![root];
+        for distance in 0..MAX_DISTANCE {
+            let mut next = Vec::new();
+            for key in frontier {
+                if !trust.read() {
+                    return Ok(trust);
+                }
+                let read = async {
+                    let to = self.redirect(key).await?;
+                    Ok::<_, Error>((
+                        to,
+                        self.list_at(to, follow::POINTER, Follows::from_record).await?,
+                    ))
+                };
+                let (to, list) = match read.await {
+                    Ok(found) => found,
+                    Err(e) if distance == 0 => return Err(e),
+                    Err(_) => continue,
+                };
+                if to != key && !trust.reach(to, distance, key) {
+                    continue;
+                }
+                for followed in list.map(|l| l.keys).unwrap_or_default() {
+                    if trust.reach(followed, distance + 1, to) {
+                        next.push(followed);
+                    }
+                }
+            }
+            next.sort_by(|a, b| a.bytes().cmp(b.bytes()));
+            frontier = next;
+        }
+        Ok(trust)
     }
 
     pub async fn title(&self, author: &PublicKey) -> Option<String> {

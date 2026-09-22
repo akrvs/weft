@@ -120,14 +120,8 @@ enum Command {
         #[command(subcommand)]
         command: LoginCommand,
     },
-    Petname {
-        #[command(subcommand)]
-        command: lists::PetnameCommand,
-    },
-    Label {
-        #[command(subcommand)]
-        command: lists::LabelCommand,
-    },
+    #[command(flatten)]
+    Lists(lists::Command),
 }
 
 #[derive(Subcommand, Debug)]
@@ -309,8 +303,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             say!("{}", challenge.to_text());
             Ok(())
         }
-        Command::Petname { command } => lists::petname(home, store, command).await,
-        Command::Label { command } => lists::label(home, store, command).await,
+        Command::Lists(command) => lists::run(home, store, command).await,
         Command::Login { command: LoginCommand::Sign { challenge, signer } } => {
             login_sign(home, store, &challenge, &signer)
         }

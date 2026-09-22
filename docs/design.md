@@ -97,7 +97,7 @@ Partial means part of the promise. Deferred means no code and a row in
 | Personal store as a log, grants that sever on revoke | shipped | `protocol.md` 10, `store.md`, `weft-store` |
 | Receipts, an author pays a relay to host | shipped | `protocol.md` 11, vouchers and Lightning preimages |
 | A reader pays an author, or a relay for priority | deferred | |
-| Web of trust from follows and endorsements | deferred | |
+| Web of trust from follows and endorsements | shipped, changed | `protocol.md` 16; an endorsement is a label on a key, the browser gates labelers by distance |
 | Label lists in the labeler model | shipped | `protocol.md` 15; the browser hides, blurs, warns, highlights |
 | No delete, revocation records clients honor | shipped, changed | revocation is retroactive; retire keeps a key's earlier records, `protocol.md` 7 |
 | HTTPS gateway with provenance in a header bar | shipped | `weft-gateway` |
@@ -269,6 +269,7 @@ Shipped after the roadmap, each closing what the one before left open.
 | M22 | Guardians and recovery, an open kind namespace, LND in regtest |
 | M23 | Apache-2.0, this status table, the `v0.1.0` release, a recorded demo |
 | M24 | Petnames in the address bar, label lists the browser acts on |
+| M25 | Follows, trust distance, labelers gated by reach |
 
 ## Review findings, 2026-09-03
 

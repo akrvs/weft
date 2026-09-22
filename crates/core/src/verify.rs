@@ -1,6 +1,7 @@
 use crate::{
-    Address, Challenge, Error, Grant, Labels, Manifest, Petnames, Pointer, Receipt, Record,
-    Recovery, Result, Revoke, grant, label, login, manifest, petname, pointer, receipt, recovery,
+    Address, Challenge, Error, Follows, Grant, Labels, Manifest, Petnames, Pointer, Receipt,
+    Record, Recovery, Result, Revoke, follow, grant, label, login, manifest, petname, pointer,
+    receipt, recovery,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,9 @@ pub fn verify(record: &Record, manifest: Option<&Manifest>) -> Result<Verified> 
         }
         petname::KIND => {
             Petnames::from_record(record)?;
+        }
+        follow::KIND => {
+            Follows::from_record(record)?;
         }
         label::KIND => {
             Labels::from_record(record)?;

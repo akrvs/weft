@@ -43,6 +43,7 @@ const DAY: u64 = 86_400;
 struct App {
     resolver: Resolver<Local>,
     marks: Marks,
+    trust: lists::Cache,
     web: Mutex<Option<Webview>>,
     daemon: Mutex<Option<Child>>,
     log: Arc<Mutex<VecDeque<u8>>>,
@@ -774,7 +775,14 @@ fn main() {
             lists::unsubscribe,
             lists::refresh_labels,
             lists::actions,
-            lists::set_action
+            lists::set_action,
+            lists::reach,
+            lists::set_reach,
+            lists::follows,
+            lists::follow,
+            lists::unfollow,
+            lists::import_follows,
+            lists::refresh_trust
         ])
         .setup(move |app| setup(app, home))
         .run(tauri::generate_context!());
@@ -795,6 +803,7 @@ fn setup(app: &tauri::App, home: Home) -> std::result::Result<(), Box<dyn std::e
     app.manage(App {
         resolver,
         marks,
+        trust: lists::Cache::default(),
         web: Mutex::new(None),
         daemon: Mutex::new(None),
         log: Arc::default(),

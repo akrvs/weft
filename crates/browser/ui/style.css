@@ -108,14 +108,18 @@ dialog p { margin: 0; }
 dialog dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; word-break: break-all; margin: 0; }
 dialog dt { color: var(--muted); }
 dialog dd { margin: 0; }
-#store, #login, #history, #bookmarks, #names, #labels { min-width: 60ch; }
+#store, #login, #history, #bookmarks, #names, #follows, #labels { min-width: 60ch; }
 #names-add { grid-template-columns: 1fr 2fr auto; }
 #names-import { grid-template-columns: 1fr auto; }
-#labelers-add { grid-template-columns: 1fr auto auto; }
+#labelers-add, #follows-add { grid-template-columns: 1fr auto auto; }
+#follows-import { grid-template-columns: 1fr auto; }
+#reach-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 #actions-set { grid-template-columns: 1fr auto auto; }
 #names-list tr { cursor: pointer; }
 #names-list tr:hover td { background: var(--accent-soft); }
 #p-pet { font-weight: 600; white-space: nowrap; }
+#p-trust { color: var(--muted); white-space: nowrap; }
+#follow-author { padding: 2px 8px; font-size: 12px; margin-left: 8px; }
 #name-author { display: inline-grid; grid-template-columns: auto auto; gap: 6px; margin-left: 8px; }
 #name-author input { font: inherit; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit; }
 #name-author button { padding: 2px 8px; font-size: 12px; }

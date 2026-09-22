@@ -62,6 +62,7 @@ printf '# Hello from a\n\nread the [blog](weft:%s/blog) or pull the [big file](w
 home_a=$(WEFT_HOME=$run/a weft sign "$run/home.md" --as laptop | address_of)
 WEFT_HOME=$run/a weft point home "$home_a" --as laptop >/dev/null
 WEFT_HOME=$run/a weft petname add alice "$root_a" --as laptop >/dev/null
+WEFT_HOME=$run/a weft follow add "$root_l" --as laptop >/dev/null
 WEFT_HOME=$run/a weft push >/dev/null
 WEFT_HOME=$run/l weft manifest >/dev/null
 WEFT_HOME=$run/l weft label add "$blog" spam >/dev/null
@@ -80,6 +81,10 @@ WEFT_HOME=$run/c weft manifest >/dev/null
 WEFT_HOME=$run/c weft petname import "$root_a" | grep -q '^added   alice'
 WEFT_HOME=$run/c weft petname list | grep -qx "alice  $root_a"
 WEFT_HOME=$run/c weft label list "$root_l" | grep -qx "spam  $blog"
+WEFT_HOME=$run/c weft follow add "$root_a" >/dev/null
+! WEFT_HOME=$run/c weft trust "$root_l" >/dev/null 2>&1
+WEFT_HOME=$run/c weft trust --refresh | grep -qx 'lists  3'
+WEFT_HOME=$run/c weft trust "$root_l" | head -1 | grep -qx 2
 printf '# Paid over lightning\n' >"$run/lit.md"
 lit=$(WEFT_HOME=$run/c weft sign "$run/lit.md" | address_of)
 WEFT_HOME=$run/c weft invoice "$lit" --days 2 >"$run/invoice.txt"
@@ -170,6 +175,17 @@ click labels-close
 label_action spam hide
 set_value address "'alice/blog'"
 submit go
+wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
+expect "document.getElementById('labeled').hidden" true
+expect "document.getElementById('p-trust').textContent" ""
+click labels-toggle
+wait_js "document.getElementById('labelers-list').textContent.includes('out of reach')"
+expect "document.getElementById('reach').value" "2"
+click labels-close
+expect "document.getElementById('follow-author').textContent" "follow"
+click follow-author
+wait_js "document.getElementById('p-trust').textContent === 'followed'"
+expect "document.getElementById('follow-author').textContent" "unfollow"
 wait_js "!document.getElementById('labeled').hidden"
 expect "document.getElementById('labeled').className" "hide"
 expect "document.getElementById('labeled-text').textContent.startsWith('hidden: spam by ')" true
@@ -177,6 +193,24 @@ expect "document.getElementById('content').innerHTML" ""
 [[ -z ${SMOKE_SHOTS:-} ]] || shot "$browser" "$SMOKE_SHOTS/hidden.png"
 click labeled-reveal
 wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
+click labels-toggle
+wait_js "document.getElementById('labelers-list').textContent.includes('2 hops1 labels')"
+ok "(() => { const e = document.getElementById('reach'); e.value = '1'; e.dispatchEvent(new Event('change')); return true; })()" >/dev/null
+wait_js "document.getElementById('labelers-list').textContent.includes('out of reach')"
+click labels-close
+set_value address "'alice/blog'"
+submit go
+wait_js "document.getElementById('content').querySelector('h1')?.textContent === 'Blog'"
+wait_js "document.getElementById('labeled').hidden && document.getElementById('p-labels').textContent === 'none'"
+click follows-toggle
+wait_js "document.getElementById('follows-list').textContent.includes('alice$root_a')"
+click follows-refresh
+wait_js "document.getElementById('follows-result').textContent.includes('lists  3')"
+click follows-close
+click labels-toggle
+ok "(() => { const e = document.getElementById('reach'); e.value = '2'; e.dispatchEvent(new Event('change')); return true; })()" >/dev/null
+wait_js "document.getElementById('labelers-list').textContent.includes('2 hops1 labels')"
+click labels-close
 label_action spam blur
 set_value address "'alice/blog'"
 submit go

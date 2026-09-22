@@ -6,27 +6,26 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 to M23 (0.1: spec, core, relay, browser, DNS, store, grants, login, payments, recovery, Apache-2.0, `v0.1.0`; see `progress/`), M24 petnames in the address bar and label lists the browser acts on |
-| Next | Nothing scheduled. `BACKLOG.md` holds the rest; web of trust is the natural next layer, follows and endorsements as signed lists on the same pattern |
+| Done | M0 to M23 (0.1: spec, core, relay, browser, DNS, store, grants, login, payments, recovery, Apache-2.0, `v0.1.0`; see `progress/`), M24 petnames and label lists, M25 follows and a trust distance that gates labelers |
+| Next | Nothing scheduled. `BACKLOG.md` holds the rest; relays rate limiting by distance and recovery in the browser are closest |
 | Repo | public, github.com/akrvs/weft, Apache-2.0, CI on every push, `v0.1.0` tagged with a release carrying `weft-0.1.mp4` and `.gif` from `crates/browser/demo.sh` |
 
 ## Crates
 
 | Crate | Path | One line |
 |---|---|---|
-| weft-core | crates/core | Address, canonical CBOR, identity, record, manifest with `Guardians`, `Petnames` and `Labels` lists, pointer, grant, revoke, receipt with a `Payment` of voucher or preimage, voucher with a base64url text form, login challenge and proof, `Recovery` with guardian `Signature`s and a `Message`, one `verify` |
+| weft-core | crates/core | Address, canonical CBOR, identity, record, manifest with `Guardians`, `Petnames`, `Labels`, and `Follows` lists, pointer, grant, revoke, receipt with a `Payment` of voucher or preimage, voucher with a base64url text form, login challenge and proof, `Recovery` with guardian `Signature`s and a `Message`, one `verify` |
 | weft-home | crates/home | Encrypted keystore with `retire`, record store with an in memory index guarded by the directory mtime and a shared LRU cache under a byte cap, the one blob writer, part sweep, `Snapshot` returning `Arc<Record>` with `manifest_record` and `recovery_record` heads, `Reads` trait, `Relay` list entries with addresses and `from_key` |
 | weft-net | crates/net | `Net` from `WEFT_NET`, relay wire protocol with `size`, `invoice`, and `recovery`, client with `Quote` and `Offer` that primes direct addresses before a blob download and reports pulled bytes with the total, relay handler with `Config` behind a lock, `reload`, pricing in cents with `sats` per cent, `Node` trait with `Fake`, open invoices, pins for any author, one rule sweep, blob GC, redb index with a recovery head per author |
-| weft-resolve | crates/resolve | Target grammar with `Petname` and `Display`, `petnames` of the reader offline, `petnames_of` and `labels` of anyone, DNS registry over DoH with a positive and negative TTL cache, `Resolver<R: Reads>` for records, heads, blobs, pulling from relays on a miss unless `offline`, `redirect` through recovery heads under `MAX_HOPS`, `metered`, `watched` for pull progress with totals, `title` of an author's home page, Markdown renderer with named links |
+| weft-resolve | crates/resolve | Target grammar with `Petname` and `Display`, `petnames` of the reader offline, `petnames_of`, `labels`, `follows_of` of anyone, `trust` walking follows into a `Trust` with `distance` and `path`, DNS registry over DoH with a positive and negative TTL cache, `Resolver<R: Reads>` for records, heads, blobs, pulling from relays on a miss unless `offline`, `redirect` through recovery heads under `MAX_HOPS`, `metered`, `watched` for pull progress with totals, `title` of an author's home page, Markdown renderer with named links |
 | weft-store | crates/store | Store gate over a Unix socket: wire, `Gate` over every held record, `names`, `point`, `receipt`, `recovery`, `stop` that ends `serve`, `Log` file, server, client, pooled `Local` reads, browser key per run, `weft-store serve` and `stop`, `weft-app` |
 | weft-relay | crates/relay | Relay binary over a small lib: init, allow, deny, rate, sats, bank, `node fake` or `node lnd <url>`, price, serve through `Net` printing its list entry; SIGHUP rereads allow, banks, rate, sats and sweeps; `lnd.rs` is the LND REST adapter with a pinned certificate, `lnd.sh` a regtest network in containers, `tests/lnd.rs` the ignored live test |
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers to a file and as text |
 | weft-gateway | crates/gateway | HTTP gateway binary over hyper and `Resolver<Local>`: any target the address bar takes, `Host` based routing for publisher domains, provenance headers, `/login` sessions and budget windows in `State` (redb), allow list, pulls for sessions only under `Limits`; SIGHUP rereads the allow list and sweeps sessions |
-| weft | crates/cli | Commands over home, net, and resolve: device retire, `manifest --guardian --threshold`, `recover draft`, `sign`, `finish`, grants listed with app titles, price, `invoice`, push paid by voucher or `--preimage --relay` keeping the receipt only after accept, receipts, login, `petname` and `label` add, remove, list, import through one list writer, `resolve` following recoveries; prints through `say!`, quiet on a closed pipe |
-| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: `light-dark()` tokens stamped from the portal, GSettings, or GTK, one line provenance panel with the author's petname, names and labels dialogs, `lists.rs` annotating each page with label hits, back and forward, history and bookmarks in `<home>/browser/`, compose with live preview, price table, invoice button and a pay field for voucher or preimage, store view with names and repoint, blob view with sniff and save, pull bar with a total, start form, login consent, `register` for `weft:` links on Linux, `drive` feature with a JavaScript socket, `drive.sh` helpers, `smoke.sh`, `demo.sh` filming the loop into `target/demo/`, `tests/drift.rs` |
+| weft | crates/cli | Commands over home, net, and resolve: device retire, `manifest --guardian --threshold`, `recover draft`, `sign`, `finish`, grants listed with app titles, price, `invoice`, push paid by voucher or `--preimage --relay` keeping the receipt only after accept, receipts, login, `petname`, `label`, `follow` add, remove, list, import through one list writer and one flattened `lists::Command`, `trust [key] [--refresh]`, `resolve` following recoveries; prints through `say!`, quiet on a closed pipe |
+| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: `light-dark()` tokens stamped from the portal, GSettings, or GTK, one line provenance panel with the author's petname and distance and a follow button, names, follows, and labels dialogs, `lists.rs` annotating each page with hits from labelers in reach and caching the walk 60 s, back and forward, history and bookmarks in `<home>/browser/`, compose with live preview, price table, invoice button and a pay field for voucher or preimage, store view with names and repoint, blob view with sniff and save, pull bar with a total, start form, login consent, `register` for `weft:` links on Linux, `drive` feature with a JavaScript socket, `drive.sh` helpers, `smoke.sh`, `demo.sh` filming the loop into `target/demo/`, `tests/drift.rs` |
 
 ## Frozen decisions
-
 - Ed25519 strict, blake3, RFC 8949 deterministic CBOR subset with no booleans, no unknown fields. Manifests and the
   `manifest` pointer are root signed only, device keys sign the rest, revocation retroactive; a lost key is retired:
   `weft device retire` sets `expires`, earlier records stand. Pointers carry a Lamport `seq` per author and name and
@@ -75,26 +74,26 @@ Read first, rewritten at every close, never appended, under 120 lines.
   `weft.desktop` and an icon, then `xdg-mime default`. Theme follows the system through `light-dark()` tokens; on Linux
   `theme.rs` stamps `data-theme` from one `Source` picked at start: the portal, else GSettings `color-scheme` (`default`
   defers), else GTK, and follows its signal. No source, no stamp.
-- Lists (`protocol.md` 14, 15): `petname` and `label` are grantable whole snapshot lists behind the pointers `petnames`
-  and `labels`, 512 entries, and count only when the pointer's author wrote the list. A petname is `a-z` then `a-z0-9-`,
-  1 to 32 bytes; `Target::Petname` is a dotless head that is no address, resolved offline through the reader's own list
-  only; import copies, pages never link one, the gateway answers 404. Labels act in the browser alone:
-  `<home>/browser/labelers` (64 keys) and `actions` (`<value>\t<hide|blur|warn|highlight>`), strongest wins, page hits
-  read offline, follow and refresh pull. The browser writes petnames with `put` then `point` and never pushes them.
+- Lists (`protocol.md` 14 to 16): `petname`, `label`, `follow` are grantable whole snapshot lists behind `petnames`,
+  `labels`, `follows`, 512 entries, counting only when the pointer's author wrote the list. A petname is `a-z` then
+  `a-z0-9-`, 1 to 32 bytes; `Target::Petname` is a dotless head that is no address, resolved offline through the
+  reader's own list only; import copies, pages never link one, the gateway answers 404. Labels act in the browser alone:
+  `<home>/browser/labelers` (64 keys), `actions` (`<value>\t<hide|blur|warn|highlight>`), strongest wins, and `reach`
+  (`1` to `3` or `any`, default 2) over the trust distance: at most 3, a walk of at most 1024 lists, a bad list skipped
+  but the reader's own fatal, a redirect's new root at the same distance. Renders read offline; subscribe, follow, and
+  refresh pull. The browser writes lists with `put` then `point` and never pushes them.
 
 ## Gotchas that cost time
-
 - Tauri ignores child web view positions on Linux; see `frame` and `pack`. WebKit routes only `weft://blob/<address>` to
   the scheme handler. LND's self signed certificate is `CA:TRUE`, which webpki refuses as a leaf (`CaUsedAsEndEntity`),
   hence the pinned `ServerCertVerifier` through `use_preconfigured_tls`. `gio::Settings` and `gtk::Settings` are not
   `Send`, so `theme.rs` keeps its `Source` in a `thread_local`. Tauri embeds `crates/browser/ui` at compile time: `npm
-  ci`, `npm run build`, then `cargo build`; a missing `tsc` fails `npm run check` without the word error. WebKitGTK 2.52
-  here renders `prefers-color-scheme: dark` whatever the portal says, hence the portal read in Rust; `gio` lacks
-  `v2_72`, so `connect_g_signal` takes no detail.
+  ci`, `npm run build`, then `cargo build`; a missing `tsc` fails `npm run check` silently. WebKitGTK 2.52 ignores the
+  portal for `prefers-color-scheme`, hence the read in Rust; `gio` lacks `v2_72`, so `connect_g_signal` takes no detail.
 - iroh `presets::N0` needs internet; `Endpoint::online` never returns with relays disabled. Tests use
   `presets::Minimal`, `RelayMode::Disabled`, and `MemoryLookup` over loopback. The iroh-blobs downloader dials by id
   alone and reports offsets, never a total, hence `size`; `Client::download` connects with the entry's addresses first.
-  A socket path over 107 bytes fails with `SUN_LEN`, so smoke homes live under `$XDG_RUNTIME_DIR`. rpassword reads
+  Socket paths over 107 bytes fail (`SUN_LEN`), so smoke homes live under `$XDG_RUNTIME_DIR`. rpassword reads
   `/dev/tty`, never a pipe. redb locks per file and a read fails on a table never created, so `Index::open` opens every
   table once. The CBOR subset has no boolean: flags on the wire are `uint`. hickory's `Resolver` never asks for the AD
   bit; `weft-resolve::Dns` builds it, and `Dns::udp` under `cfg(test)` uses a loopback UDP fake that must echo the
@@ -104,7 +103,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
   `WEFT_DRIVE=<socket>` evaluates one JavaScript expression per connection, `{"ok":..}` or `{"err":..}` back; `drive`
   polls a `window.__drive<n>` slot, `eval_with_callback` returns early. `smoke.sh` is the transcript and refreshes the
   screenshots; Hyprland tiles new windows, so `demo.sh` floats one via `hyprctl`. `jq -e` exits 1 on `false`, so drive
-  checks assert `true`. A dotless gateway path on a publisher host tries `host/path` before it can be a petname.
+  checks assert `true`. A `go` to the page shown waits on the changed element, not the heading. A dotless gateway path
+  on a publisher host tries `host/path` before it can be a petname.
 
 ## Verify before commit
 Every flag section of `README.md` is a runnable transcript; `npm ci --prefix crates/browser/ui` first in a fresh worktree. `vectors/` regenerate only on a format change: `cargo run -p weft-core --example vectors`.

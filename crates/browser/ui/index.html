@@ -18,6 +18,7 @@
   <button id="bookmarks-toggle" type="button" title="bookmarks">bookmarks</button>
   <button id="compose-toggle" type="button">compose</button>
   <button id="names-toggle" type="button">names</button>
+  <button id="follows-toggle" type="button">follows</button>
   <button id="labels-toggle" type="button">labels</button>
   <button id="store-toggle" type="button">store</button>
   <button id="identity" type="button">identity</button>
@@ -27,6 +28,7 @@
   <button id="prov-line" type="button">
     <span id="status"></span>
     <span id="p-pet"></span>
+    <span id="p-trust"></span>
     <span id="p-short"></span>
     <span id="prov-more">details</span>
   </button>
@@ -35,6 +37,7 @@
     <dt>kind</dt><dd id="p-kind"></dd>
     <dt>author</dt><dd id="p-author"></dd>
     <dt>petname</dt><dd><span id="p-petname"></span><form id="name-author" hidden><input id="name-author-name" type="text" spellcheck="false" autocomplete="off" placeholder="your name for this author"><button type="submit">name</button></form></dd>
+    <dt>trust</dt><dd><span id="p-distance"></span> <button id="follow-author" type="button">follow</button></dd>
     <dt>labels</dt><dd id="p-labels"></dd>
     <dt>signer</dt><dd id="p-signer"></dd>
     <dt>created</dt><dd id="p-created"></dd>
@@ -119,14 +122,38 @@
   <pre id="names-result"></pre>
   <button id="names-close" type="button">close</button>
 </dialog>
+<dialog id="follows">
+  <h2>keys you follow</h2>
+  <p class="muted">follows give every key a trust distance: you, followed, then up to 3 hops. the list stays in your store until you push it.</p>
+  <table id="follows-list"></table>
+  <form id="follows-add">
+    <input id="follows-add-key" type="text" spellcheck="false" autocomplete="off" placeholder="key or petname">
+    <button type="submit">follow</button>
+    <button id="follows-refresh" type="button">refresh</button>
+  </form>
+  <form id="follows-import">
+    <input id="follows-import-key" type="text" spellcheck="false" autocomplete="off" placeholder="copy follows from a key or petname">
+    <button type="submit">import</button>
+  </form>
+  <pre id="follows-result"></pre>
+  <button id="follows-close" type="button">close</button>
+</dialog>
 <dialog id="labels">
-  <h2>labelers you follow</h2>
+  <h2>labelers you subscribe to</h2>
   <table id="labelers-list"></table>
   <form id="labelers-add">
     <input id="labelers-add-key" type="text" spellcheck="false" autocomplete="off" placeholder="labeler key or petname">
-    <button type="submit">follow</button>
+    <button type="submit">subscribe</button>
     <button id="labels-refresh" type="button">refresh</button>
   </form>
+  <label id="reach-row">count labelers within
+    <select id="reach">
+      <option value="1">1 hop</option>
+      <option value="2">2 hops</option>
+      <option value="3">3 hops</option>
+      <option value="any">any distance</option>
+    </select>
+  </label>
   <h2>what a label does</h2>
   <table id="actions-list"></table>
   <form id="actions-set">

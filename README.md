@@ -13,13 +13,13 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M24-yellow)
+![status](https://img.shields.io/badge/status-M25-yellow)
 ![release](https://img.shields.io/badge/release-v0.1.0-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![tests](https://img.shields.io/badge/tests-164%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-172%20passing-brightgreen)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-brightgreen)
 
 ```
@@ -48,7 +48,8 @@
 │              recover [guardians hand a lost root to a new one]  │
 │              release [a license, a tag, a two minute film]      │
 │              names [a word you chose, a label you follow]       │
-│ status     : M24 — petnames · label lists · 10 crates           │
+│              trust [a follow, a distance, a labeler in reach]   │
+│ status     : M25 — follows · trust distance · 10 crates         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -441,11 +442,31 @@ no one else's: an import copies entries, it never trusts a friend's list
 live. Pages cannot link a petname and the gateway answers 404 for one.
 A label list is a labeler's signed statements about record addresses and
 keys, a key label covering every record its author signs. The browser's
-labels dialog follows labelers and maps each value to hide, blur, warn,
+labels dialog subscribes to labelers and maps each value to hide, blur, warn,
 or highlight; the strongest wins, an unmapped value shows as a note, and
 a hidden page stays one click away. Both lists are whole snapshots behind
 the pointers `petnames` and `labels`, so the relay, the store, and every
 pull path carry them unchanged.
+
+## [ Trust Flag ] — a follow, a distance, a labeler in reach
+
+```bash
+weft follow add <friend>                    # a signed list of the keys you vouch for
+weft follow import <friend>                 # copy a friend's follows into yours
+weft push                                   # follows leave the store only when you push
+weft trust --refresh                        # walk and pull: 0  1, 1  1, 2  4, 3  9, lists  6
+weft trust <key>                            # 2, then one shortest path, a key per line
+```
+
+Your root is at distance 0, a key you follow at 1, a key they follow at
+2, and so on to 3; nothing further counts. The walk reads lists breadth
+first, at most 1024 of them, skips any that fail to verify, and hands a
+recovered key's distance to its new root. Page renders walk the local
+store only; `--refresh`, the browser's refresh button, and a follow pull.
+The provenance panel shows `you`, `followed`, or `2 hops` beside the
+petname with a follow button, and a labeler counts only within the reach
+set in the labels dialog, 2 hops unless you pick 1, 3, or any. An
+endorsement is a label on a key. Relays and the gateway ignore follows.
 
 ## [ Persistence ] — posture
 
@@ -509,16 +530,16 @@ pull path carry them unchanged.
 ## [ Loadout ]
 
 ```
-crates/core/         weft-core: address · cbor · identity · record · manifest with guardians · pointer · grant · receipt with a voucher or a preimage · voucher text · login · recovery · petname and label lists · verify
+crates/core/         weft-core: address · cbor · identity · record · manifest with guardians · pointer · grant · receipt with a voucher or a preimage · voucher text · login · recovery · petname, label, and follow lists · verify
 crates/home/         weft-home: encrypted keystore · retire · record store · in memory index guarded by the directory mtime · byte capped cache · Reads trait with recovery heads · addressed relay list
 crates/net/          weft-net: wire with size, invoice, and recovery · client with pull progress and totals · relay handler · pricing in cents and sats · Node trait with a fake · invoices · pins · sponsorship · sweep · blob GC · redb index · public or local network
-crates/resolve/      weft-resolve: target grammar with petnames and a text form · own petnames and anyone's label list · DNS over HTTPS with a positive and negative TTL cache · recovery redirects under a hop cap · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
+crates/resolve/      weft-resolve: target grammar with petnames and a text form · own petnames, anyone's label and follow lists · trust walk with a distance and a path · DNS over HTTPS with a positive and negative TTL cache · recovery redirects under a hop cap · head and blob resolution over any Reads, pulling on miss or offline, watched with totals · Markdown renderer with named links · page titles
 crates/store/        weft-store: store wire · gate over every held record · names, point, receipt, recovery · browser key per run · daemon with --attach, --cache, stop, and a log file · client · pooled Local reads · weft-app sample
 crates/relay/        weft-relay: init · allow · rate · sats · bank · node fake or lnd with a pinned certificate · price · serve, printing its entry · SIGHUP reload · lnd.sh regtest and a live test
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
-crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · petname add, remove, list, import · label add, remove, list · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · petnames in the provenance panel · names and labels dialogs · labels that hide, blur, warn, highlight · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · drive.sh helpers · smoke.sh with a screenshot hash the tests check · demo.sh recording the loop
+crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · petname add, remove, list, import · label add, remove, list · follow add, remove, list, import · trust with a path or counts · quiet on a closed pipe
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · petnames and trust distance in the provenance panel · follow button · names, follows, and labels dialogs · labels that hide, blur, warn, highlight from labelers in reach · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · drive.sh helpers · smoke.sh with a screenshot hash the tests check · demo.sh recording the loop
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
@@ -547,10 +568,10 @@ crates/browser/demo.sh                      # records target/demo/weft-0.1.mp4 a
 
 ## [ Next Ops ]
 
-`v0.1.0` is tagged, licensed under Apache-2.0, and filmed, and the naming
-layer is no longer empty: petnames open in the address bar and label lists
-decide what the browser shows. The status table in
-[`docs/design.md`](docs/design.md) says which promises the code kept; the
-rest are rows in [`progress/BACKLOG.md`](progress/BACKLOG.md). The next
-layer on the same pattern is a web of trust, follows and endorsements as
-signed lists. See [`progress/`](progress/).
+`v0.1.0` is tagged, licensed under Apache-2.0, and filmed. Petnames open
+in the address bar, label lists decide what the browser shows, and follows
+give every key a trust distance that decides which labelers count. The
+status table in [`docs/design.md`](docs/design.md) says which promises the
+code kept; the rest are rows in [`progress/BACKLOG.md`](progress/BACKLOG.md),
+with relays rate limiting by distance and the recovery dialog closest to
+hand. See [`progress/`](progress/).

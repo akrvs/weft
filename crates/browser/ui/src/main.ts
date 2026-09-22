@@ -11,13 +11,23 @@ type Page = {
   html: string;
   blob: string | null;
   petname: string | null;
+  distance: number | null;
+  followed: boolean;
   hits: Hit[];
   treatment: Action | null;
 };
 
 type Action = "hide" | "blur" | "warn" | "highlight";
 type Hit = { value: string; labeler: string; by: string | null; action: Action | null };
-type Labeler = { key: string; petname: string | null; labels: number | null; error: string | null };
+type Labeler = {
+  key: string;
+  petname: string | null;
+  distance: number | null;
+  reach: boolean;
+  labels: number | null;
+  error: string | null;
+};
+type Followed = { key: string; petname: string | null };
 
 type Identity = { root: string; devices: string[]; labels: string[]; relays: string[] };
 type Preview = { html: string; title: string | null };
@@ -62,6 +72,7 @@ const labeled = el<HTMLElement>("labeled");
 const labeledText = el<HTMLElement>("labeled-text");
 const reveal = el<HTMLButtonElement>("labeled-reveal");
 const nameAuthor = el<HTMLFormElement>("name-author");
+const followAuthor = el<HTMLButtonElement>("follow-author");
 const VERB: Record<Action, string> = { hide: "hidden", blur: "blurred", warn: "warning", highlight: "highlighted" };
 const NOT_RUNNING = "weft-store is not running";
 const LOGIN = "weft:login?";
@@ -155,6 +166,13 @@ function showBlob(page: Page, view: BlobView): void {
   content.append(panel);
 }
 
+function trust(distance: number | null): string {
+  if (distance === null) return "";
+  if (distance === 0) return "you";
+  if (distance === 1) return "followed";
+  return `${distance} hops`;
+}
+
 function describe(hits: Hit[]): string {
   return hits.map((h) => `${h.value} by ${h.by ?? short(h.labeler, 16)}`).join(", ");
 }
@@ -205,6 +223,12 @@ async function showPage(page: Page): Promise<void> {
   el("p-petname").textContent = page.petname ?? "none";
   nameAuthor.hidden = page.petname !== null;
   nameAuthor.dataset.key = page.author;
+  el("p-trust").textContent = trust(page.distance);
+  el("p-distance").textContent = trust(page.distance) || "beyond 3 hops";
+  followAuthor.hidden = page.distance === 0;
+  followAuthor.textContent = page.followed ? "unfollow" : "follow";
+  followAuthor.dataset.key = page.author;
+  followAuthor.dataset.followed = String(page.followed);
   el("p-short").textContent = `${page.kind}  ${short(page.author)}  ${page.source}`;
   setStatus(page.author === page.signer ? "signed by root key" : "signed by an authorized device", true);
   unsigned.hidden = true;
@@ -731,6 +755,67 @@ nameAuthor.addEventListener("submit", async (event) => {
   }
 });
 
+followAuthor.addEventListener("click", async () => {
+  const command = followAuthor.dataset.followed === "true" ? "unfollow" : "follow";
+  try {
+    await invoke<string>(command, { key: followAuthor.dataset.key ?? "" });
+    await go(current, false);
+  } catch (e) {
+    el("p-distance").textContent = String(e);
+  }
+});
+
+const followsDialog = el<HTMLDialogElement>("follows");
+const followsResult = el<HTMLPreElement>("follows-result");
+
+async function openFollows(): Promise<void> {
+  const list = el<HTMLTableElement>("follows-list");
+  list.replaceChildren();
+  try {
+    const entries = await invoke<Followed[]>("follows");
+    for (const f of entries) {
+      const remove = button("unfollow", async () => {
+        try {
+          followsResult.textContent = await invoke<string>("unfollow", { key: f.key });
+        } catch (e) {
+          followsResult.textContent = String(e);
+        }
+        await openFollows();
+      });
+      list.append(row([f.petname ?? "", f.key, remove]));
+    }
+    if (entries.length === 0) list.append(row(["no follows yet"]));
+  } catch (e) {
+    list.append(row([String(e)]));
+  }
+  if (!followsDialog.open) followsDialog.showModal();
+}
+
+async function followsAction(command: string, args: Record<string, string> = {}): Promise<void> {
+  followsResult.textContent = "pulling...";
+  try {
+    followsResult.textContent = await invoke<string>(command, args);
+  } catch (e) {
+    followsResult.textContent = String(e);
+  }
+  await openFollows();
+}
+
+el("follows-toggle").addEventListener("click", () => {
+  followsResult.textContent = "";
+  void openFollows();
+});
+el("follows-close").addEventListener("click", () => followsDialog.close());
+el<HTMLFormElement>("follows-add").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void followsAction("follow", { key: el<HTMLInputElement>("follows-add-key").value });
+});
+el<HTMLFormElement>("follows-import").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void followsAction("import_follows", { key: el<HTMLInputElement>("follows-import-key").value });
+});
+el("follows-refresh").addEventListener("click", () => void followsAction("refresh_trust"));
+
 const namesDialog = el<HTMLDialogElement>("names");
 const namesResult = el<HTMLPreElement>("names-result");
 
@@ -804,13 +889,17 @@ async function openLabels(): Promise<void> {
     const entries = await invoke<Labeler[]>("labelers");
     for (const l of entries) {
       const state = l.error ?? (l.labels === null ? "nothing pulled yet" : `${l.labels} labels`);
-      const drop = button("unfollow", async () => {
+      const distance = trust(l.distance) || "beyond 3 hops";
+      const drop = button("unsubscribe", async () => {
         await invoke("unsubscribe", { labeler: l.key });
         await openLabels();
       });
-      labelers.append(row([l.petname ?? "", l.key, state, drop]));
+      const tr = row([l.petname ?? "", l.key, distance, l.reach ? state : "out of reach", drop]);
+      tr.classList.toggle("muted", !l.reach);
+      labelers.append(tr);
     }
-    if (entries.length === 0) labelers.append(row(["no labelers followed"]));
+    if (entries.length === 0) labelers.append(row(["no labelers subscribed"]));
+    reach.value = await invoke<string>("reach");
     const set = await invoke<[string, Action][]>("actions");
     for (const [value, action] of set) {
       const drop = button("remove", async () => {
@@ -825,6 +914,17 @@ async function openLabels(): Promise<void> {
   }
   if (!labelsDialog.open) labelsDialog.showModal();
 }
+
+const reach = el<HTMLSelectElement>("reach");
+reach.addEventListener("change", async () => {
+  try {
+    await invoke("set_reach", { reach: reach.value });
+    labelsResult.textContent = "";
+  } catch (e) {
+    labelsResult.textContent = String(e);
+  }
+  await openLabels();
+});
 
 el("labels-toggle").addEventListener("click", () => {
   labelsResult.textContent = "";

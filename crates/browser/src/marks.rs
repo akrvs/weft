@@ -13,6 +13,46 @@ pub const MAX_TARGET: usize = 2048;
 pub const LABELERS: &str = "labelers";
 pub const ACTIONS: &str = "actions";
 pub const MAX_LABELERS: usize = 64;
+pub const REACH: &str = "reach";
+pub const DEFAULT_REACH: Reach = Reach::Within(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    Within(u8),
+    Any,
+}
+
+impl Serialize for Reach {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.line())
+    }
+}
+
+impl Reach {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "any" => Some(Self::Any),
+            "1" => Some(Self::Within(1)),
+            "2" => Some(Self::Within(2)),
+            "3" => Some(Self::Within(3)),
+            _ => None,
+        }
+    }
+
+    pub fn admits(self, distance: Option<u8>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Within(max) => distance.is_some_and(|d| d <= max),
+        }
+    }
+
+    fn line(self) -> String {
+        match self {
+            Self::Any => "any".to_owned(),
+            Self::Within(d) => d.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -180,6 +220,21 @@ impl Marks {
         self.write(ACTIONS, &lines)
     }
 
+    pub fn reach(&self) -> Result<Reach> {
+        let text = self.read(REACH)?;
+        if text.is_empty() {
+            return Ok(DEFAULT_REACH);
+        }
+        match text.strip_suffix('\n').and_then(Reach::parse) {
+            Some(reach) => Ok(reach),
+            None => fail(format!("{REACH} holds neither 1, 2, 3, nor any")),
+        }
+    }
+
+    pub fn set_reach(&self, reach: Reach) -> Result<()> {
+        self.write(REACH, &[reach.line()])
+    }
+
     fn others(&self, target: &str) -> Result<Vec<String>> {
         Ok(self
             .read(BOOKMARKS)?
@@ -296,5 +351,22 @@ mod tests {
         assert_eq!(Action::parse("shout"), None);
         assert!(Action::Hide > Action::Blur && Action::Blur > Action::Warn);
         assert!(Action::Warn > Action::Highlight);
+    }
+
+    #[test]
+    fn reach_defaults_to_two_and_rejects_junk() {
+        let m = marks("reach");
+        assert_eq!(m.reach().unwrap(), Reach::Within(2));
+        m.set_reach(Reach::Any).unwrap();
+        assert_eq!(m.reach().unwrap(), Reach::Any);
+        m.set_reach(Reach::Within(3)).unwrap();
+        assert_eq!(m.reach().unwrap(), Reach::Within(3));
+        std::fs::write(m.dir.join(REACH), "4\n").unwrap();
+        assert!(m.reach().is_err());
+        std::fs::write(m.dir.join(REACH), "2").unwrap();
+        assert!(m.reach().is_err());
+        assert_eq!(Reach::parse("0"), None);
+        assert!(Reach::Within(2).admits(Some(2)) && !Reach::Within(2).admits(Some(3)));
+        assert!(!Reach::Within(3).admits(None) && Reach::Any.admits(None));
     }
 }

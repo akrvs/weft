@@ -564,6 +564,7 @@ fn main() {
         }),
     );
     lists(&keys, &manifest);
+    follows(&keys, &manifest);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -656,6 +657,62 @@ fn lists(keys: &[SecretKey], manifest: &Manifest) {
                 entry("label value of 33 bytes", &raw("label", labels(vec![tag("record", spam.bytes(), &"a".repeat(33))])), m),
                 entry("labels over 512", &raw("label", labels(many_labels)), m),
                 entry("label with an unknown field", &raw("label", labels(vec![Cbor::Map(vec![("record".into(), Cbor::Bytes(spam.bytes().to_vec())), ("value".into(), Cbor::Text("spam".into())), ("why".into(), Cbor::Text("x".into()))])])), m),
+            ]
+        }),
+    );
+}
+
+fn follows(keys: &[SecretKey], manifest: &Manifest) {
+    use weft_core::Follows;
+    let (root, device) = (&keys[0], &keys[1]);
+    let at = 1_760_000_030;
+    let raw = |body: Cbor| {
+        Draft {
+            author: root.public(),
+            signer: device.public(),
+            kind: "follow".into(),
+            created: at,
+            refs: vec![],
+            body: Body::Inline(body.encode()),
+        }
+        .sign(device)
+        .unwrap()
+    };
+    let list = |entries: Vec<Cbor>| Cbor::Map(vec![("follows".into(), Cbor::Array(entries))]);
+    let mut sorted = vec![keys[3].public(), keys[4].public(), keys[2].public()];
+    sorted.sort_by(|a, b| a.bytes().cmp(b.bytes()));
+    let follows = Follows { keys: sorted.clone() };
+    let low = Cbor::Bytes(sorted[0].bytes().to_vec());
+    let high = Cbor::Bytes(sorted[1].bytes().to_vec());
+    let mut many: Vec<Vec<u8>> = (0..513u32)
+        .map(|i| {
+            let mut seed = [7u8; 32];
+            seed[..4].copy_from_slice(&i.to_le_bytes());
+            SecretKey::from_seed(seed).public().bytes().to_vec()
+        })
+        .collect();
+    many.sort();
+    let mut weak = [0u8; 32];
+    weak[0] = 1;
+    let signed = |d: Draft| d.sign(device).unwrap();
+    let (r, d) = (root.public(), device.public());
+    let m = Some(manifest);
+    write(
+        "follows",
+        &json!({
+            "records": [
+                entry("follows", &signed(follows.draft(&r, &d, at)), m),
+                entry("empty follows", &signed(Follows::default().draft(&r, &d, at)), m),
+                entry("follows without manifest", &signed(follows.draft(&r, &d, at)), None),
+                entry("follows unsorted", &raw(list(vec![high, low.clone()])), m),
+                entry("follows duplicate", &raw(list(vec![low.clone(), low.clone()])), m),
+                entry("follows over 512", &raw(list(many.into_iter().map(Cbor::Bytes).collect())), m),
+                entry("follow with a short key", &raw(list(vec![Cbor::Bytes(vec![1; 31])])), m),
+                entry("follow with a weak key", &raw(list(vec![Cbor::Bytes(weak.to_vec())])), m),
+                entry("follow as text", &raw(list(vec![Cbor::Text("alice".into())])), m),
+                entry("follow as a map", &raw(list(vec![Cbor::Map(vec![("key".into(), low)])])), m),
+                entry("follows missing", &raw(Cbor::Map(vec![])), m),
+                entry("follows with an unknown field", &raw(Cbor::Map(vec![("follows".into(), Cbor::Array(vec![])), ("note".into(), Cbor::Text("x".into()))])), m),
             ]
         }),
     );

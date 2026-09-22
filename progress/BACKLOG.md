@@ -12,7 +12,9 @@ scheduled.
 | Label authoring in the browser | M24 | Labelers publish with `weft label`; the browser only follows and acts |
 | Labels refreshed on a timer | M24 | Page hits read the local store; labeler heads are pulled on follow and on the refresh button only |
 | Pointers for granted apps | M24 | An app granted `petname` or `label` can `put` a list but not `point` it; `point` stays browser only |
-| Web of trust | design.md 4.7 | Follows and endorsements as signed records, a trust distance the browser and relays can rate limit on |
+| Relay rate limits by trust distance | design.md 4.7 | Follows and the walk shipped in M25; relays still gate by allowlist and pins alone |
+| Pull on `weft follow add` | M25 | The CLI writes the list only; `weft trust --refresh` pulls |
+| Redirects past the last read | M25 | A key first seen at distance 3 is not followed through recovery, since its list is never read |
 | Selective disclosure claims | design.md 4.1 | Login proves the key alone; a claim format and an issuer are both missing |
 | Root rotation | design.md 4.1 | A successor manifest signed by both roots. Recovery covers a lost root only |
 | Hardware backed root | design.md 4.1 | The root is a passphrase encrypted file; a token or enclave path needs a signing trait in `weft-home` |

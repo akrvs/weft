@@ -5,9 +5,11 @@ pub mod error;
 pub mod render;
 pub mod resolver;
 pub mod target;
+pub mod trust;
 
 pub use dns::{Binding, Dns, Negative};
 pub use error::{Error, Result};
 pub use render::{Links, escape, render};
 pub use resolver::{Page, Resolver, Watch};
 pub use target::Target;
+pub use trust::Trust;

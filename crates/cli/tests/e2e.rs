@@ -275,3 +275,43 @@ fn petnames_and_labels_are_edited_as_signed_lists() {
     a.ok(&["label", "remove", &hash, "spam"]);
     assert_eq!(a.ok(&["label", "list"]), format!("trusted  {friend_root}\n"));
 }
+
+#[test]
+fn follows_give_a_trust_distance_and_a_path() {
+    let a = Machine::new("follow-a");
+    let b = Machine::new("follow-b");
+    let c = Machine::new("follow-c");
+    let [ra, rb, rc] = [&a, &b, &c].map(|m| m.ok(&["init"]).lines().next().unwrap().to_owned());
+    a.ok(&["device", "add", "laptop"]);
+    a.ok(&["manifest"]);
+
+    assert_eq!(a.ok(&["follow", "list"]), "");
+    let written = a.ok(&["follow", "add", &rb, "--as", "laptop"]);
+    assert_eq!(written.lines().count(), 2, "{written}");
+    a.ok(&["petname", "add", "bob", &rb]);
+    assert_eq!(a.ok(&["follow", "list"]), format!("{rb}  bob\n"));
+    let (success, text) = a.run(&["follow", "add", &rb]);
+    assert!(!success && text.contains("already followed"), "{text}");
+    let (success, text) = a.run(&["follow", "remove", &rc]);
+    assert!(!success && text.contains("not followed"), "{text}");
+    let hash = weft_core::Address::of(b"x").to_string();
+    let (success, text) = a.run(&["follow", "add", &hash]);
+    assert!(!success && text.contains("not a key address"), "{text}");
+
+    b.ok(&["follow", "add", &rc]);
+    assert_eq!(a.ok(&["trust", &rb]), format!("1\n{ra}\n{rb}  bob\n"));
+    let (success, text) = a.run(&["trust", &rc]);
+    assert!(!success && text.contains("not within 3 follows"), "{text}");
+    copy_records(&b.records(), &a.records());
+    assert_eq!(a.ok(&["trust", &rc]), format!("2\n{ra}\n{rb}  bob\n{rc}\n"));
+    assert_eq!(a.ok(&["trust", &ra]), format!("0\n{ra}\n"));
+    assert_eq!(a.ok(&["trust"]), "0  1\n1  1\n2  1\n3  0\nlists  3\n");
+
+    let (success, text) = a.run(&["trust", "--refresh"]);
+    assert!(!success && text.contains("no relays configured"), "{text}");
+    let (success, text) = a.run(&["follow", "import", &rb]);
+    assert!(!success && text.contains("no relays configured"), "{text}");
+    a.ok(&["follow", "remove", &rb]);
+    assert_eq!(a.ok(&["follow", "list"]), "");
+    assert_eq!(a.ok(&["trust"]), "0  1\n1  0\n2  0\n3  0\nlists  1\n");
+}

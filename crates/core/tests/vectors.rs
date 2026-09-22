@@ -250,3 +250,30 @@ fn lists() {
     assert_eq!(labels.on(&Address::of(b"x"), &alice.address()).collect::<Vec<_>>(), ["trusted"]);
     assert_eq!(labels.on(&Address::of(b"x"), &Address::of(b"y")).count(), 0);
 }
+
+#[test]
+fn follows() {
+    use weft_core::{Error, Follows};
+    let v = load("follows");
+    check_records(&v, &manifest());
+    let record = Record::from_bytes(&hex(v["records"][0]["hex"].as_str().unwrap())).unwrap();
+    let mut follows = Follows::from_record(&record).unwrap();
+    let alice = SecretKey::from_seed([4; 32]).public();
+    let stranger = SecretKey::from_seed([9; 32]).public();
+    assert_eq!(follows.keys.len(), 3);
+    assert!(follows.contains(&alice));
+    assert!(!follows.contains(&stranger));
+    assert!(!follows.insert(alice).unwrap());
+    assert!(follows.insert(stranger).unwrap());
+    follows.check().unwrap();
+    assert!(follows.remove(&alice));
+    assert!(!follows.remove(&alice));
+    assert_eq!(Follows::decode(&follows.encode()).unwrap(), follows);
+    let mut full = Follows::default();
+    for i in 0..512u32 {
+        let mut seed = [8u8; 32];
+        seed[..4].copy_from_slice(&i.to_le_bytes());
+        assert!(full.insert(SecretKey::from_seed(seed).public()).unwrap());
+    }
+    assert_eq!(full.insert(stranger).unwrap_err(), Error::Limit("follows"));
+}

@@ -1,9 +1,42 @@
 use clap::Subcommand;
-use weft_core::{Address, Draft, Label, Labels, Petnames, PublicKey, label, petname};
+use weft_core::{
+    Address, Draft, Follows, Label, Labels, Petnames, PublicKey, follow, label, petname,
+};
 use weft_home::{Home, ROOT, Result, Store, fail, home};
-use weft_resolve::Resolver;
+use weft_resolve::trust::MAX_DISTANCE;
+use weft_resolve::{Resolver, Trust};
 
 use crate::{key_of, net, next_pointer};
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    Petname {
+        #[command(subcommand)]
+        command: PetnameCommand,
+    },
+    Label {
+        #[command(subcommand)]
+        command: LabelCommand,
+    },
+    Follow {
+        #[command(subcommand)]
+        command: FollowCommand,
+    },
+    Trust {
+        key: Option<Address>,
+        #[arg(long)]
+        refresh: bool,
+    },
+}
+
+pub async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
+    match command {
+        Command::Petname { command } => petname(home, store, command).await,
+        Command::Label { command } => label(home, store, command).await,
+        Command::Follow { command } => follow(home, store, command).await,
+        Command::Trust { key, refresh } => trust(home, store, key, refresh).await,
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum PetnameCommand {
@@ -48,6 +81,28 @@ pub enum LabelCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum FollowCommand {
+    Add {
+        key: Address,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
+    Remove {
+        key: Address,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
+    List {
+        key: Option<Address>,
+    },
+    Import {
+        key: Address,
+        #[arg(long = "as", default_value = ROOT)]
+        signer: String,
+    },
+}
+
 fn local(home: &Home, store: &Store) -> Resolver<Store> {
     Resolver::new(Home::new(home.path().to_path_buf()), store.clone()).offline()
 }
@@ -56,7 +111,7 @@ fn failed(e: &weft_resolve::Error) -> weft_home::Fail {
     e.to_string().into()
 }
 
-pub async fn petname(home: &Home, store: &Store, command: PetnameCommand) -> Result<()> {
+async fn petname(home: &Home, store: &Store, command: PetnameCommand) -> Result<()> {
     let own = || async { local(home, store).petnames().await.map_err(|e| failed(&e)) };
     match command {
         PetnameCommand::Add { name, key, signer } => {
@@ -112,7 +167,7 @@ pub async fn petname(home: &Home, store: &Store, command: PetnameCommand) -> Res
     }
 }
 
-pub async fn label(home: &Home, store: &Store, command: LabelCommand) -> Result<()> {
+async fn label(home: &Home, store: &Store, command: LabelCommand) -> Result<()> {
     let own = || async {
         let root = home.root()?;
         let labels = local(home, store).labels(root).await.map_err(|e| failed(&e))?;
@@ -142,6 +197,98 @@ pub async fn label(home: &Home, store: &Store, command: LabelCommand) -> Result<
             let labels = resolver.labels(key_of(key)?).await.map_err(|e| failed(&e))?;
             print_labels(&labels.unwrap_or_default());
             Ok(())
+        }
+    }
+}
+
+async fn follow(home: &Home, store: &Store, command: FollowCommand) -> Result<()> {
+    let own = || async {
+        let root = home.root()?;
+        let follows = local(home, store).follows_of(root).await.map_err(|e| failed(&e))?;
+        Ok::<_, weft_home::Fail>(follows.unwrap_or_default())
+    };
+    let theirs = |key: PublicKey| async move {
+        let resolver = net::resolver(home, store).await?;
+        match resolver.follows_of(key).await.map_err(|e| failed(&e))? {
+            Some(follows) => Ok(follows),
+            None => fail(format!("{} publishes no follows", key.address())),
+        }
+    };
+    match command {
+        FollowCommand::Add { key, signer } => {
+            let key = key_of(key)?;
+            let mut follows = own().await?;
+            if !follows.insert(key)? {
+                return fail(format!("{} is already followed", key.address()));
+            }
+            write(home, store, &signer, follow::POINTER, |a, s, t| follows.draft(a, s, t))
+        }
+        FollowCommand::Remove { key, signer } => {
+            let key = key_of(key)?;
+            let mut follows = own().await?;
+            if !follows.remove(&key) {
+                return fail(format!("{} is not followed", key.address()));
+            }
+            write(home, store, &signer, follow::POINTER, |a, s, t| follows.draft(a, s, t))
+        }
+        FollowCommand::List { key: None } => {
+            print_follows(home, store, &own().await?).await;
+            Ok(())
+        }
+        FollowCommand::List { key: Some(key) } => {
+            print_follows(home, store, &theirs(key_of(key)?).await?).await;
+            Ok(())
+        }
+        FollowCommand::Import { key, signer } => {
+            let from = theirs(key_of(key)?).await?;
+            let mut follows = own().await?;
+            let mut added = 0usize;
+            for key in &from.keys {
+                if follows.insert(*key)? {
+                    say!("added  {}", key.address());
+                    added += 1;
+                }
+            }
+            if added == 0 {
+                return Ok(());
+            }
+            write(home, store, &signer, follow::POINTER, |a, s, t| follows.draft(a, s, t))
+        }
+    }
+}
+
+async fn trust(home: &Home, store: &Store, key: Option<Address>, refresh: bool) -> Result<()> {
+    let root = home.root()?;
+    let resolver = if refresh { net::resolver(home, store).await? } else { local(home, store) };
+    let trust: Trust = resolver.trust(root).await.map_err(|e| failed(&e))?;
+    let Some(key) = key else {
+        for (distance, count) in trust.counts().iter().enumerate() {
+            say!("{distance}  {count}");
+        }
+        say!("lists  {}", trust.lists());
+        return Ok(());
+    };
+    let key = key_of(key)?;
+    let Some(distance) = trust.distance(&key) else {
+        return fail(format!("{} is not within {MAX_DISTANCE} follows", key.address()));
+    };
+    let names = local(home, store).petnames().await.unwrap_or_default();
+    say!("{distance}");
+    for step in trust.path(&key) {
+        match names.name(&step) {
+            Some(name) => say!("{}  {name}", step.address()),
+            None => say!("{}", step.address()),
+        }
+    }
+    Ok(())
+}
+
+async fn print_follows(home: &Home, store: &Store, follows: &Follows) {
+    let names = local(home, store).petnames().await.unwrap_or_default();
+    for key in &follows.keys {
+        match names.name(key) {
+            Some(name) => say!("{}  {name}", key.address()),
+            None => say!("{}", key.address()),
         }
     }
 }

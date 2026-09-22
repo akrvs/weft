@@ -157,7 +157,8 @@ before the loss, revoking trusts none.
 | Pointer prev, recovery prev | 16 |
 | Name, device label | 64 bytes |
 | Petname | 32 bytes |
-| Petnames, labels per list | 512 each |
+| Petnames, labels, follows per list | 512 each |
+| Trust distance, lists per walk | 3, 1024 |
 | Kinds per grant | 16 |
 | Service name | 253 bytes |
 | Proof | 65536 bytes |
@@ -170,9 +171,9 @@ The kind namespace is open: any text that satisfies section 4 is a kind,
 and a kind this document does not name carries no rules beyond section 4.
 `manifest`, `pointer`, `grant`, `revoke`, `receipt`, and `recovery` are
 defined here and are reserved: they can never be granted. `login` is
-defined here, may be granted, and is never stored or relayed. `petname`
-and `label` are defined here and may be granted. `page` and `file` are
-conventional and carry no extra rules.
+defined here, may be granted, and is never stored or relayed. `petname`,
+`label`, and `follow` are defined here and may be granted. `page` and
+`file` are conventional and carry no extra rules.
 
 ## 10. Grants
 
@@ -348,3 +349,23 @@ A label on a key applies to every record whose `author` is that key. The
 current list of a labeler is the target of the head of its pointer named
 `labels`. Relays store and serve label lists like any record and act on
 none of them.
+
+## 16. Follows
+
+A follow is a reader's signed statement that a key is worth trusting.
+Walking follows gives each key a trust distance from the reader.
+
+`kind = "follow"`. `body` is a canonical map with one key, `follows`, an
+array of 0 to 512 public keys, bytes(32) each, sorted by bytes and
+unique. The current list of an author is the target of the head of the
+author's pointer named `follows`. An endorsement is a label on a key,
+section 15.
+
+The reader's root is at distance 0 and each key in the current list of a
+key at distance `d` is at `d + 1`, the smallest such value, at most 3. A
+walk reads lists breadth first, within a distance in key bytes order, at
+most 1024 lists. A list that does not verify is skipped, except the
+reader's own. Reading the list of a key that recovery redirects,
+section 13, reads the new root's list, and the new root takes the
+distance of the key it replaces. Distance is local: a reader decides
+what it gates, and relays act on none of it.
