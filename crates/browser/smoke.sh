@@ -18,29 +18,7 @@ trap cleanup EXIT
 mkdir -m 700 -p "$run"
 export WEFT_NET=local WEFT_PASSPHRASE='correct horse'
 
-js() { printf '%s' "$1" | socat -t 70 - "UNIX-CONNECT:$sock"; }
-ok() { js "$1" | jq -er '.ok'; }
-expect() {
-    local got
-    got=$(ok "$1")
-    [[ "$got" == "$2" ]] || { echo "expected $2, got $got for $1" >&2; exit 1; }
-}
-wait_js() {
-    for _ in $(seq 1 300); do
-        if [[ $(ok "$1") == "true" ]]; then return; fi
-        sleep 0.2
-    done
-    echo "timed out waiting for $1" >&2
-    exit 1
-}
-set_value() { ok "(() => { const e = document.getElementById('$1'); e.value = $2; e.dispatchEvent(new Event('input', { bubbles: true })); return true; })()" >/dev/null; }
-click() { ok "(() => { document.getElementById('$1').click(); return true; })()" >/dev/null; }
-submit() { ok "(() => { document.getElementById('$1').requestSubmit(); return true; })()" >/dev/null; }
-shot() {
-    local geometry
-    geometry=$(hyprctl clients -j | jq -r --argjson pid "$browser" '.[] | select(.pid == $pid) | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')
-    grim -g "$geometry" "$1"
-}
+source "$repo/crates/browser/drive.sh"
 
 ui=$repo/crates/browser/ui
 [[ $ui/dist/main.js -nt $ui/src/main.ts ]] || npm run --prefix "$ui" build >/dev/null
@@ -139,10 +117,10 @@ click prov-line
 wait_js "!document.getElementById('prov-detail').hidden"
 ok "(() => { document.documentElement.dataset.theme = 'light'; return true; })()" >/dev/null
 sleep 0.5
-shot "$repo/docs/browser-home-light.png"
+shot "$browser" "$repo/docs/browser-home-light.png"
 ok "(() => { document.documentElement.dataset.theme = 'dark'; return true; })()" >/dev/null
 sleep 0.5
-shot "$repo/docs/browser-home.png"
+shot "$browser" "$repo/docs/browser-home.png"
 ok "(() => { delete document.documentElement.dataset.theme; return true; })()" >/dev/null
 cat "$ui/index.html" "$ui/style.css" "$ui/src/main.ts" | sha256sum | cut -d' ' -f1 >"$repo/docs/browser-home.sha256"
 
