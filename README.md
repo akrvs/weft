@@ -13,7 +13,9 @@
 > hash, identity is a keypair you own, and nothing in the protocol has a
 > slot for watching you. This repo is the thread the rest gets woven onto.
 
-![status](https://img.shields.io/badge/status-M22-yellow)
+![status](https://img.shields.io/badge/status-M23-yellow)
+![release](https://img.shields.io/badge/release-v0.1.0-blue)
+![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![category](https://img.shields.io/badge/category-Protocol%20%2F%20Identity-9cf)
 ![difficulty](https://img.shields.io/badge/difficulty-Insane-critical)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
@@ -44,9 +46,16 @@
 │              drive [named links, a total, a scripted hand]      │
 │              rail [an invoice, a preimage, a portal, a login]   │
 │              recover [guardians hand a lost root to a new one]  │
-│ status     : M22 — spec frozen · 10 crates · backlog thin       │
+│              release [a license, a tag, a two minute film]      │
+│ status     : M23 — v0.1.0 · 10 crates · Apache-2.0 · filmed     │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+Two machines, one relay, two minutes:
+[watch the loop](https://github.com/akrvs/weft/releases/download/v0.1.0/weft-0.1.mp4)
+or rerun `crates/browser/demo.sh` and record it yourself.
+
+![demo](https://github.com/akrvs/weft/releases/download/v0.1.0/weft-0.1.gif)
 
 ## [ Briefing ]
 
@@ -481,13 +490,14 @@ crates/relay/        weft-relay: init · allow · rate · sats · bank · node f
 crates/bank/         weft-bank: init · whoami · mint
 crates/gateway/      weft-gateway: hyper server over the store socket · Host based routing · provenance bar · x-weft headers · sessions and budget windows in redb under caps · allow list · pulls for sessions only under a cap and a byte budget · SIGHUP reload
 crates/cli/          weft: commands over home, net, and resolve · device retire · manifest with guardians · recover draft, sign, finish · grants with app titles · price · invoice · push paid by voucher or preimage · receipts · login · quiet on a closed pipe
-crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · smoke.sh with a screenshot hash the tests check
+crates/browser/      weft-browser: Tauri 2 app over the store socket · light and dark from the portal, GSettings, or GTK · history and bookmarks · compose with preview, price, invoice, and pay · names and repoint · blob view and save · pull bar with a total · weft: handler · start and store dialogs · login dialog · drive socket behind a feature · drive.sh helpers · smoke.sh with a screenshot hash the tests check · demo.sh recording the loop
 docs/protocol.md     normative record spec
 docs/relay.md        relay wire protocol
 docs/store.md        store wire protocol
-docs/design.md       the why
+docs/design.md       the why, and what 0.1 does of it
 vectors/             fixtures every implementation must reproduce
 progress/            milestone plans and logs
+LICENSE              Apache-2.0
 ```
 
 Regenerate vectors after a deliberate format change, never by accident:
@@ -503,14 +513,16 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo test --workspace
 cargo deny check
+crates/browser/smoke.sh                     # drives the browser, refreshes docs/*.png
+crates/browser/demo.sh                      # records target/demo/weft-0.1.mp4 and .gif
 ```
 
 ## [ Next Ops ]
 
-The roadmap is complete and its two open protocol questions are settled:
-guardians recover a lost root, and kinds are an open namespace with a
-reserved core. The LND adapter has issued and settled a real invoice in
-regtest, and the browser theme survives a desktop without a portal. What
-is left is listed in [`progress/BACKLOG.md`](progress/BACKLOG.md): a
-handler for macOS and Windows, a browser dialog for signing recoveries,
-and TLS at a reverse proxy. See [`progress/`](progress/).
+`v0.1.0` is tagged, licensed under Apache-2.0, and filmed. The roadmap in
+[`docs/design.md`](docs/design.md) is complete, and its status table says
+which of the document's promises the code kept, kept in part, or deferred.
+The deferred ones are rows in [`progress/BACKLOG.md`](progress/BACKLOG.md);
+the first two worth a milestone are petnames and label lists, the one empty
+layer, both already reserved kinds. Everything else waits for a reader who
+is not the author. See [`progress/`](progress/).

@@ -6,9 +6,9 @@ Read first, rewritten at every close, never appended, under 120 lines.
 
 | | |
 |---|---|
-| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening, M11 gateway behind the gate, M12 reads that fetch, M13 fetch hardening, M14 gateway and relay operations, M15 relay hygiene, M16 loose ends, M17 operational loose ends, M18 every loose end but the browser, M19 the browser, M20 named links, blob totals, a driven smoke test, M21 a Lightning rail, the portal theme, login in the smoke, M22 social recovery, an open kind namespace, LND live, theme fallbacks |
-| Next | Nothing scheduled. `BACKLOG.md` holds what is left; the roadmap in `design.md` is complete and its open protocol questions are settled |
-| Repo | private, github.com/akrvs/weft, CI on push to main, license deferred |
+| Done | M0 spec and vectors, M1 core and CLI, M2 relay over iroh, M3 browser, M4 DNS bridge and gateway, M5 personal store and grants, M6 challenge response login, M7 payments experiment, M8 store as the single gate, M9 reads behind the gate, M10 store hardening, M11 gateway behind the gate, M12 reads that fetch, M13 fetch hardening, M14 gateway and relay operations, M15 relay hygiene, M16 loose ends, M17 operational loose ends, M18 every loose end but the browser, M19 the browser, M20 named links, blob totals, a driven smoke test, M21 a Lightning rail, the portal theme, login in the smoke, M22 social recovery, an open kind namespace, LND live, theme fallbacks, M23 Apache-2.0, the design status table, `v0.1.0` with a filmed demo |
+| Next | Nothing scheduled. `BACKLOG.md` holds what is left, now including every design promise the code never grew; petnames and label lists are the first pair worth a milestone, both already reserved kinds |
+| Repo | public, github.com/akrvs/weft, Apache-2.0, CI on every push, `v0.1.0` tagged with a release carrying `weft-0.1.mp4` and `.gif` from `crates/browser/demo.sh` |
 
 ## Crates
 
@@ -23,7 +23,7 @@ Read first, rewritten at every close, never appended, under 120 lines.
 | weft-bank | crates/bank | Faucet binary: init, whoami, mint vouchers to a file and as text |
 | weft-gateway | crates/gateway | HTTP gateway binary over hyper and `Resolver<Local>`: any target the address bar takes, `Host` based routing for publisher domains, provenance headers, `/login` sessions and budget windows in `State` (redb), allow list, pulls for sessions only under `Limits`; SIGHUP rereads the allow list and sweeps sessions |
 | weft | crates/cli | Commands over home, net, and resolve: device retire, `manifest --guardian --threshold`, `recover draft`, `sign`, `finish`, grants listed with app titles, price, `invoice`, push paid by voucher or `--preimage --relay` keeping the receipt only after accept, receipts, login, `resolve` following recoveries; prints through `say!`, quiet on a closed pipe |
-| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: `light-dark()` tokens stamped from the portal, GSettings, or GTK, one line provenance panel, back and forward, history and bookmarks in `<home>/browser/`, compose with live preview, price table, invoice button and a pay field for voucher or preimage, store view with names and repoint, blob view with sniff and save, pull bar with a total, start form, login consent, `register` for `weft:` links on Linux, `drive` feature with a JavaScript socket, `smoke.sh`, `tests/drift.rs` |
+| weft-browser | crates/browser | Tauri 2 app over `Resolver<Local>`: `light-dark()` tokens stamped from the portal, GSettings, or GTK, one line provenance panel, back and forward, history and bookmarks in `<home>/browser/`, compose with live preview, price table, invoice button and a pay field for voucher or preimage, store view with names and repoint, blob view with sniff and save, pull bar with a total, start form, login consent, `register` for `weft:` links on Linux, `drive` feature with a JavaScript socket, `drive.sh` helpers, `smoke.sh`, `demo.sh` filming the loop into `target/demo/`, `tests/drift.rs` |
 
 ## Frozen decisions
 
@@ -103,8 +103,8 @@ Read first, rewritten at every close, never appended, under 120 lines.
   `Client` does not. `println!` panics on EPIPE under `panic = "abort"`; the CLI uses `say!`. `iroh-blobs` 0.103 drops
   blobs only through `Options.gc` on `FsStore::load_with_opts`. No WebKitWebDriver on Arch, `/dev/uinput` root only:
   `cargo build -p weft-browser --features drive`, then `WEFT_DRIVE=<socket>` evaluates one JavaScript expression per
-  connection, `{"ok":..}` or `{"err":..}` back; `eval_with_callback` resolves before a promise settles, so `drive` polls
-  a `window.__drive<n>` slot. `smoke.sh` is the transcript; it refreshes both screenshots and `docs/browser-home.sha256`.
+  connection, `{"ok":..}` or `{"err":..}` back; `drive` polls a `window.__drive<n>` slot, `eval_with_callback` returns early.
+  `smoke.sh` is the transcript and refreshes the screenshots; Hyprland tiles new windows, so `demo.sh` floats one via `hyprctl`.
 
 ## Verify before commit
 Every flag section of `README.md` is a runnable transcript; `npm ci --prefix crates/browser/ui` first in a fresh worktree. `vectors/` regenerate only on a format change: `cargo run -p weft-core --example vectors`.
