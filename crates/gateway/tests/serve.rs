@@ -347,7 +347,11 @@ async fn rejects_what_it_should() {
     std::fs::write(site.dir.join("blobs").join(forged.to_string()), b"not the bytes it names")
         .unwrap();
     assert_eq!(request(&addr, "GET", &format!("/blob/{forged}")).await.status, 502);
-    assert_eq!(request(&addr, "GET", "/notanaddress").await.status, 400);
+    let r = request(&addr, "GET", "/notanaddress").await;
+    assert_eq!(r.status, 404, "a petname is the reader's own and never served");
+    assert!(r.text().contains("no petname notanaddress"), "{}", r.text());
+    assert_eq!(request(&addr, "GET", "/alice/blog").await.status, 404);
+    assert_eq!(request(&addr, "GET", "/Not_an_address").await.status, 400);
     assert_eq!(request(&addr, "GET", "/../etc/passwd").await.status, 400);
     assert_eq!(request(&addr, "GET", "/%ff").await.status, 400);
     assert_eq!(request(&addr, "GET", "/go").await.status, 400);

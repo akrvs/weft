@@ -563,4 +563,100 @@ fn main() {
             ]
         }),
     );
+    lists(&keys, &manifest);
+}
+
+#[allow(clippy::too_many_lines)]
+fn lists(keys: &[SecretKey], manifest: &Manifest) {
+    use weft_core::{Label, Labels, Petname, Petnames};
+    let (root, device) = (&keys[0], &keys[1]);
+    let at = 1_760_000_020;
+    let raw = |kind: &str, body: Cbor| {
+        Draft {
+            author: root.public(),
+            signer: device.public(),
+            kind: kind.into(),
+            created: at,
+            refs: vec![],
+            body: Body::Inline(body.encode()),
+        }
+        .sign(device)
+        .unwrap()
+    };
+    let pet = |name: &str, k: &SecretKey| {
+        Cbor::Map(vec![
+            ("key".into(), Cbor::Bytes(k.public().bytes().to_vec())),
+            ("name".into(), Cbor::Text(name.into())),
+        ])
+    };
+    let names = |entries: Vec<Cbor>| Cbor::Map(vec![("names".into(), Cbor::Array(entries))]);
+    let tag = |side: &str, bytes: &[u8], value: &str| {
+        Cbor::Map(vec![
+            (side.into(), Cbor::Bytes(bytes.to_vec())),
+            ("value".into(), Cbor::Text(value.into())),
+        ])
+    };
+    let labels = |entries: Vec<Cbor>| Cbor::Map(vec![("labels".into(), Cbor::Array(entries))]);
+    let petnames = Petnames {
+        names: vec![
+            Petname { name: "alice".into(), key: keys[3].public() },
+            Petname { name: "bob-2".into(), key: keys[4].public() },
+        ],
+    };
+    let spam = Address::of(b"spam");
+    let tags = Labels {
+        labels: vec![
+            Label { subject: keys[3].public().address(), value: "trusted".into() },
+            Label { subject: spam, value: "nsfw".into() },
+            Label { subject: spam, value: "spam".into() },
+        ],
+    };
+    let k3 = keys[3].public();
+    let k3 = k3.bytes();
+    let many_names: Vec<Cbor> = (0..513).map(|i| pet(&format!("n{i:04}"), &keys[3])).collect();
+    let mut many_labels: Vec<Cbor> =
+        (0..513u32).map(|i| tag("record", Address::of(&i.to_le_bytes()).bytes(), "x")).collect();
+    many_labels.sort_by_key(Cbor::encode);
+    let signed = |d: Draft| d.sign(device).unwrap();
+    let (r, d) = (root.public(), device.public());
+    let m = Some(manifest);
+    let sk = |k: &[u8], name: &str, extra: Option<(&str, &str)>| {
+        let mut v =
+            vec![("key".into(), Cbor::Bytes(k.to_vec())), ("name".into(), Cbor::Text(name.into()))];
+        v.extend(extra.map(|(a, b)| (a.into(), Cbor::Text(b.into()))));
+        Cbor::Map(v)
+    };
+    write(
+        "lists",
+        &json!({
+            "records": [
+                entry("petnames", &signed(petnames.draft(&r, &d, at)), m),
+                entry("empty petnames", &signed(Petnames::default().draft(&r, &d, at)), m),
+                entry("labels", &signed(tags.draft(&r, &d, at)), m),
+                entry("empty labels", &signed(Labels::default().draft(&r, &d, at)), m),
+                entry("petnames without manifest", &signed(petnames.draft(&r, &d, at)), None),
+                entry("petnames unsorted", &raw("petname", names(vec![pet("bob", &keys[4]), pet("alice", &keys[3])])), m),
+                entry("petnames duplicate name", &raw("petname", names(vec![pet("alice", &keys[3]), pet("alice", &keys[4])])), m),
+                entry("petname uppercase", &raw("petname", names(vec![pet("Alice", &keys[3])])), m),
+                entry("petname with a dot", &raw("petname", names(vec![pet("a.b", &keys[3])])), m),
+                entry("petname starting with a digit", &raw("petname", names(vec![pet("1a", &keys[3])])), m),
+                entry("petname of 33 bytes", &raw("petname", names(vec![pet(&"a".repeat(33), &keys[3])])), m),
+                entry("petname empty", &raw("petname", names(vec![pet("", &keys[3])])), m),
+                entry("petnames over 512", &raw("petname", names(many_names)), m),
+                entry("petname with a short key", &raw("petname", names(vec![sk(&[1; 31], "a", None)])), m),
+                entry("petname with an unknown field", &raw("petname", names(vec![sk(k3, "a", Some(("note", "x")))])), m),
+                entry("petnames with an unknown field", &raw("petname", Cbor::Map(vec![("names".into(), Cbor::Array(vec![])), ("owner".into(), Cbor::Text("x".into()))])), m),
+                entry("labels unsorted", &raw("label", labels(vec![tag("record", spam.bytes(), "spam"), tag("record", spam.bytes(), "nsfw")])), m),
+                entry("labels record before key", &raw("label", labels(vec![tag("record", spam.bytes(), "spam"), tag("key", k3, "trusted")])), m),
+                entry("labels duplicate", &raw("label", labels(vec![tag("record", spam.bytes(), "spam"), tag("record", spam.bytes(), "spam")])), m),
+                entry("label with key and record", &raw("label", labels(vec![Cbor::Map(vec![("key".into(), Cbor::Bytes(k3.to_vec())), ("record".into(), Cbor::Bytes(spam.bytes().to_vec())), ("value".into(), Cbor::Text("spam".into()))])])), m),
+                entry("label without subject", &raw("label", labels(vec![Cbor::Map(vec![("value".into(), Cbor::Text("spam".into()))])])), m),
+                entry("label value with a dash", &raw("label", labels(vec![tag("record", spam.bytes(), "no-go")])), m),
+                entry("label value empty", &raw("label", labels(vec![tag("record", spam.bytes(), "")])), m),
+                entry("label value of 33 bytes", &raw("label", labels(vec![tag("record", spam.bytes(), &"a".repeat(33))])), m),
+                entry("labels over 512", &raw("label", labels(many_labels)), m),
+                entry("label with an unknown field", &raw("label", labels(vec![Cbor::Map(vec![("record".into(), Cbor::Bytes(spam.bytes().to_vec())), ("value".into(), Cbor::Text("spam".into())), ("why".into(), Cbor::Text("x".into()))])])), m),
+            ]
+        }),
+    );
 }

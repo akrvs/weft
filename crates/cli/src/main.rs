@@ -2,6 +2,7 @@
 
 #[macro_use]
 mod say;
+mod lists;
 mod net;
 
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ use weft_core::{
     PublicKey, Receipt, Record, Recovery, Revoke, Voucher, verify,
 };
 
-use weft_home::{Home, ROOT, Relay, Result, Store, fail, home, read_record};
+use weft_home::{Home, ROOT, Relay, Result, Snapshot, Store, fail, home, read_record};
 use weft_resolve::Resolver;
 
 #[derive(Parser, Debug)]
@@ -118,6 +119,14 @@ enum Command {
     Login {
         #[command(subcommand)]
         command: LoginCommand,
+    },
+    Petname {
+        #[command(subcommand)]
+        command: lists::PetnameCommand,
+    },
+    Label {
+        #[command(subcommand)]
+        command: lists::LabelCommand,
     },
 }
 
@@ -241,7 +250,7 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
         Command::Manifest { guardians, threshold } => manifest(home, store, &guardians, threshold),
         Command::Recover { command } => recover(home, store, command),
         Command::Sign { file, kind, signer, refs } => sign(home, store, &file, kind, &signer, refs),
-        Command::Point { name, target, signer } => point(home, store, name, target, &signer),
+        Command::Point { name, target, signer } => point(home, store, &name, target, &signer),
         Command::Verify { file, manifest } => verify_file(store, &file, manifest.as_deref()),
         Command::Inspect { file } => inspect(&read_record(&file)?),
         Command::Resolve { author, name, relay: false } => {
@@ -300,6 +309,8 @@ async fn run(home: &Home, store: &Store, command: Command) -> Result<()> {
             say!("{}", challenge.to_text());
             Ok(())
         }
+        Command::Petname { command } => lists::petname(home, store, command).await,
+        Command::Label { command } => lists::label(home, store, command).await,
         Command::Login { command: LoginCommand::Sign { challenge, signer } } => {
             login_sign(home, store, &challenge, &signer)
         }
@@ -662,19 +673,24 @@ fn sign(
     Ok(())
 }
 
-fn point(home: &Home, store: &Store, name: String, target: Address, signer: &str) -> Result<()> {
+fn point(home: &Home, store: &Store, name: &str, target: Address, signer: &str) -> Result<()> {
     let root = home.root()?;
     let snap = store.snapshot()?;
     let manifest = snap.manifest(&root);
-    let existing = snap.pointers(&root, &name, manifest.as_ref());
-    let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
-    let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
     let key = home.open(signer, &home::passphrase(false)?)?;
-    let pointer = Pointer { name, target, seq, prev };
+    let pointer = next_pointer(&snap, &root, name, target);
     let record = pointer.draft(&root, &key.public(), home::now()?).sign(&key)?;
     verify(&record, manifest.as_ref())?;
     say!("{}", store.put(&record)?.display());
     Ok(())
+}
+
+fn next_pointer(snap: &Snapshot, root: &PublicKey, name: &str, target: Address) -> Pointer {
+    let manifest = snap.manifest(root);
+    let existing = snap.pointers(root, name, manifest.as_ref());
+    let seq = existing.iter().map(|(_, p)| p.seq).max().map_or(1, |s| s.saturating_add(1));
+    let prev = Store::head(&existing).map(|(r, _)| r.address()).into_iter().collect();
+    Pointer { name: name.to_owned(), target, seq, prev }
 }
 
 fn verify_file(

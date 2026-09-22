@@ -197,7 +197,7 @@ fn link_target(url: &str) -> Option<Target> {
     if rest.contains(|c: char| c.is_whitespace()) {
         return None;
     }
-    rest.parse().ok()
+    rest.parse().ok().filter(|t| !matches!(t, Target::Petname { .. }))
 }
 
 fn safe_web(url: &str) -> bool {
@@ -276,6 +276,8 @@ mod tests {
         assert_eq!(render("[a](javascript:alert(1))"), "<p></p>");
         assert_eq!(render("[a](http://example.org)"), "<p></p>");
         assert_eq!(render("[a](weft:notanaddress)"), "<p></p>");
+        assert_eq!(render("[a](weft:alice/blog)"), "<p></p>");
+        assert_eq!(render("[a](weft:Not_an_address)"), "<p></p>");
         assert_eq!(render("<mail@example.org>"), "<p></p>");
         assert_eq!(render("[a](weft:login?c=AAAA)"), "<p></p>");
     }

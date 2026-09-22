@@ -1,6 +1,6 @@
 use crate::{
-    Address, Challenge, Error, Grant, Manifest, Pointer, Receipt, Record, Recovery, Result, Revoke,
-    grant, login, manifest, pointer, receipt, recovery,
+    Address, Challenge, Error, Grant, Labels, Manifest, Petnames, Pointer, Receipt, Record,
+    Recovery, Result, Revoke, grant, label, login, manifest, petname, pointer, receipt, recovery,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +31,12 @@ pub fn verify(record: &Record, manifest: Option<&Manifest>) -> Result<Verified> 
         }
         login::KIND => {
             Challenge::from_record(record)?;
+        }
+        petname::KIND => {
+            Petnames::from_record(record)?;
+        }
+        label::KIND => {
+            Labels::from_record(record)?;
         }
         recovery::KIND => {
             let recovery = Recovery::from_record(record)?;

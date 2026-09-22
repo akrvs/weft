@@ -155,7 +155,9 @@ before the loss, revoking trusts none.
 | Devices, revoked keys | 256 each |
 | Guardians, recovery signatures | 16 each |
 | Pointer prev, recovery prev | 16 |
-| Name, label | 64 bytes |
+| Name, device label | 64 bytes |
+| Petname | 32 bytes |
+| Petnames, labels per list | 512 each |
 | Kinds per grant | 16 |
 | Service name | 253 bytes |
 | Proof | 65536 bytes |
@@ -168,9 +170,9 @@ The kind namespace is open: any text that satisfies section 4 is a kind,
 and a kind this document does not name carries no rules beyond section 4.
 `manifest`, `pointer`, `grant`, `revoke`, `receipt`, and `recovery` are
 defined here and are reserved: they can never be granted. `login` is
-defined here, may be granted, and is never stored or relayed. `page` and
-`file` are conventional and carry no extra rules. Later versions define
-`label` and `petname`.
+defined here, may be granted, and is never stored or relayed. `petname`
+and `label` are defined here and may be granted. `page` and `file` are
+conventional and carry no extra rules.
 
 ## 10. Grants
 
@@ -309,3 +311,40 @@ A resolver asked for a name under an author first follows recovery heads,
 at most 4 hops; a fifth hop or a cycle is an error. The name is then
 resolved under the last root reached. A raw record address never
 redirects.
+
+## 14. Petnames
+
+A petname is a reader's own word for a key. It cannot be taken or
+spoofed, because only the reader's list gives it meaning.
+
+`kind = "petname"`. `body` is a canonical map with one key, `names`, an
+array of 0 to 512 entry maps sorted by `name` bytes, names unique. An
+entry holds `key` bytes(32), a public key, and `name` text of 1 to 32
+bytes: the first `a-z`, the rest `a-z`, `0-9`, or `-`.
+
+A list record is a whole snapshot. The current list of an author is the
+target of the head of the author's pointer named `petnames`. An empty
+list removes the last entry.
+
+A resolver takes a petname only from the reader's own current list. The
+address bar reads a head with no `.` that is not an address as a petname,
+so a petname never shadows a domain or an address. A page never links a
+petname, since its author cannot know the reader's list. Another author's
+list is read to copy entries from, never to resolve through.
+
+## 15. Labels
+
+A label is a labeler's signed statement about a record or a key. What a
+reader does with a label is the reader's choice.
+
+`kind = "label"`. `body` is a canonical map with one key, `labels`, an
+array of 0 to 512 entry maps. An entry holds exactly one of `key`
+bytes(32), a public key, and `record` bytes(32), a record address, plus
+`value` text in the kind grammar of section 4. Values are open. Entries
+are sorted with `key` entries before `record` entries, then by subject
+bytes, then by `value` bytes, and are unique.
+
+A label on a key applies to every record whose `author` is that key. The
+current list of a labeler is the target of the head of its pointer named
+`labels`. Relays store and serve label lists like any record and act on
+none of them.

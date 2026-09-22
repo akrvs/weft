@@ -19,6 +19,11 @@ async fn client() -> Result<Client> {
     Client::bind().await.map_err(|e| e.to_string().into())
 }
 
+pub async fn resolver(home: &Home, store: &Store) -> Result<Resolver<Store>> {
+    relays(home)?;
+    Ok(Resolver::with_client(Home::new(home.path().to_path_buf()), store.clone(), client().await?))
+}
+
 #[derive(Debug)]
 pub struct Paid {
     pub relay: Relay,

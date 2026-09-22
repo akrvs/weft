@@ -270,3 +270,35 @@ fn rejects_weak_keys_and_bad_fields() {
     };
     assert_eq!(d.sign(&root).unwrap_err(), Error::Field("kind"));
 }
+
+#[test]
+fn lists_edit_in_order() {
+    use weft_core::{Label, Labels, Petnames};
+    let a = key(1).public();
+    let b = key(2).public();
+    let mut names = Petnames::default();
+    assert!(names.insert("zed", a).unwrap());
+    assert!(names.insert("amy", b).unwrap());
+    assert!(!names.insert("amy", a).unwrap());
+    assert_eq!(names.key("amy"), Some(b));
+    assert!(names.insert("Amy", a).is_err());
+    assert!(names.insert("a.b", a).is_err());
+    names.check().unwrap();
+    assert_eq!(Petnames::decode(&names.encode()).unwrap(), names);
+    assert!(names.remove("zed") && !names.remove("zed"));
+    for i in 0..511 {
+        names.insert(&format!("n{i}"), a).unwrap();
+    }
+    assert_eq!(names.insert("over", a), Err(Error::Limit("names")));
+
+    let record = Address::of(b"r");
+    let mut labels = Labels::default();
+    assert!(labels.insert(Label { subject: record, value: "spam".into() }).unwrap());
+    assert!(labels.insert(Label { subject: a.address(), value: "spam".into() }).unwrap());
+    assert!(!labels.insert(Label { subject: record, value: "spam".into() }).unwrap());
+    assert!(labels.insert(Label { subject: record, value: "no-go".into() }).is_err());
+    assert_eq!(labels.labels[0].subject, a.address());
+    assert_eq!(Labels::decode(&labels.encode()).unwrap(), labels);
+    assert!(labels.remove(&Label { subject: record, value: "spam".into() }));
+    assert_eq!(labels.labels.len(), 1);
+}

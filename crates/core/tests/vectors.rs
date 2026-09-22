@@ -231,3 +231,22 @@ fn recovery() {
     let record = one.draft(&root.public(), 5).sign(&to).unwrap();
     assert_eq!(verify(&record, Some(&guarded)).unwrap_err(), Error::Threshold);
 }
+
+#[test]
+fn lists() {
+    use weft_core::{Labels, Petnames};
+    let v = load("lists");
+    check_records(&v, &manifest());
+    let record =
+        |i: usize| Record::from_bytes(&hex(v["records"][i]["hex"].as_str().unwrap())).unwrap();
+    let petnames = Petnames::from_record(&record(0)).unwrap();
+    let alice = SecretKey::from_seed([4; 32]).public();
+    assert_eq!(petnames.key("alice"), Some(alice));
+    assert_eq!(petnames.name(&alice), Some("alice"));
+    assert_eq!(petnames.key("carol"), None);
+    let labels = Labels::from_record(&record(2)).unwrap();
+    let spam = Address::of(b"spam");
+    assert_eq!(labels.on(&spam, &alice.address()).collect::<Vec<_>>(), ["trusted", "nsfw", "spam"]);
+    assert_eq!(labels.on(&Address::of(b"x"), &alice.address()).collect::<Vec<_>>(), ["trusted"]);
+    assert_eq!(labels.on(&Address::of(b"x"), &Address::of(b"y")).count(), 0);
+}

@@ -5,7 +5,10 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
-use weft_core::{Address, Body, Manifest, Pointer, PublicKey, Record, Recovery, verify};
+use weft_core::{
+    Address, Body, Labels, Manifest, Petnames, Pointer, PublicKey, Record, Recovery, label,
+    petname, verify,
+};
 use weft_home::{Home, Reads, Relay, Store};
 use weft_net::Client;
 
@@ -331,6 +334,46 @@ impl<R: Reads> Resolver<R> {
         Ok(pointer.target)
     }
 
+    async fn list<T>(
+        &self,
+        author: PublicKey,
+        name: &str,
+        decode: fn(&Record) -> weft_core::Result<T>,
+    ) -> Result<Option<T>> {
+        let author = self.redirect(author).await?;
+        let address = match self.head(author, name).await {
+            Ok(address) => address,
+            Err(Error::NoPointer(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let (record, _) = self.record(address).await?;
+        if record.author() != &author {
+            return Err(Error::Binding("list authored by another key"));
+        }
+        let manifest = if record.self_signed() { None } else { self.manifest(&author).await? };
+        verify(&record, manifest.as_ref())?;
+        let list = decode(&record)?;
+        self.reads().keep(&record).await?;
+        Ok(Some(list))
+    }
+
+    pub async fn petnames(&self) -> Result<Petnames> {
+        if !self.home().exists() {
+            return Ok(Petnames::default());
+        }
+        let root = self.home().root()?;
+        let list = self.offline().list(root, petname::POINTER, Petnames::from_record).await?;
+        Ok(list.unwrap_or_default())
+    }
+
+    pub async fn petnames_of(&self, author: PublicKey) -> Result<Option<Petnames>> {
+        self.list(author, petname::POINTER, Petnames::from_record).await
+    }
+
+    pub async fn labels(&self, labeler: PublicKey) -> Result<Option<Labels>> {
+        self.list(labeler, label::POINTER, Labels::from_record).await
+    }
+
     pub async fn title(&self, author: &PublicKey) -> Option<String> {
         let local = self.offline();
         let address = local.head(*author, crate::target::HOME).await.ok()?;
@@ -358,6 +401,11 @@ impl<R: Reads> Resolver<R> {
                     if binding.authentic { "verified" } else { "unverified" }
                 );
                 (self.head(binding.author, &name).await?, tier)
+            }
+            Target::Petname { petname, name } => {
+                let author =
+                    self.petnames().await?.key(&petname).ok_or(Error::Petname(petname.clone()))?;
+                (self.head(author, &name).await?, format!("{petname}/{name} by petname"))
             }
         };
         let mut page = self.open(address, links).await?;

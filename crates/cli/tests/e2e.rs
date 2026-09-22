@@ -227,3 +227,51 @@ fn relay_entries_may_carry_addresses() {
     let (success, text) = a.run(&["relay", "add", &format!("{id}@192.168.7.2")]);
     assert!(!success && text.contains("host:port"), "{text}");
 }
+
+#[test]
+fn petnames_and_labels_are_edited_as_signed_lists() {
+    let a = Machine::new("lists");
+    let root = a.ok(&["init"]).lines().next().unwrap().to_owned();
+    a.ok(&["device", "add", "laptop"]);
+    a.ok(&["manifest"]);
+    let friend = Machine::new("lists-friend");
+    let friend_root = friend.ok(&["init"]).lines().next().unwrap().to_owned();
+
+    assert_eq!(a.ok(&["petname", "list"]), "");
+    let written = a.ok(&["petname", "add", "friend", &friend_root, "--as", "laptop"]);
+    let list = written.lines().next().unwrap().to_owned();
+    assert_eq!(written.lines().count(), 2, "{written}");
+    assert!(a.ok(&["resolve", &root, "petnames"]).starts_with(&list));
+    assert_eq!(a.ok(&["petname", "list"]), format!("friend  {friend_root}\n"));
+    a.ok(&["petname", "add", "me", &root]);
+    assert_eq!(a.ok(&["petname", "list"]), format!("friend  {friend_root}\nme  {root}\n"));
+
+    let (success, text) = a.run(&["petname", "add", "friend", &root]);
+    assert!(!success && text.contains("already names"), "{text}");
+    let (success, text) = a.run(&["petname", "add", "Bad.Name", &root]);
+    assert!(!success && text.contains("field: name"), "{text}");
+    let hash = weft_core::Address::of(b"x").to_string();
+    let (success, text) = a.run(&["petname", "add", "x", &hash]);
+    assert!(!success && text.contains("not a key address"), "{text}");
+    let (success, text) = a.run(&["petname", "remove", "nobody"]);
+    assert!(!success && text.contains("no petname nobody"), "{text}");
+    let (success, text) = a.run(&["petname", "import", &friend_root]);
+    assert!(!success && text.contains("no relays configured"), "{text}");
+
+    a.ok(&["petname", "remove", "me"]);
+    a.ok(&["petname", "remove", "friend"]);
+    assert_eq!(a.ok(&["petname", "list"]), "");
+
+    assert_eq!(a.ok(&["label", "list"]), "");
+    a.ok(&["label", "add", &hash, "spam", "--as", "laptop"]);
+    a.ok(&["label", "add", &friend_root, "trusted"]);
+    assert_eq!(a.ok(&["label", "list"]), format!("trusted  {friend_root}\nspam  {hash}\n"));
+    let (success, text) = a.run(&["label", "add", &hash, "spam"]);
+    assert!(!success && text.contains("already carries"), "{text}");
+    let (success, text) = a.run(&["label", "add", &hash, "no-go"]);
+    assert!(!success && text.contains("field: value"), "{text}");
+    let (success, text) = a.run(&["label", "remove", &hash, "nsfw"]);
+    assert!(!success && text.contains("carries no nsfw"), "{text}");
+    a.ok(&["label", "remove", &hash, "spam"]);
+    assert_eq!(a.ok(&["label", "list"]), format!("trusted  {friend_root}\n"));
+}

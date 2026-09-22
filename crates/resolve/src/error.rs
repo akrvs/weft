@@ -17,6 +17,7 @@ pub enum Error {
     NoPointer(String),
     Text,
     Hops(Address),
+    Petname(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -35,6 +36,7 @@ impl fmt::Display for Error {
             Self::NoPointer(name) => write!(f, "no valid pointer named {name}"),
             Self::Text => f.write_str("page body is not utf-8"),
             Self::Hops(author) => write!(f, "{author} recovered more than {MAX_HOPS} times"),
+            Self::Petname(name) => write!(f, "no petname {name} in your list"),
         }
     }
 }

@@ -332,3 +332,79 @@ async fn the_title_is_the_home_page_heading_read_locally() {
     assert_eq!(resolver.title(&key(5).public()).await, None, "an unknown author has none");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn own(
+    root: &SecretKey,
+    draft: impl Fn(&weft_core::PublicKey) -> Draft,
+    name: &str,
+) -> [Record; 2] {
+    let list = draft(&root.public()).sign(root).unwrap();
+    let pointer = Pointer { name: name.into(), target: list.address(), seq: 1, prev: vec![] }
+        .draft(&root.public(), &root.public(), 1_700_000_010)
+        .sign(root)
+        .unwrap();
+    [list, pointer]
+}
+
+#[tokio::test]
+async fn a_petname_resolves_through_the_readers_own_list_only() {
+    use weft_core::{Petnames, petname};
+    let site = publish().await;
+    let (resolver, dir) = reader(&site).await;
+    let pet = Target::Petname { petname: "site".into(), name: "home".into() };
+    assert!(resolver.petnames().await.unwrap().names.is_empty());
+    assert!(
+        matches!(resolver.resolve(pet.clone(), &LINKS).await, Err(Error::Petname(n)) if n == "site")
+    );
+    resolver.home().init(b"pass").unwrap();
+    let me = resolver.home().open(weft_home::ROOT, b"pass").unwrap();
+    let mut names = Petnames::default();
+    names.insert("site", site.root.public()).unwrap();
+    for r in own(&me, |a| names.draft(a, a, 1_700_000_009), petname::POINTER) {
+        resolver.home().store().put(&r).unwrap();
+    }
+    let page = resolver.resolve(pet, &LINKS).await.unwrap();
+    assert_eq!(page.address, site.page.to_string());
+    assert_eq!(page.name, "site/home by petname");
+    let other = Target::Petname { petname: "nobody".into(), name: "home".into() };
+    assert!(matches!(resolver.resolve(other, &LINKS).await, Err(Error::Petname(_))));
+    site.router.shutdown().await.unwrap();
+    for d in site.dirs.iter().chain([&dir]) {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[tokio::test]
+async fn a_label_list_is_pulled_kept_and_bound_to_its_author() {
+    use weft_core::{Label, Labels, label};
+    let site = publish().await;
+    let (resolver, dir) = reader(&site).await;
+    let labeler = &site.root;
+    let mut labels = Labels::default();
+    labels.insert(Label { subject: site.page, value: "spam".into() }).unwrap();
+    let records = own(labeler, |a| labels.draft(a, a, 1_700_000_009), label::POINTER);
+    let publisher = Client::from_endpoint(endpoint(Some(&site.addr)).await);
+    let outcome = publisher.put(site.addr.clone(), &records).await.unwrap();
+    assert_eq!(outcome.rejected, vec![], "{outcome:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publisher.close().await;
+    assert!(resolver.offline().labels(labeler.public()).await.unwrap().is_none());
+    assert_eq!(resolver.labels(labeler.public()).await.unwrap(), Some(labels.clone()));
+    site.router.shutdown().await.unwrap();
+    assert_eq!(resolver.offline().labels(labeler.public()).await.unwrap(), Some(labels));
+
+    let thief = key(9);
+    let pointer =
+        Pointer { name: label::POINTER.into(), target: records[0].address(), seq: 1, prev: vec![] }
+            .draft(&thief.public(), &thief.public(), 1_700_000_011)
+            .sign(&thief)
+            .unwrap();
+    resolver.home().store().put(&pointer).unwrap();
+    assert!(matches!(
+        resolver.offline().labels(thief.public()).await,
+        Err(Error::Binding("list authored by another key"))
+    ));
+    for d in site.dirs.iter().chain([&dir]) {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

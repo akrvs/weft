@@ -285,13 +285,16 @@ async fn blob(resolver: &Resolver<Local>, hint: &str, rest: &str) -> Reply {
 }
 
 fn target_for(input: &str, publisher: Option<&str>) -> Result<(Target, String), Error> {
-    match (input.parse::<Target>(), publisher) {
-        (Ok(t), _) => Ok((t, input.to_owned())),
-        (Err(e), Some(host)) => {
-            let under = format!("{host}/{input}");
-            under.parse().map(|t| (t, under)).map_err(|_| e)
+    let parsed = input.parse::<Target>();
+    if let (Ok(Target::Petname { .. }) | Err(_), Some(host)) = (&parsed, publisher) {
+        let under = format!("{host}/{input}");
+        if let Ok(target) = under.parse() {
+            return Ok((target, under));
         }
-        (Err(e), None) => Err(e),
+    }
+    match parsed {
+        Ok(Target::Petname { .. }) => Err(Error::Petname(input.to_owned())),
+        other => other.map(|t| (t, input.to_owned())),
     }
 }
 
@@ -306,6 +309,9 @@ async fn page(
     };
     let (target, input) = match target_for(&input, publisher) {
         Ok(found) => found,
+        Err(e @ Error::Petname(_)) => {
+            return html_reply(StatusCode::NOT_FOUND, html::error(404, &e.to_string()));
+        }
         Err(e) => return html_reply(StatusCode::BAD_REQUEST, html::error(400, &e.to_string())),
     };
     match resolver.resolve(target, &LINKS).await {
@@ -321,7 +327,9 @@ async fn page(
                 Error::NotFound(_) | Error::NoPointer(_) => {
                     return missing(&e.to_string(), hint);
                 }
-                Error::Dns(_) | Error::Binding(_) | Error::Hops(_) => StatusCode::NOT_FOUND,
+                Error::Dns(_) | Error::Binding(_) | Error::Hops(_) | Error::Petname(_) => {
+                    StatusCode::NOT_FOUND
+                }
                 Error::Core(_) | Error::Net(_) | Error::Text | Error::Blob(_) => {
                     StatusCode::BAD_GATEWAY
                 }
@@ -550,7 +558,7 @@ mod tests {
         assert!(matches!(t, Target::Address(_)));
         let (t, _) = target_for("bob.example/home", Some("alice.example")).unwrap();
         assert!(matches!(t, Target::Domain { host, .. } if host == "bob.example"));
-        assert!(target_for("about", None).is_err());
+        assert!(matches!(target_for("about", None), Err(Error::Petname(p)) if p == "about"));
         assert!(target_for("a/b/c", Some("alice.example")).is_err(), "the original error stands");
         assert!(target_for("", Some("alice.example")).is_err());
     }

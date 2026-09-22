@@ -1,5 +1,6 @@
 use core::str::FromStr;
 
+use weft_core::petname::valid_petname;
 use weft_core::pointer::MAX_NAME;
 use weft_core::{Address, PublicKey, address::Kind};
 
@@ -14,6 +15,7 @@ pub enum Target {
     Address(Address),
     Named { author: PublicKey, name: String },
     Domain { host: String, name: String },
+    Petname { petname: String, name: String },
 }
 
 impl FromStr for Target {
@@ -32,6 +34,12 @@ impl FromStr for Target {
         if head.contains('.') {
             let host = domain(head)?;
             return Ok(Self::Domain { host, name: name.unwrap_or(HOME).to_owned() });
+        }
+        if valid_petname(head) {
+            return Ok(Self::Petname {
+                petname: head.to_owned(),
+                name: name.unwrap_or(HOME).to_owned(),
+            });
         }
         let address: Address = head.parse()?;
         match name {
@@ -54,6 +62,8 @@ impl core::fmt::Display for Target {
             Self::Named { author, name } => write!(f, "{}/{name}", author.address()),
             Self::Domain { host, name } if name == HOME => f.write_str(host),
             Self::Domain { host, name } => write!(f, "{host}/{name}"),
+            Self::Petname { petname, name } if name == HOME => f.write_str(petname),
+            Self::Petname { petname, name } => write!(f, "{petname}/{name}"),
         }
     }
 }
@@ -166,9 +176,14 @@ mod tests {
     #[test]
     fn the_text_form_round_trips() {
         let (_, address) = key();
-        for text in
-            [address.as_str(), &format!("{address}/blog"), "example.com", "example.com/posts"]
-        {
+        for text in [
+            address.as_str(),
+            &format!("{address}/blog"),
+            "example.com",
+            "example.com/posts",
+            "alice",
+            "bob-2/posts",
+        ] {
             let target: Target = text.parse().unwrap();
             assert_eq!(target.to_string(), text);
             assert_eq!(target.to_string().parse::<Target>().unwrap(), target);
@@ -177,10 +192,23 @@ mod tests {
     }
 
     #[test]
+    fn petnames() {
+        let pet = |p: &str, n: &str| Target::Petname { petname: p.to_owned(), name: n.to_owned() };
+        assert_eq!("alice".parse::<Target>().unwrap(), pet("alice", HOME));
+        assert_eq!("weft:alice/blog".parse::<Target>().unwrap(), pet("alice", "blog"));
+        assert_eq!("a".repeat(32).parse::<Target>().unwrap(), pet(&"a".repeat(32), HOME));
+        assert!(matches!("alice.example".parse::<Target>().unwrap(), Target::Domain { .. }));
+        assert!(matches!(key().1.parse::<Target>().unwrap(), Target::Address(_)));
+        assert!(matches!("alice/".parse::<Target>(), Err(Error::Target("name length"))));
+    }
+
+    #[test]
     fn junk_is_rejected() {
         assert!(matches!("".parse::<Target>(), Err(Error::Target("empty"))));
         assert!(matches!("/home".parse::<Target>(), Err(Error::Target("empty"))));
-        assert!(matches!("notanaddress".parse::<Target>(), Err(Error::Core(_))));
+        assert!(matches!("Not_a_petname".parse::<Target>(), Err(Error::Core(_))));
+        assert!(matches!("1alice".parse::<Target>(), Err(Error::Core(_))));
+        assert!(matches!("a".repeat(33).parse::<Target>(), Err(Error::Core(_))));
         assert!(matches!(
             "https://example.com".parse::<Target>(),
             Err(Error::Target("name characters"))
